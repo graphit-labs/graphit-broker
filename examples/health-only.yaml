@@ -1,3 +1,10 @@
+database:
+  driver: sqlite
+  dsn: /tmp/graphit-broker-smoke.db
+  max_open_conns: 1
+  max_idle_conns: 1
+  conn_max_lifetime: 3m
+
 server:
   address: ":8080"
 
@@ -8,13 +15,6 @@ authentication:
       token_sha256: "7d1587faea36cfc02707965ca9f2f56d59bdf16519ea0ff4b62ab9c8e45c4421"
       subject: "smoke-test"
       username: "smoke-test"
-
-authorization:
-  rules:
-    - name: "synthetic principal"
-      access: "subject"
-      principal: "smoke-test"
-      capabilities: ["embeddings"]
 
 services:
   embeddings:

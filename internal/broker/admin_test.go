@@ -127,7 +127,7 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	_ = failedCallback.Body.Close()
 	provider.exchangeErr = nil
 
-	withoutCSRF, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/access", strings.NewReader(`{"v":1,"rules":[]}`))
+	withoutCSRF, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/grants", strings.NewReader(`{"id":"public","name":"public","access":"global","capabilities":["hub"]}`))
 	withoutCSRF.Header.Set("Content-Type", "application/json")
 	withoutCSRF.Header.Set("If-Match", `"1"`)
 	withoutCSRF.AddCookie(sessionCookie)
@@ -244,16 +244,16 @@ func TestAdminFullConfigurationRedactionUpdateAndConsumerHotReload(t *testing.T)
 		t.Fatalf("disabled rerank remained in hot runtime: %s", discoveryBody)
 	}
 
-	access := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/access", "root-token", "")
+	access := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/grants", "root-token", "")
 	etag := access.Header.Get("ETag")
 	_ = access.Body.Close()
-	rules := `{"v":1,"rules":[{"name":"public embeddings","access":"anonymous","capabilities":["embeddings"]}]}`
-	put, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/access", strings.NewReader(rules))
+	grant := `{"id":"public-embeddings","name":"public embeddings","access":"anonymous","capabilities":["embeddings"]}`
+	put, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/grants", strings.NewReader(grant))
 	put.Header.Set("Authorization", "Bearer root-token")
 	put.Header.Set("Content-Type", "application/json")
 	put.Header.Set("If-Match", etag)
 	accessUpdated, err := http.DefaultClient.Do(put)
-	if err != nil || accessUpdated.StatusCode != http.StatusOK {
+	if err != nil || accessUpdated.StatusCode != http.StatusCreated {
 		t.Fatalf("access update status=%s err=%v", statusText(accessUpdated), err)
 	}
 	_ = accessUpdated.Body.Close()
@@ -263,7 +263,7 @@ func TestAdminFullConfigurationRedactionUpdateAndConsumerHotReload(t *testing.T)
 	}
 	_ = embedding.Body.Close()
 
-	stale, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/access", strings.NewReader(rules))
+	stale, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/grants", strings.NewReader(grant))
 	stale.Header.Set("Authorization", "Bearer root-token")
 	stale.Header.Set("Content-Type", "application/json")
 	stale.Header.Set("If-Match", etag)
@@ -272,6 +272,29 @@ func TestAdminFullConfigurationRedactionUpdateAndConsumerHotReload(t *testing.T)
 		t.Fatalf("stale access update status=%d", conflict.StatusCode)
 	}
 	_ = conflict.Body.Close()
+
+	current := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/grants", "root-token", "")
+	currentETag := current.Header.Get("ETag")
+	_ = current.Body.Close()
+	updatedGrant := `{"id":"ignored-by-path","name":"signed-in embeddings","access":"authenticated","capabilities":["embeddings"]}`
+	edit, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/grants/public-embeddings", strings.NewReader(updatedGrant))
+	edit.Header.Set("Authorization", "Bearer root-token")
+	edit.Header.Set("Content-Type", "application/json")
+	edit.Header.Set("If-Match", currentETag)
+	edited, err := http.DefaultClient.Do(edit)
+	if err != nil || edited.StatusCode != http.StatusOK {
+		t.Fatalf("grant update status=%s err=%v", statusText(edited), err)
+	}
+	deleteETag := edited.Header.Get("ETag")
+	_ = edited.Body.Close()
+	remove, _ := http.NewRequest(http.MethodDelete, httpServer.URL+"/admin/api/v1/grants/public-embeddings", nil)
+	remove.Header.Set("Authorization", "Bearer root-token")
+	remove.Header.Set("If-Match", deleteETag)
+	deleted, err := http.DefaultClient.Do(remove)
+	if err != nil || deleted.StatusCode != http.StatusOK {
+		t.Fatalf("grant delete status=%s err=%v", statusText(deleted), err)
+	}
+	_ = deleted.Body.Close()
 }
 
 func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.Server, *fakeAdminOIDC) {
@@ -280,7 +303,8 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	cfg.Authentication.APIKeys = []APIKeyConfig{{Name: "consumer", Token: "consumer-secret", Subject: "consumer-subject", Username: "consumer"}}
 	cfg.Services.Embeddings.Upstream.APIKey = "embedding-secret"
 	cfg.Services.Rerank.Upstream.APIKey = "rerank-secret"
-	cfg.Administration = AdministrationConfig{Enabled: true, DatabasePath: t.TempDir() + "/broker.db", SuperadminSubject: "root-subject", SessionTTL: time.Hour,
+	cfg.Database.DSN = t.TempDir() + "/broker.db"
+	cfg.Administration = AdministrationConfig{Enabled: true, SuperadminSubject: "root-subject", SessionTTL: time.Hour,
 		OIDC: AdminOIDCConfig{Issuer: "https://identity.example", ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/admin/auth/callback", Scopes: []string{"openid", "profile", "email"}}}
 	provider := &fakeAdminOIDC{identities: map[string]AdminIdentity{
 		"root-token":  {Subject: "root-subject", Name: "Root", Email: "root@example.test"},

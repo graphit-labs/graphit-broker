@@ -2,99 +2,73 @@
 
 ## Trust boundaries
 
-The CLI is untrusted for authorization decisions. It may request a project and operation, but the
-broker derives identity from a cryptographically verified bearer token and evaluates server-side
-ACLs before signing exactly one storage operation. AI API keys and S3 route credentials never
-leave the server.
+The client is not trusted with identity attributes, authorization decisions, upstream AI keys, or
+storage topology. The broker accepts only a bearer credential or an anonymous request, derives the
+principal itself, reads current SQL grants, and performs the requested capability only after a
+match.
 
-Authentication and authorization failures are deliberately different: invalid credentials return
-401; an authenticated or anonymous principal without a grant receives 403. An absent header is
-anonymous, while an invalid present header never falls back to anonymous. Public error bodies never include
-upstream response bodies, tokens, policies or credentials. Detailed failures remain in server logs
-under a request ID.
+Graphit never receives S3 access/secret keys. The broker returns one opaque pre-signed HTTP request
+for one operation, key/prefix, condition, and short expiry. Bucket, region, endpoint, base prefix,
+route credentials, and signing implementation remain private.
 
-## OIDC
+## Authentication
 
-- HTTPS issuer discovery and JWKS are mandatory.
-- Signature, issuer, audience, expiration and configured scopes are verified.
-- ACL claims come only from the verified JWT.
-- Keep access-token lifetimes short and rotate signing keys through normal JWKS procedures.
-- Restrict refresh-token issuance and revocation in the IdP; the broker never receives a refresh
-  token.
+OIDC access tokens are checked for signature, issuer, audience, expiry, and required scopes.
+Username, organization, and teams come only from verified claim paths; canonical identity is
+`iss|sub`. Invalid credentials return `401` and are not treated as anonymous.
 
-## API keys
+Configured API keys are constant-time compared against a stored SHA-256 digest. Use them only for
+service/local identities. Anonymous access requires an explicit `anonymous` grant.
 
-Use long random values and store only `token_sha256`. Comparison is constant-time. An API key maps
-to a fixed normalized principal and then passes through the same ACL engine as OIDC. Rotate by
-adding the replacement, rolling clients, then removing the old entry.
+For HTTP MCP, Graphit first validates the end-user token for its MCP audience and preserves that
+bearer in request context. The broker validates it again. When Graphit uses RFC 8693 exchange, the
+broker receives a short-lived broker-audience token instead. Exchange failure has no relay
+fallback.
 
-## ACL semantics
+## Authorization
 
-There are no implicit grants. Each rule has one canonical access level and, for user/team/
-organization/subject, one exact verified principal. Project/capability patterns within the rule are
-additional constraints. Broad wildcards are powerful; prefer a narrowly scoped access principal and
-project/prefix set. Treat claim-mapping changes as security changes and test both positive and
-negative cases.
+Resource grants are normalized SQL state and are re-read for each Hub resolution, S3 pre-sign,
+embedding, and rerank call. No match is deny. Matching S3 rules must agree on one private route.
+Every grant mutation and revision increment is atomic.
 
-For S3, the broker resolves the ACL-selected route, verifies the logical project, operation and
-prefix, prepends the private route `base_prefix`, and signs only that method and object/list prefix.
-The route key's object-store policy is the independent upper bound. Because there is no per-user
-credential exchange, make every route key least-privilege for its bucket/base prefix and use
-separate routes and keys for distinct tenant or security boundaries.
+Administrative roles protect control-plane actions and never imply resource access. Cookie
+sessions require CSRF on state changes. The deployment superadmin is an explicit emergency
+bootstrap subject.
 
-The access levels mirror Graphit Hub visibility: global reaches everyone; anonymous only the
-unauthenticated principal; authenticated every verified principal; user/team/organization/subject
-use exact verified identity values. Anonymous is deny-by-default and should normally receive only
-read operations on deliberately public prefixes.
+When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source. There is no
+`projects.json` read, synchronization, or fallback. A provider without that protocol uses
+`projects.json` outside this broker.
 
-In pre-signed mode the broker re-evaluates current ACL for every operation and signs only that
-method/key/prefix. Revocation therefore blocks issuance immediately, although an already-issued URL
-remains usable until its short expiry. Treat signed URLs as secrets: redact query strings in proxy,
-application and tracing logs, never store them, and keep expiry as short as practical.
+## Data at rest
 
-An ACL rule may choose one named storage route. The route contains bucket, region, endpoint, base
-prefix and direct signing credential. Multiple matching rules that choose different routes are rejected rather
-than selecting nondeterministically. Route changes are invisible to clients and take effect on the
-next presign request.
+The SQL database contains sensitive configuration, upstream/API/S3 secrets, identities, roles,
+grants, OIDC flow state, and live sessions. Encrypt storage/backups and restrict database/network
+access. SQLite parent/file modes are `0700`/`0600`; PostgreSQL/MySQL access must be protected by
+database roles and TLS/network policy.
 
-## Administration plane
+Configuration API responses replace secrets with `[configured-secret]`. Logs and public errors
+do not include bearer tokens, request bodies, upstream response bodies, signed URLs, or secrets.
+AI cache entries are bounded, in memory, and scoped by route/revision/principal; signed URLs are
+never cached by the broker.
 
-Administration uses a separate OIDC Authorization Code client. Login state and nonce are one-time
-and expiring; PKCE S256 is used even with a confidential client secret. ID tokens are checked for
-signature, exact issuer, administration client audience and expiration. The browser session is an
-opaque random value stored only as a SHA-256 hash in SQLite and delivered as `HttpOnly`,
-`SameSite=Lax`, and (under HTTPS) `Secure`. Cookie-backed mutations also require a per-session CSRF
-token. Logout deletes the server-side session.
+## Deployment hardening
 
-Authorization is action-based RBAC. The environment-defined exact superadmin subject always has all
-administration actions; unassigned subjects have none. With no role assignments, this leaves only
-the superadmin. The built-in `admin` role grants every current action, and narrower roles can be
-created without weakening authentication. Protect `roles.write` carefully because it delegates
-administrative authority.
+- terminate TLS at the broker or a trusted reverse proxy;
+- allow only the required ingress paths and database/upstream egress;
+- run as a non-root user with a read-only root filesystem;
+- mount only the configuration and SQLite volume required;
+- inject secrets from a secret manager;
+- use short pre-sign expiries and least-privilege S3 credentials per route;
+- use exact project grants instead of `*` wherever possible;
+- rotate OIDC/admin/upstream/S3 credentials and invalidate affected sessions;
+- alert on repeated 401/403, exchange failures, database errors, and presign failures.
 
-SQLite uses a `0700` parent and `0600` database. It contains the mutable full configuration,
-including actual AI/S3/API-key/OIDC client secrets, plus roles, assignments and sessions. Read APIs
-replace populated secrets with `[configured-secret]`, but a filesystem reader can recover them;
-encrypt and access-control the volume and backups accordingly. Configuration saves validate and
-prepare a complete new runtime before compare-and-swap persistence and atomic activation.
+## Threat outcomes
 
-Protect `/admin/` with HTTPS and preferably an additional network boundary. Use a dedicated
-administration OIDC client, short sessions, IdP MFA/conditional access, exact subject assignments,
-and regular role review. Never reuse a consumer API key as an administration credential.
-
-## AI and cache isolation
-
-Cache keys include canonical subject, organization, route revision and normalized request. A cache
-entry cannot be reused across principals or organizations. Caches are bounded and in memory; a
-restart drops them. The user-supplied `model` field is ignored, preventing model and cost bypass.
-
-## Deployment controls
-
-- Terminate TLS at the broker or a trusted reverse proxy; never expose plain HTTP over an
-  untrusted network.
-- Keep configuration and environment readable only by the service account.
-- Run the supplied non-root, read-only container with dropped capabilities.
-- Restrict broker egress to OIDC discovery/JWKS, configured AI upstreams, object storage and required DNS.
-- Do not log authorization headers or JSON response bodies.
-- Put request-rate and body-size limits at the edge as well as in the process.
-- Use separate route keys/buckets and broker instances when stronger tenant isolation is required.
+- forged claims: rejected because claims are read only after JWT verification;
+- stolen token: bounded by token expiry, audience, scope, and current grants;
+- stale admin write: rejected by ETag compare-and-swap;
+- ACL race: the revision changes transactionally and in-flight mismatch fails closed;
+- compromised Graphit client: cannot obtain direct S3 or upstream provider credentials;
+- broker database outage: consumer authorization fails closed;
+- name-glob ambiguity before metadata: avoided by broker grants accepting exact project IDs or all.

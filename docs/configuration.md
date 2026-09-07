@@ -1,148 +1,97 @@
 # Configuration reference
 
-The broker reads one strict YAML document. Unknown fields are rejected. Set its path with
-`--config` or `GRAPHIT_BROKER_CONFIG`; the default is
-`/etc/graphit-auth-broker/config.yaml`. `${NAME}` expands an environment variable and
-`${NAME:?message}` makes it mandatory. Run `graphit-auth-broker --config FILE --check-config`
-before rollout.
+The broker reads strict YAML: unknown fields are errors. Environment expressions are expanded
+before decoding:
 
-When administration is enabled, that document seeds a newly created SQLite database. Afterwards,
-the database configuration is authoritative and can be edited through the UI/API. The deployment
-still controls the database path, whether admin routes exist, and the effective superadmin subject.
-This prevents a database edit or restore from redirecting the state path or replacing emergency
-ownership.
+- `${NAME}` — empty when unset;
+- `${NAME:-default}` — use a default;
+- `${NAME:?message}` — fail startup with the supplied message.
 
-SQLite is the only mutable persistence. There is no import of an earlier policy file, compatibility
-decoder, schema migration, or precedence merge with changed seed YAML. During development, an
-incompatible schema change requires a deliberately new/empty database volume.
+Run `graphit-broker --config config.yaml --check-config` to validate without serving.
 
-## Server
+The YAML document seeds only an empty database. After initialization, mutable configuration is
+read from SQL and edited through `/admin/` or `/admin/api/v1/config`. Database selection,
+administration enabled state, and the effective superadmin subject remain deployment-owned.
+Resource grants are never configured in YAML.
+
+## Database
 
 | Field | Default | Meaning |
 |---|---:|---|
-| `server.address` | `:8080` | Go listen address. The supplied container healthcheck expects port 8080. |
-| `server.public_url` | empty | External HTTPS URL published by discovery. |
-| `read_timeout` | `15s` | Whole-request read deadline. |
-| `write_timeout` | `60s` | Response write deadline; keep above AI upstream timeout. |
-| `idle_timeout` | `120s` | Keep-alive idle deadline. |
-| `shutdown_timeout` | `15s` | Graceful shutdown window. |
-| `max_request_bytes` | `4194304` | Maximum JSON request body. |
+| `driver` | `sqlite` | `sqlite`, `postgres`, or `mysql` |
+| `dsn` | SQLite file below | Driver-specific connection string |
+| `max_open_conns` | SQLite 1; remote 20 | Maximum pool connections |
+| `max_idle_conns` | SQLite 1; remote 10 | Idle pool connections |
+| `conn_max_lifetime` | `3m` | Maximum connection lifetime |
 
-`public_url` and every OIDC issuer must use HTTPS. HTTP is accepted only for AI upstreams and S3
-endpoints, allowing private/local services.
+Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides are
+`BROKER_DATABASE_DRIVER` and `BROKER_DATABASE_DSN`. See [database backends](database.md).
 
-## Authentication
+## Server
 
-OIDC issuers and API keys are optional when the deployment serves only explicitly anonymous
-grants. A missing `Authorization` header creates the built-in anonymous principal. A header that
-is present but malformed or invalid always returns 401 and is never downgraded to anonymous.
+| Field | Default |
+|---|---:|
+| `address` | `:8080` |
+| `public_url` | empty |
+| `read_timeout` | `15s` |
+| `write_timeout` | `60s` |
+| `idle_timeout` | `120s` |
+| `shutdown_timeout` | `15s` |
+| `max_request_bytes` | 4 MiB |
 
-```yaml
-authentication:
-  oidc:
-    - issuer: https://id.example.com/realms/acme
-      audiences: [graphit-broker]
-      required_scopes: [openid, graphit.use]
-      username_claim: preferred_username
-      organization_claim: organization.id
-      teams_claim: groups
-  api_keys:
-    - name: automation
-      token_sha256: ${AUTOMATION_KEY_SHA256:?required}
-      subject: automation
-      username: ci
-      organization: acme
-      teams: [platform]
-```
+`public_url` must be HTTPS when set. Put the broker behind a TLS reverse proxy in production.
 
-OIDC fields:
+## Consumer authentication
 
-- `issuer`: exact `iss` value and discovery base URL. Trailing-slash differences matter.
-- `audiences`: at least one must occur in the token's `aud` claim.
-- `required_scopes`: every value must occur in `scope` (space-delimited) or `scp` (string/array).
-- `username_claim`: required claim path used by ACL `users`.
-- `organization_claim`, `teams_claim`: optional dotted paths. Teams may be a string or array.
+`authentication.oidc` is a list of trusted issuers:
 
-Claim paths traverse nested JSON objects (`organization.id`). They are configuration, not code;
-the same binary therefore supports several IdPs and tenant claim layouts simultaneously.
+| Field | Required | Meaning |
+|---|---|---|
+| `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
+| `audiences` | yes | At least one accepted broker audience |
+| `required_scopes` | no | Every listed scope must be present |
+| `username_claim` | yes | Verified string claim path |
+| `organization_claim` | no | Verified string claim path |
+| `teams_claim` | no | Verified string/string-array claim path |
 
-API keys are for local/service profiles. Configure exactly one of `token` or `token_sha256`.
-`token_sha256` is recommended:
+Nested claim paths use dots, for example `organization.id`. The canonical identity remains the
+verified `iss` plus `sub`.
 
-```bash
-printf '%s' 'a-long-random-value' | sha256sum
-```
+`authentication.api_keys` supports service/local identities. Each item has `name`, exactly one
+of `token` or 64-character `token_sha256`, `subject`, `username`, optional
+`organization`, and optional `teams`. Prefer the digest form. These keys are bearer
+credentials and receive only grants matching their configured identity.
+
+Consumer endpoints do not require OIDC when API keys are sufficient for the deployment. A broker
+may configure only API-key identities, only OIDC issuers, or both. An API-key client sends the
+original token as `Authorization: Bearer <token>`; `token_sha256` is the digest stored in
+configuration. The broker has no built-in username/password identity store. Omitting the
+`Authorization` header creates an anonymous principal rather than an authenticated identity, and
+that principal can do work only when an explicit `anonymous` resource grant matches.
 
 ## Administration
 
 ```yaml
 administration:
   enabled: true
-  database_path: /var/lib/graphit-auth-broker/broker.db
-  superadmin_subject: ${BROKER_SUPERADMIN_SUBJECT:?required}
+  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?required}"
   session_ttl: 8h
   oidc:
-    issuer: ${BROKER_ADMIN_OIDC_ISSUER:?required}
-    client_id: ${BROKER_ADMIN_OIDC_CLIENT_ID:?required}
-    client_secret: ${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}
-    redirect_url: ${BROKER_ADMIN_OIDC_REDIRECT_URL:?required}
+    issuer: https://identity.example.com
+    client_id: graphit-broker-admin
+    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
+    redirect_url: https://broker.example.com/admin/auth/callback
     scopes: [openid, profile, email]
 ```
 
-| Field | Default | Meaning |
-|---|---:|---|
-| `enabled` | `false` | Mount the administration routes and initialize the control plane. |
-| `database_path` | `/var/lib/graphit-auth-broker/broker.db` | SQLite file on a writable persistent volume. |
-| `superadmin_subject` | none | Exact immutable OIDC `sub`; `BROKER_SUPERADMIN_SUBJECT` overrides it. |
-| `session_ttl` | `8h` | Server-side browser session lifetime, from `5m` through `168h`. |
-| `oidc.issuer` | none | HTTPS discovery issuer for administrator identities. |
-| `oidc.client_id` | none | Administration application's client/audience ID. |
-| `oidc.client_secret` | empty | Confidential-client secret; optional only when the IdP permits a public client. |
-| `oidc.redirect_url` | none | Exact absolute callback URL ending in `/admin/auth/callback`. |
-| `oidc.scopes` | `openid profile email` | Authorization request scopes; `openid` is always included. |
+Administration uses a separate confidential OIDC client. The callback may use HTTP only on a
+loopback host. Session TTL must be between 5 minutes and 168 hours. The environment value
+`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start.
 
-The administration OIDC client is independent of consumer authentication. Its ID tokens do not
-automatically grant consumer ACL access, and consumer tokens do not grant administrative actions.
-The database stores mutable configuration, actual secret values, roles, assignments, login flows
-and sessions, so protect and back it up as secret material. Disable this section to remove every
-`/admin` route. See [Administration](administration.md) for role and bootstrap semantics.
-
-## Authorization
-
-The default is deny. New rules use one framework access level: `global`, `anonymous`,
-`authenticated`, `user`, `team`, `organization`, or `subject`. The `principal` value is required
-for the last four and forbidden for the first three. `*`, `?` and character classes are supported
-for project and capability patterns; principal matching is exact.
-
-```yaml
-authorization:
-  rules:
-    - name: authenticated AI
-      access: authenticated
-      capabilities: [embeddings, rerank]
-    - name: project storage
-      access: organization
-      principal: acme
-      capabilities: [s3]
-      projects: [customer-*]
-      s3_operations: [read, write, publish]
-      s3_route: customer-data
-      s3_prefixes:
-        - v2/projects/{project}
-```
-
-There is no legacy selector-array form: every rule must use exactly one canonical `access` level
-and its corresponding `principal` when required. Capabilities are `embeddings`, `rerank`, `s3`, or
-operation-specific values such as `s3:read`. S3 rules may also
-restrict `projects`, `s3_operations`, `s3_route`, and `s3_prefixes`. Prefixes are logical Graphit
-keys, not physical bucket paths. Prefix placeholders are `{project}`,
-`{username}`, `{organization}`, and `{subject}`. Every substituted value must be one safe path
-segment. An empty rule set grants nothing.
-
-Graphit uses an immutable project ULID for project objects and the literal project value
-`global` for Hub control-plane lookups. Add an explicit read-only `global` rule for the logical
-registry and grant-document prefixes the principal may discover. This does not reveal or grant a
-bucket: the selected route maps each already-authorized logical key to private storage topology.
+Consumer API keys are not an alternative administration login mechanism. When administration is
+enabled, the administration UI and API require the configured administration OIDC provider; there
+is no local username/password administration login. A self-hosted issuer such as Keycloak or Dex
+can provide OIDC for an otherwise local deployment.
 
 ## Embeddings
 
@@ -151,7 +100,7 @@ services:
   embeddings:
     enabled: true
     route: graphit-default
-    revision: embedding-route-2026-09-07.1
+    revision: embedding-space-2026-09-07.1
     dimensions: 1536
     max_batch: 256
     max_input_bytes: 1048576
@@ -159,7 +108,7 @@ services:
       protocol: openai-embeddings-v1
       url: https://api.openai.com/v1/embeddings
       model: text-embedding-3-small
-      api_key: ${OPENAI_API_KEY:?required}
+      api_key: "${OPENAI_API_KEY:?required}"
       api_key_header: Authorization
       api_key_scheme: Bearer
       send_dimensions: false
@@ -169,10 +118,9 @@ services:
       max_entries: 10000
 ```
 
-The upstream model is required but never advertised. `route` is the stable public name.
-`revision` identifies the effective vector space; change it whenever model, weights, normalization,
-dimensions or other output-affecting behavior changes. `dimensions` is enforced against every
-returned vector. `send_dimensions` adds the configured width to compatible upstream requests.
+The broker always selects the upstream model; a client-supplied model is ignored. Change
+`revision` whenever the effective vector space changes. The response revision and dimensions
+are part of Graphit's index-compatibility fingerprint.
 
 ## Rerank
 
@@ -188,17 +136,20 @@ services:
       protocol: cohere-v2
       url: https://api.cohere.com/v2/rerank
       model: rerank-v4.0-fast
-      api_key: ${COHERE_API_KEY:?required}
+      api_key: "${COHERE_API_KEY:?required}"
+      api_key_header: Authorization
+      api_key_scheme: Bearer
       timeout: 45s
     cache:
       ttl: 5m
       max_entries: 10000
 ```
 
-Supported upstream adapters are `cohere-v2`, `jina-v1`, `voyage-v1`, and
-`graphit-rerank-v1`. The external client always sees Graphit rerank v1 and cannot choose the model.
+Supported rerank adapters are the protocols implemented by the broker, including the Graphit
+common response contract and configured vendor adapters. Unlike embeddings, OpenAI has no rerank
+API contract; do not label arbitrary rerank endpoints OpenAI-compatible.
 
-## S3 signing
+## S3 pre-signing
 
 ```yaml
 services:
@@ -207,38 +158,44 @@ services:
     default_route: primary
     presign_expiry: 5m
     max_presign_expiry: 15m
-    authorization_revision: acl-2026-09-07.1
     routes:
       primary:
         region: us-east-1
         endpoint: ""
         bucket: graphit-artifacts
         base_prefix: graphit
-        access_key_id: ${PRIMARY_S3_ACCESS_KEY_ID:?required}
-        secret_access_key: ${PRIMARY_S3_SECRET_ACCESS_KEY:?required}
-      eu:
-        region: eu-west-1
-        endpoint: https://objects.eu.example.com
-        bucket: graphit-eu
-        base_prefix: tenants/eu
-        access_key_id: ${EU_S3_ACCESS_KEY_ID:?required}
-        secret_access_key: ${EU_S3_SECRET_ACCESS_KEY:?required}
+        access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID:?required}"
+        secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY:?required}"
+      public:
+        region: us-east-1
+        endpoint: "https://minio.example.com"
+        bucket: graphit-public
+        base_prefix: catalog
+        access_key_id: "${PUBLIC_S3_ACCESS_KEY_ID:?required}"
+        secret_access_key: "${PUBLIC_S3_SECRET_ACCESS_KEY:?required}"
 ```
 
-`routes` is the broker-private dynamic topology table. Each ACL rule may set `s3_route`; otherwise
-`default_route` is used. If matching rules select different routes, the request fails closed as
-ambiguous. Every route contains its own `bucket`, `region`, optional compatible `endpoint`,
-`base_prefix`, `access_key_id`, and `secret_access_key`. These values are never copied into a
-Graphit provider or returned by discovery. Put credentials in environment-expanded secrets, never
-in version control. Changing a route needs no client provider update or new login. There is no
-credential exchange or temporary credential contract: the broker signs the requested operation
-directly with the selected route credential. If `authorization_revision` is omitted,
-a short hash of ACL configuration is generated.
+Every enabled route requires region, bucket, access key, and secret. `endpoint` may select an
+S3-compatible service and `base_prefix` namespaces all physical keys. Neither value is returned
+to Graphit. The authorization revision is generated from the grant database; it is not a service
+configuration field.
 
-When S3 is enabled, presigning is the only public storage contract. Graphit requests one URL for
-one GET, HEAD, PUT, DELETE or ListObjectsV2 operation. `presign_expiry` is the default lifetime and `max_presign_expiry` is the hard client
-override ceiling (maximum one hour). The broker performs current ACL evaluation on every request
-and returns only the signed HTTP request—not the credentials. Anonymous and authenticated grants
-use the same signing path after ACL authorization. Keep `base_prefix` only inside a route. Explicit `s3_prefixes` are
-evaluated against the caller's logical key; the selected route's base prefix is prepended only
-after authorization and only inside the broker.
+An S3 route is a named, broker-private storage profile: endpoint, region, bucket, base prefix, and
+the credential used to sign requests. Route names have no built-in semantics. In particular, a
+route named `public` does not make its bucket, objects, credentials, or broker endpoint public.
+`PUBLIC_S3_ACCESS_KEY_ID` and `PUBLIC_S3_SECRET_ACCESS_KEY` above are merely environment-variable
+names referenced by the example route; both values remain private to the broker. Public read
+access still requires an explicit `anonymous` grant (or an independently public bucket policy).
+The route can be removed when the deployment needs only one storage destination.
+
+Clients never submit an S3 route. A matching resource grant selects `s3_route`; an omitted value
+uses `default_route`. The broker then verifies that the requested logical key is inside one of the
+grant's rendered `s3_prefixes` before signing the request. See [resource
+authorization](authorization.md#how-s3-grants-select-a-route) for the exact matching rules and
+multi-route examples.
+
+Grant route names are validated when a grant is created or updated. Removing a route that an
+existing grant uses makes that grant unusable until corrected; plan route changes together with
+grant changes.
+
+See the complete [config.example.yaml](../config.example.yaml).

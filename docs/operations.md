@@ -2,71 +2,60 @@
 
 ## Observability
 
-The broker writes structured JSON logs to stdout. Every request gets an `X-Request-ID`; the same ID
-appears in logs and safe error bodies. Record latency, status and path at the edge. Alert on repeated
-401/403, 502, readiness failure, S3 rejection and cache-miss spikes.
+`/healthz` reports process liveness and `/readyz` reports readiness. Every request receives an
+`X-Request-ID`; provide one for cross-service tracing. AI responses expose cache hit/miss and
+effective revision. Discovery, Hub resolution, and S3 responses expose the current authorization
+revision.
 
-`X-Graphit-Cache: HIT|MISS` is returned for AI requests. Caches are bounded by `max_entries`, expire
-after `ttl`, and are per process. They are an optimization only; no correctness depends on them.
+Monitor latency/error rates separately for OIDC discovery/JWKS, SQL, token exchange, Hub resolve,
+S3 pre-sign, object storage, embeddings, and rerank. Never log bearer tokens, signed URLs, bodies,
+or upstream secrets.
 
 ## Common failures
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| 401 | token was supplied but is malformed/expired or issuer, signature, audience or scope mismatches | IdP discovery reachability and JWT claims |
-| 403 without a token | no explicit anonymous grant matches | `access: anonymous`, project, operation and full prefix |
-| 403 | valid principal but no matching ACL | normalized username/org/teams and conjunctive selectors |
-| 404 `capability_disabled` | service disabled | discovery and `services.*.enabled` |
-| 400 from S3 presign | invalid project/operation/key binding | safe project segment, supported operation, and matching `v2/projects/<project>/...` key |
-| 502 AI | upstream timeout/error/invalid response | broker logs by request ID; upstream credentials/model/dimensions |
-| S3 rejects a signed request | wrong route credential/topology, expired URL, object-store policy, or clock skew | route endpoint/region/bucket, key permissions, broker clock and request ID |
-| 409 saving UI policy | another admin changed the revision | reload, reconcile, save with the new ETag |
-| 401 on admin callback | state/nonce/code expired, callback mismatch, client authentication failed, or ID token verification failed | administration IdP registration, broker clock, issuer/client ID/secret and exact callback |
-| 403 in administration | valid OIDC identity lacks the endpoint action | exact `sub`, `BROKER_SUPERADMIN_SUBJECT`, role definitions and assignments |
-| Admin settings revert unexpectedly | a different/empty SQLite volume was mounted | `administration.database_path`, volume identity and startup logs |
-| Graphit asks for reindex | embedding route revision/width changed | expected rollout; rebuild vectors |
-| Docker unhealthy | listen port differs from 8080 | override healthcheck or keep `server.address: :8080` |
+| startup rejects schema | database belongs to another development build | restore matching backup or recreate; no migration exists |
+| startup cannot connect | driver/DSN/TLS/network/credentials | `BROKER_DATABASE_*`, database policy, CA |
+| every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
+| valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
+| admin gets 403 | wrong superadmin `sub` or no role | deployment subject and assignments |
+| admin write gets 409 | another admin changed the revision | reload and reapply |
+| Hub outage does not use projects.json | expected secure behavior | selected broker is sole authority |
+| pre-sign gets 403 | missing S3 capability/operation/project/prefix | grant and route |
+| pre-sign gets 400 | unsafe key/project mismatch or ambiguous routes | logical key and matching grants |
+| token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
+| embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |
+
+## Backup
+
+Back up the authoritative SQL database and separately retain deployment configuration and secret
+manager definitions. The database contains secrets and sessions; encrypt and restrict backups.
+
+- SQLite: stop the writer or use an online SQLite backup that captures WAL consistently.
+- PostgreSQL/MySQL: use the platform's transactionally consistent backup tooling and verify restore.
+
+Restore into the exact schema-compatible broker build. Start one replica, verify admin and consumer
+flows, then scale.
 
 ## Rotation
 
-- AI keys: use the complete configuration UI/API to replace the redacted placeholder; the new
-  runtime is active after the atomic save.
-- Local broker keys: add the replacement key/hash in the UI, update profiles, then remove the old
-  entry in a second revision.
-- OIDC signing keys: let the IdP publish overlapping JWKS during rotation.
-- Administration OIDC secret: rotate it at the IdP and save the replacement in the full configuration
-  editor during the provider's overlap window. Existing broker sessions remain valid until logout or
-  `session_ttl`; new logins use the new secret.
-- S3 route keys: save the replacement access key/secret, verify newly signed operations, then revoke
-  the old key. Clients and Graphit providers do not change.
-- ACL: UI saves increment the persistent configuration revision automatically. New pre-signs use it;
-  already issued URLs expire naturally.
+- OIDC signing keys follow issuer JWKS rotation.
+- Consumer/API/admin client changes should be updated in configuration and tested before removing
+  old IdP values.
+- S3 route keys can be rotated by updating the route; already issued URLs remain valid until their
+  short expiry.
+- AI API keys can be replaced through redacted configuration.
+- Service API keys in `authentication.api_keys` should prefer digest storage and coordinated
+  caller rotation.
+- Grant revocation is immediate on the next request and increments the revision.
 
-## Backup and scaling
+## Incident response
 
-When administration is enabled, back up `administration.database_path` and deployment definitions.
-SQLite contains configuration secrets, roles, assignments and live sessions, so encrypt backups,
-limit readers and apply the same retention policy as other credential stores.
+For a leaked end-user token, revoke/expire it at the IdP and remove affected grants if necessary.
+For a leaked S3 or AI key, rotate it at the upstream and update broker configuration. For database
+exposure, treat every stored secret and live admin session as compromised: rotate secrets, restore
+trusted grants/roles, and restart sessions.
 
-Two safe backup procedures are supported operationally:
-
-1. **Offline:** gracefully stop the broker, then copy `broker.db` and any adjacent `broker.db-wal`
-   and `broker.db-shm` files as one unit. Restore only while the broker is stopped and preserve
-   ownership/mode (`65532:65532`, directory `0700`, files `0600`).
-2. **Online:** use a trusted maintenance container/tool with SQLite's online backup command against
-   the mounted database, for example `sqlite3 /state/broker.db ".backup '/backup/broker.db'"`.
-   Do not use a plain file copy while writes may be active.
-
-After restore, start one broker instance, sign in as the environment-defined superadmin, verify the
-reported configuration revision/role assignments, exercise negative ACL cases, and rotate secrets
-if the backup crossed a trust boundary.
-
-SQLite is a single-node control-plane database. Run one writable broker process per database on a
-local block-backed volume. Do not share it across concurrent replicas using NFS. Let the platform
-restart that instance for availability. Caches remain process-local and are intentionally absent
-from the database.
-
-The current development contract has no schema migration or legacy state import. If a development
-build introduces an incompatible schema, export any settings you still need through the redacted
-administration API, stop the broker, and start the new build with a deliberate empty volume; do not
-expect automatic conversion.
+If SQL is unavailable, the broker fails authorization closed. Do not introduce a cached-grant or
+`projects.json` fallback during recovery. Restore the selected authority instead.

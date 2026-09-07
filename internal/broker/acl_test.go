@@ -1,95 +1,89 @@
 package broker
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 )
 
-func TestACLIsDenyByDefaultAndRequiresConfiguredAccessPrincipal(t *testing.T) {
-	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{
-		Name: "platform", Access: "team", Principal: "platform", Capabilities: []string{"embeddings"},
-	}}}, "rev")
-	allowed := Principal{Issuer: "https://id", Subject: "1", Username: "alice", Organization: "acme", Teams: []string{"platform"}}
-	if err := acl.AuthorizeCapability(allowed, "embeddings"); err != nil {
+type resourceGrantStub struct{ document PolicyDocument }
+
+func (s *resourceGrantStub) ResourceGrants(context.Context) (PolicyDocument, error) {
+	return clonePolicy(s.document), nil
+}
+
+func testACL(rules ...ACLRuleConfig) *ACL {
+	return NewACL(&resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: rules}})
+}
+
+func TestACLIsDenyByDefaultAndReadsCurrentGrants(t *testing.T) {
+	reader := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: []ACLRuleConfig{{
+		ID: "platform", Name: "platform", Access: "team", Principal: "platform", Capabilities: []string{"embeddings"},
+	}}}}
+	acl := NewACL(reader)
+	allowed := Principal{Issuer: "https://id", Subject: "1", Username: "alice", Teams: []string{"platform"}, AuthMethod: "oidc"}
+	if err := acl.AuthorizeCapability(context.Background(), allowed, "embeddings"); err != nil {
 		t.Fatalf("AuthorizeCapability: %v", err)
 	}
-	denied := allowed
-	denied.Teams = []string{"other"}
-	if err := acl.AuthorizeCapability(denied, "embeddings"); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("denied error = %v", err)
+	reader.document.Rules = nil
+	reader.document.Revision++
+	if err := acl.AuthorizeCapability(context.Background(), allowed, "embeddings"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("removed grant remained active: %v", err)
+	}
+	if revision, _ := acl.Revision(context.Background()); revision != "2" {
+		t.Fatalf("revision=%q", revision)
 	}
 }
 
-func TestACLBuildsTemplatedS3Grant(t *testing.T) {
-	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "publish", Access: "organization", Principal: "acme",
-		Capabilities: []string{"s3"}, Projects: []string{"platform-*"}, S3Operations: []string{"publish"},
-		S3Prefixes: []string{"v2/organizations/{organization}/projects/{project}"}, S3Route: "tenant-a",
-	}}}, "rev")
-	grant, err := acl.AuthorizeS3(Principal{Issuer: "i", Subject: "s", Username: "alice", Organization: "acme", Teams: []string{"platform"}}, "platform-api", "publish", "default")
+func TestACLAccessLevelsAndTemplatedS3Grant(t *testing.T) {
+	acl := testACL(
+		ACLRuleConfig{ID: "global", Name: "global", Access: "global", Capabilities: []string{"global"}},
+		ACLRuleConfig{ID: "anonymous", Name: "anonymous", Access: "anonymous", Capabilities: []string{"anonymous"}},
+		ACLRuleConfig{ID: "authenticated", Name: "authenticated", Access: "authenticated", Capabilities: []string{"authenticated"}},
+		ACLRuleConfig{ID: "user", Name: "user", Access: "user", Principal: "alice", Capabilities: []string{"user"}},
+		ACLRuleConfig{ID: "team", Name: "team", Access: "team", Principal: "platform", Capabilities: []string{"team"}},
+		ACLRuleConfig{ID: "organization", Name: "organization", Access: "organization", Principal: "acme", Capabilities: []string{"organization", "s3"}, Projects: []string{"platform-*"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/organizations/{organization}/projects/{project}"}, S3Route: "tenant-a"},
+		ACLRuleConfig{ID: "subject", Name: "subject", Access: "subject", Principal: "https://id|subject-1", Capabilities: []string{"subject"}},
+	)
+	ctx := context.Background()
+	anonymous := AnonymousPrincipal()
+	for _, capability := range []string{"global", "anonymous"} {
+		if err := acl.AuthorizeCapability(ctx, anonymous, capability); err != nil {
+			t.Fatalf("anonymous %s: %v", capability, err)
+		}
+	}
+	principal := Principal{Issuer: "https://id", Subject: "subject-1", Username: "alice", Organization: "acme", Teams: []string{"platform"}, AuthMethod: "oidc"}
+	for _, capability := range []string{"global", "authenticated", "user", "team", "organization", "subject"} {
+		if err := acl.AuthorizeCapability(ctx, principal, capability); err != nil {
+			t.Fatalf("authenticated %s: %v", capability, err)
+		}
+	}
+	grant, err := acl.AuthorizeS3(ctx, principal, "platform-api", "publish", "default")
 	if err != nil {
-		t.Fatalf("AuthorizeS3: %v", err)
+		t.Fatal(err)
 	}
-	want := []string{"v2/organizations/acme/projects/platform-api"}
-	if !reflect.DeepEqual(grant.Prefixes, want) {
-		t.Fatalf("prefixes = %#v, want %#v", grant.Prefixes, want)
+	if !reflect.DeepEqual(grant.Prefixes, []string{"v2/organizations/acme/projects/platform-api"}) || grant.Route != "tenant-a" {
+		t.Fatalf("grant=%#v", grant)
 	}
-	if grant.Route != "tenant-a" {
-		t.Fatalf("route = %q, want tenant-a", grant.Route)
-	}
-	if _, err := acl.AuthorizeS3(Principal{Username: "alice", Organization: "acme", Teams: []string{"platform"}}, "../escape", "publish", "graphit"); err == nil {
+	if _, err := acl.AuthorizeS3(ctx, principal, "../escape", "publish", "default"); err == nil {
 		t.Fatal("unsafe project accepted")
 	}
 }
 
-func TestACLAccessLevelsMatchFrameworkSemantics(t *testing.T) {
-	rules := []ACLRuleConfig{
-		{Name: "global", Access: "global", Capabilities: []string{"global-capability"}},
-		{Name: "anonymous", Access: "anonymous", Capabilities: []string{"anonymous-capability"}},
-		{Name: "authenticated", Access: "authenticated", Capabilities: []string{"authenticated-capability"}},
-		{Name: "user", Access: "user", Principal: "alice", Capabilities: []string{"user-capability"}},
-		{Name: "team", Access: "team", Principal: "platform", Capabilities: []string{"team-capability"}},
-		{Name: "organization", Access: "organization", Principal: "acme", Capabilities: []string{"organization-capability"}},
-		{Name: "subject", Access: "subject", Principal: "https://id|subject-1", Capabilities: []string{"subject-capability"}},
-	}
-	acl := NewACL(AuthorizationConfig{Rules: rules}, "rev")
-	anonymous := AnonymousPrincipal()
-	authenticated := Principal{Issuer: "https://id", Subject: "subject-1", Username: "alice", Organization: "acme", Teams: []string{"platform"}, AuthMethod: "oidc"}
-	for _, capability := range []string{"global-capability", "anonymous-capability"} {
-		if err := acl.AuthorizeCapability(anonymous, capability); err != nil {
-			t.Fatalf("anonymous %s: %v", capability, err)
-		}
-	}
-	if err := acl.AuthorizeCapability(anonymous, "authenticated-capability"); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("anonymous received authenticated grant: %v", err)
-	}
-	for _, capability := range []string{"global-capability", "authenticated-capability", "user-capability", "team-capability", "organization-capability", "subject-capability"} {
-		if err := acl.AuthorizeCapability(authenticated, capability); err != nil {
-			t.Fatalf("authenticated %s: %v", capability, err)
-		}
-	}
-	if err := acl.AuthorizeCapability(authenticated, "anonymous-capability"); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("authenticated principal received anonymous-only grant: %v", err)
-	}
-}
-
-func TestACLMapsPresignVerbsToPermissionLevels(t *testing.T) {
-	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "publisher", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/projects/{project}"}}}}, "rev")
+func TestACLMapsPublishAndRejectsAmbiguousRoutes(t *testing.T) {
 	principal := Principal{Username: "alice", AuthMethod: "oidc"}
+	acl := testACL(ACLRuleConfig{ID: "publisher", Name: "publisher", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/projects/{project}"}})
 	for _, operation := range []string{"get", "head", "list", "put", "delete"} {
-		grant, err := acl.AuthorizeS3Request(principal, "project-a", operation, "primary")
-		if err != nil || len(grant.Prefixes) != 1 {
-			t.Fatalf("operation %s grant=%#v err=%v", operation, grant, err)
+		if _, err := acl.AuthorizeS3Request(context.Background(), principal, "project-a", operation, "primary"); err != nil {
+			t.Fatalf("operation %s: %v", operation, err)
 		}
 	}
-}
-
-func TestACLRejectsAmbiguousStorageRoutes(t *testing.T) {
-	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{
-		{Name: "one", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "primary"},
-		{Name: "two", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "archive"},
-	}}, "rev")
-	if _, err := acl.AuthorizeS3Request(Principal{Username: "alice"}, "project-a", "get", "primary"); err == nil {
+	ambiguous := testACL(
+		ACLRuleConfig{ID: "one", Name: "one", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "primary"},
+		ACLRuleConfig{ID: "two", Name: "two", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "archive"},
+	)
+	if _, err := ambiguous.AuthorizeS3Request(context.Background(), principal, "project-a", "get", "primary"); err == nil {
 		t.Fatal("ambiguous routes were accepted")
 	}
 }

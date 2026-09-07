@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/graphit-labs/graphit-auth-broker/internal/broker"
+	"github.com/graphit-labs/graphit-broker/internal/broker"
 )
 
 func main() {
-	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), "/etc/graphit-auth-broker/config.yaml"), "configuration YAML file")
+	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), "/etc/graphit-broker/config.yaml"), "configuration YAML file")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
 	flag.Parse()

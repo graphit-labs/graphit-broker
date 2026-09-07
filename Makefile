@@ -1,7 +1,7 @@
 .PHONY: build fmt vet test check docker-build
 
 build:
-	go build ./cmd/graphit-auth-broker
+	go build ./cmd/graphit-broker
 
 fmt:
 	gofmt -w cmd internal
@@ -17,4 +17,4 @@ check:
 	go test ./...
 
 docker-build:
-	docker build -t graphit-auth-broker:dev .
+	docker build -t graphit-broker:dev .

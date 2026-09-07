@@ -1,0 +1,11 @@
+{
+  "project": {
+    "id": "01M1YEAE1WYMWG9KJKV1XQC4T4",
+    "name": "graphit-labs-graphit-broker",
+    "description": "Graphit Broker"
+  },
+  "ides": [
+    "codex"
+  ],
+  "artifacts": {}
+}

@@ -1,19 +1,25 @@
 package broker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 var ErrForbidden = errors.New("access denied")
 
-type ACL struct {
-	policy *PolicyStore
+type ResourceGrantReader interface {
+	ResourceGrants(context.Context) (PolicyDocument, error)
 }
+
+// ACL reads the current database snapshot for every operation, so a committed grant change is
+// effective on the next request without a process-local policy cache.
+type ACL struct{ grants ResourceGrantReader }
 
 type S3Grant struct {
 	Project   string
@@ -22,19 +28,30 @@ type S3Grant struct {
 	Prefixes  []string
 }
 
-func NewACL(cfg AuthorizationConfig, revision string) *ACL {
-	policy, _ := NewPolicyStore(cfg, revision)
-	return &ACL{policy: policy}
+func NewACL(grants ResourceGrantReader) *ACL { return &ACL{grants: grants} }
+
+func (a *ACL) Revision(ctx context.Context) (string, error) {
+	document, err := a.grants.ResourceGrants(ctx)
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatUint(document.Revision, 10), nil
 }
 
-func NewACLWithPolicy(policy *PolicyStore) *ACL { return &ACL{policy: policy} }
+func (a *ACL) rules(ctx context.Context) ([]ACLRuleConfig, error) {
+	document, err := a.grants.ResourceGrants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return document.Rules, nil
+}
 
-func (a *ACL) Revision() string { return a.policy.Revision() }
-
-func (a *ACL) rules() []ACLRuleConfig { return a.policy.Snapshot().Rules }
-
-func (a *ACL) AuthorizeCapability(principal Principal, capability string) error {
-	for _, rule := range a.rules() {
+func (a *ACL) AuthorizeCapability(ctx context.Context, principal Principal, capability string) error {
+	rules, err := a.rules(ctx)
+	if err != nil {
+		return fmt.Errorf("load resource grants: %w", err)
+	}
+	for _, rule := range rules {
 		if matchesPrincipal(rule, principal) && matchesValue(rule.Capabilities, capability) {
 			return nil
 		}
@@ -42,7 +59,22 @@ func (a *ACL) AuthorizeCapability(principal Principal, capability string) error 
 	return ErrForbidden
 }
 
-func (a *ACL) AuthorizeS3(principal Principal, project, operation, defaultRoute string) (S3Grant, error) {
+func (a *ACL) ResolveHubAccess(ctx context.Context, principal Principal) (PolicyDocument, error) {
+	document, err := a.grants.ResourceGrants(ctx)
+	if err != nil {
+		return PolicyDocument{}, fmt.Errorf("load resource grants: %w", err)
+	}
+	filtered := make([]ACLRuleConfig, 0, len(document.Rules))
+	for _, rule := range document.Rules {
+		if matchesPrincipal(rule, principal) && matchesValue(rule.Capabilities, "hub") {
+			filtered = append(filtered, rule)
+		}
+	}
+	document.Rules = filtered
+	return document, nil
+}
+
+func (a *ACL) AuthorizeS3(ctx context.Context, principal Principal, project, operation, defaultRoute string) (S3Grant, error) {
 	project = strings.TrimSpace(project)
 	operation = strings.ToLower(strings.TrimSpace(operation))
 	if !safeSegment(project) {
@@ -51,19 +83,17 @@ func (a *ACL) AuthorizeS3(principal Principal, project, operation, defaultRoute 
 	if operation != "read" && operation != "write" && operation != "publish" && operation != "delete" {
 		return S3Grant{}, errors.New("operation must be read, write, publish, or delete")
 	}
+	rules, err := a.rules(ctx)
+	if err != nil {
+		return S3Grant{}, fmt.Errorf("load resource grants: %w", err)
+	}
 	set := map[string]struct{}{}
 	route := ""
-	for _, rule := range a.rules() {
-		if !matchesPrincipal(rule, principal) {
-			continue
-		}
-		if !matchesValue(rule.Capabilities, "s3") && !matchesValue(rule.Capabilities, "s3:"+operation) {
-			continue
-		}
-		if len(rule.Projects) > 0 && !matchesValue(rule.Projects, project) {
-			continue
-		}
-		if len(rule.S3Operations) > 0 && !matchesValue(rule.S3Operations, operation) {
+	for _, rule := range rules {
+		if !matchesPrincipal(rule, principal) ||
+			(!matchesValue(rule.Capabilities, "s3") && !matchesValue(rule.Capabilities, "s3:"+operation)) ||
+			(len(rule.Projects) > 0 && !matchesValue(rule.Projects, project)) ||
+			(len(rule.S3Operations) > 0 && !matchesValue(rule.S3Operations, operation)) {
 			continue
 		}
 		candidateRoute := strings.TrimSpace(rule.S3Route)
@@ -103,7 +133,7 @@ func (a *ACL) AuthorizeS3(principal Principal, project, operation, defaultRoute 
 	return S3Grant{Project: project, Operation: operation, Route: route, Prefixes: prefixes}, nil
 }
 
-func (a *ACL) AuthorizeS3Request(principal Principal, project, verb, defaultRoute string) (S3Grant, error) {
+func (a *ACL) AuthorizeS3Request(ctx context.Context, principal Principal, project, verb, defaultRoute string) (S3Grant, error) {
 	var operations []string
 	switch strings.ToLower(strings.TrimSpace(verb)) {
 	case "get", "head", "list":
@@ -117,7 +147,7 @@ func (a *ACL) AuthorizeS3Request(principal Principal, project, verb, defaultRout
 	}
 	var last error
 	for _, operation := range operations {
-		grant, err := a.AuthorizeS3(principal, project, operation, defaultRoute)
+		grant, err := a.AuthorizeS3(ctx, principal, project, operation, defaultRoute)
 		if err == nil {
 			return grant, nil
 		}

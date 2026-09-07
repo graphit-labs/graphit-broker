@@ -13,12 +13,6 @@ authentication:
       token: "${TOKEN:?TOKEN is required}"
       subject: service
       username: service
-authorization:
-  rules:
-    - name: allow
-      access: subject
-      principal: service
-      capabilities: [embeddings]
 services:
   embeddings:
     enabled: true
@@ -69,9 +63,11 @@ func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
 
 func TestAdministrationConfigUsesEnvironmentSuperadminAndRejectsRemoteHTTPCallback(t *testing.T) {
 	input := `
+database:
+  driver: sqlite
+  dsn: /tmp/broker.db
 administration:
   enabled: true
-  database_path: /tmp/broker.db
   superadmin_subject: yaml-subject
   session_ttl: 1h
   oidc:
@@ -98,15 +94,8 @@ administration:
 	}
 }
 
-func TestS3RoutesAreBrokerPrivateAndACLSelectable(t *testing.T) {
+func TestS3RoutesAreBrokerPrivateAndDatabaseGrantsSelectThem(t *testing.T) {
 	input := `
-authorization:
-  rules:
-    - name: tenant archive
-      access: authenticated
-      capabilities: [s3]
-      projects: [project-a]
-      s3_route: archive
 services:
   s3:
     enabled: true
@@ -133,20 +122,14 @@ services:
 	if cfg.Services.S3.Routes["primary"].Region != "us-east-1" || cfg.Services.S3.Routes["archive"].Bucket != "archive" {
 		t.Fatalf("routes=%#v", cfg.Services.S3.Routes)
 	}
-	cfg.Authorization.Rules[0].S3Route = "missing"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("ACL accepted an unknown storage route")
+	rule := ACLRuleConfig{ID: "tenant-archive", Name: "tenant archive", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "missing"}
+	if err := validateGrantRoute(rule, cfg.Services.S3); err == nil {
+		t.Fatal("grant accepted an unknown storage route")
 	}
 }
 
 func TestConfigAllowsAnonymousDirectStorageRouteAndRejectsLegacyFields(t *testing.T) {
 	input := `
-authorization:
-  rules:
-    - name: public
-      access: anonymous
-      capabilities: [s3]
-      s3_route: oidc
 services:
   s3:
     enabled: true
@@ -163,5 +146,9 @@ services:
 	unsupported := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: removed\n", 1)
 	if _, err := DecodeConfig(strings.NewReader(unsupported), func(string) string { return "" }); err == nil {
 		t.Fatal("removed storage field was accepted")
+	}
+	legacy := "authorization:\n  rules: []\n"
+	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
+		t.Fatal("legacy authorization configuration was accepted")
 	}
 }

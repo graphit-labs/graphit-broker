@@ -17,11 +17,19 @@ import (
 )
 
 type Config struct {
+	Database       DatabaseConfig       `yaml:"database" json:"database"`
 	Server         ServerConfig         `yaml:"server" json:"server"`
 	Authentication AuthenticationConfig `yaml:"authentication" json:"authentication"`
 	Administration AdministrationConfig `yaml:"administration" json:"administration"`
-	Authorization  AuthorizationConfig  `yaml:"authorization" json:"authorization"`
 	Services       ServicesConfig       `yaml:"services" json:"services"`
+}
+
+type DatabaseConfig struct {
+	Driver          string        `yaml:"driver" json:"driver"`
+	DSN             string        `yaml:"dsn" json:"dsn"`
+	MaxOpenConns    int           `yaml:"max_open_conns" json:"max_open_conns"`
+	MaxIdleConns    int           `yaml:"max_idle_conns" json:"max_idle_conns"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime" json:"conn_max_lifetime"`
 }
 
 type ServerConfig struct {
@@ -60,7 +68,6 @@ type APIKeyConfig struct {
 
 type AdministrationConfig struct {
 	Enabled           bool            `yaml:"enabled" json:"enabled"`
-	DatabasePath      string          `yaml:"database_path" json:"database_path"`
 	SuperadminSubject string          `yaml:"superadmin_subject" json:"superadmin_subject"`
 	SessionTTL        time.Duration   `yaml:"session_ttl" json:"session_ttl"`
 	OIDC              AdminOIDCConfig `yaml:"oidc" json:"oidc"`
@@ -74,11 +81,8 @@ type AdminOIDCConfig struct {
 	Scopes       []string `yaml:"scopes" json:"scopes,omitempty"`
 }
 
-type AuthorizationConfig struct {
-	Rules []ACLRuleConfig `yaml:"rules"`
-}
-
 type ACLRuleConfig struct {
+	ID           string   `yaml:"id" json:"id"`
 	Name         string   `yaml:"name" json:"name"`
 	Access       string   `yaml:"access" json:"access"`
 	Principal    string   `yaml:"principal" json:"principal,omitempty"`
@@ -133,12 +137,11 @@ type RerankServiceConfig struct {
 }
 
 type S3ServiceConfig struct {
-	Enabled               bool                     `yaml:"enabled"`
-	DefaultRoute          string                   `yaml:"default_route"`
-	Routes                map[string]S3RouteConfig `yaml:"routes"`
-	PresignExpiry         time.Duration            `yaml:"presign_expiry"`
-	MaxPresignExpiry      time.Duration            `yaml:"max_presign_expiry"`
-	AuthorizationRevision string                   `yaml:"authorization_revision"`
+	Enabled          bool                     `yaml:"enabled"`
+	DefaultRoute     string                   `yaml:"default_route"`
+	Routes           map[string]S3RouteConfig `yaml:"routes"`
+	PresignExpiry    time.Duration            `yaml:"presign_expiry"`
+	MaxPresignExpiry time.Duration            `yaml:"max_presign_expiry"`
 }
 
 type S3RouteConfig struct {
@@ -177,6 +180,12 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	if subject := strings.TrimSpace(getenv("BROKER_SUPERADMIN_SUBJECT")); subject != "" {
 		cfg.Administration.SuperadminSubject = subject
 	}
+	if driver := strings.TrimSpace(getenv("BROKER_DATABASE_DRIVER")); driver != "" {
+		cfg.Database.Driver = driver
+	}
+	if dsn := strings.TrimSpace(getenv("BROKER_DATABASE_DSN")); dsn != "" {
+		cfg.Database.DSN = dsn
+	}
 	cfg.defaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -207,6 +216,30 @@ func expandEnvironment(input string, getenv func(string) string) (string, error)
 }
 
 func (c *Config) defaults() {
+	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
+	if c.Database.Driver == "" {
+		c.Database.Driver = "sqlite"
+	}
+	if c.Database.DSN == "" && c.Database.Driver == "sqlite" {
+		c.Database.DSN = "/var/lib/graphit-broker/broker.db"
+	}
+	if c.Database.MaxOpenConns == 0 {
+		if c.Database.Driver == "sqlite" {
+			c.Database.MaxOpenConns = 1
+		} else {
+			c.Database.MaxOpenConns = 20
+		}
+	}
+	if c.Database.MaxIdleConns == 0 {
+		if c.Database.Driver == "sqlite" {
+			c.Database.MaxIdleConns = 1
+		} else {
+			c.Database.MaxIdleConns = 10
+		}
+	}
+	if c.Database.ConnMaxLifetime == 0 {
+		c.Database.ConnMaxLifetime = 3 * time.Minute
+	}
 	if c.Server.Address == "" {
 		c.Server.Address = ":8080"
 	}
@@ -224,9 +257,6 @@ func (c *Config) defaults() {
 	}
 	if c.Server.MaxRequestBytes == 0 {
 		c.Server.MaxRequestBytes = 4 << 20
-	}
-	if c.Administration.DatabasePath == "" {
-		c.Administration.DatabasePath = "/var/lib/graphit-auth-broker/broker.db"
 	}
 	if c.Administration.SessionTTL == 0 {
 		c.Administration.SessionTTL = 8 * time.Hour
@@ -275,10 +305,6 @@ func (c *Config) defaults() {
 	if c.Services.S3.MaxPresignExpiry == 0 {
 		c.Services.S3.MaxPresignExpiry = 15 * time.Minute
 	}
-	if c.Services.S3.AuthorizationRevision == "" {
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%#v", c.Authorization.Rules)))
-		c.Services.S3.AuthorizationRevision = hex.EncodeToString(sum[:8])
-	}
 	c.Services.Embeddings.Cache.setDefaults()
 	c.Services.Rerank.Cache.setDefaults()
 }
@@ -293,6 +319,20 @@ func (c *CacheConfig) setDefaults() {
 }
 
 func (c Config) Validate() error {
+	switch strings.ToLower(strings.TrimSpace(c.Database.Driver)) {
+	case "sqlite", "postgres", "mysql":
+	default:
+		return errors.New("database.driver must be sqlite, postgres, or mysql")
+	}
+	if strings.TrimSpace(c.Database.DSN) == "" {
+		return errors.New("database.dsn is required")
+	}
+	if c.Database.MaxOpenConns <= 0 || c.Database.MaxIdleConns < 0 || c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		return errors.New("database connection limits require max_open_conns > 0 and 0 <= max_idle_conns <= max_open_conns")
+	}
+	if c.Database.ConnMaxLifetime <= 0 {
+		return errors.New("database.conn_max_lifetime must be positive")
+	}
 	for i, issuer := range c.Authentication.OIDC {
 		if err := validateHTTPSURL(issuer.Issuer, "OIDC issuer"); err != nil {
 			return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
@@ -322,9 +362,6 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Administration.Enabled {
-		if strings.TrimSpace(c.Administration.DatabasePath) == "" {
-			return errors.New("administration.database_path is required when administration is enabled")
-		}
 		if strings.TrimSpace(c.Administration.SuperadminSubject) == "" {
 			return errors.New("administration.superadmin_subject or BROKER_SUPERADMIN_SUBJECT is required when administration is enabled")
 		}
@@ -339,11 +376,6 @@ func (c Config) Validate() error {
 		}
 		if c.Administration.SessionTTL < 5*time.Minute || c.Administration.SessionTTL > 7*24*time.Hour {
 			return errors.New("administration.session_ttl must be between 5m and 168h")
-		}
-	}
-	for i, rule := range c.Authorization.Rules {
-		if err := validateACLRule(rule); err != nil {
-			return fmt.Errorf("authorization.rules[%d]: %w", i, err)
 		}
 	}
 	if c.Services.Embeddings.Enabled {
@@ -385,19 +417,6 @@ func (c Config) Validate() error {
 				}
 			}
 		}
-		for i, rule := range c.Authorization.Rules {
-			if !ruleUsesS3(rule) {
-				continue
-			}
-			routeName := strings.TrimSpace(rule.S3Route)
-			if routeName == "" {
-				routeName = c.Services.S3.DefaultRoute
-			}
-			_, ok := c.Services.S3.Routes[routeName]
-			if !ok {
-				return fmt.Errorf("authorization.rules[%d].s3_route %q is not configured", i, routeName)
-			}
-		}
 	}
 	if c.Server.PublicURL != "" {
 		if err := validateHTTPSURL(c.Server.PublicURL, "server public URL"); err != nil {
@@ -408,6 +427,9 @@ func (c Config) Validate() error {
 }
 
 func validateACLRule(rule ACLRuleConfig) error {
+	if !safeSegment(strings.TrimSpace(rule.ID)) {
+		return errors.New("id must be a safe non-empty identifier")
+	}
 	if strings.TrimSpace(rule.Name) == "" {
 		return errors.New("name is required")
 	}
@@ -416,6 +438,15 @@ func validateACLRule(rule ACLRuleConfig) error {
 	}
 	if rule.S3Route != "" && !safeSegment(rule.S3Route) {
 		return errors.New("s3_route must be a safe route name")
+	}
+	for _, project := range rule.Projects {
+		project = strings.TrimSpace(project)
+		if project == "*" {
+			continue
+		}
+		if !safeSegment(project) {
+			return fmt.Errorf("project selector %q must be an exact safe ID or *", project)
+		}
 	}
 	access := strings.ToLower(strings.TrimSpace(rule.Access))
 	if access == "" {

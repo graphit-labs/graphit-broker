@@ -1,168 +1,114 @@
-# OIDC integration guide
+# OIDC integration
 
-Most installations register two OIDC applications:
+The broker uses two OIDC clients/trust paths:
 
-1. a public/native client used by Graphit users to obtain consumer access/refresh tokens;
-2. a confidential web client used by the broker administration UI to obtain administrator ID
-   tokens and establish a server-side session.
+- consumer bearer validation for Graphit MCP, Hub, S3, embedding, and rerank requests;
+- a separate confidential web client for administration login.
 
-They can share one issuer, but have different redirect URIs, audiences, credentials and trust
-boundaries. Assigning the same human to both does not merge the permissions.
+They may use the same issuer, but their client IDs, redirect behavior, audiences, and policies are
+independent.
 
-## What the identity provider must issue
+## Consumer issuer
 
-The Graphit CLI uses Authorization Code + PKCE and obtains an access token and refresh token. The
-same access token is sent as a bearer credential to every broker capability. It must therefore:
-
-1. be a signed JWT discoverable from the configured issuer;
-2. contain the broker audience in `aud`;
-3. contain every configured scope in `scope` or `scp`;
-4. carry the configured username and, if ACLs use them, organization/team claims;
-5. have a lifetime long enough for a request, while refresh-token policy permits recurring use.
-
-The broker downloads discovery/JWKS metadata from each issuer, verifies signature, exact issuer,
-audience and expiration, then maps claims to a normalized principal. It never trusts username,
-organization or team data supplied in the request body.
-
-## IdP application registration
-
-Create a public/native OIDC client for the Graphit CLI:
-
-- grant: Authorization Code;
-- PKCE: required, method S256;
-- client secret: normally none for a native client; if your IdP requires one, Graphit stores it in
-  the named provider topology, so limit access to the global Graphit directory;
-- redirect URI: the loopback URI configured by `graphit provider add --redirect-uri`;
-- scopes: at least `openid`, plus `offline_access` when required for refresh tokens and your broker
-  scope such as `graphit.use`;
-- API/resource audience: `graphit-broker` (or your chosen value).
-
-The IdP API/resource registration must use that same audience and authorize the native client to
-request it. Add claim mapping/mappers for username, organization and teams. Prefer immutable org
-and team IDs over display names.
-
-## Broker configuration
+Create an API/resource in the identity provider for the broker, for example audience
+`graphit-broker`. Configure the issuer:
 
 ```yaml
 authentication:
   oidc:
-    - issuer: https://id.example.com/realms/acme
+    - issuer: https://identity.example.com
       audiences: [graphit-broker]
-      required_scopes: [openid, graphit.use]
+      required_scopes: [graphit.use]
       username_claim: preferred_username
       organization_claim: organization.id
       teams_claim: groups
 ```
 
-Multiple entries can coexist, including different issuers and claim shapes. An incoming token is
-accepted only by the verifier for its exact `iss`. If Graphit's MCP endpoint and broker both consume
-the same token, configure the same audience for both. For IdPs that cannot mint one token usable by
-both resources, use a dedicated common API audience or introduce token exchange at your gateway;
-the current Graphit profile intentionally keeps a single refreshable access-token session.
+The broker discovers signing keys and verifies token signature, exact issuer, accepted audience,
+expiry, and every required scope. It then maps configured claim paths. The `sub` claim is always
+required and canonical identity remains `iss|sub`; mapped fields cannot replace it.
 
-## Administration OIDC application
+Access tokens must be JWTs verifiable through issuer discovery/JWKS. Opaque tokens are not
+introspected by this implementation. If an IdP issues opaque access tokens, configure it to issue a
+JWT for this API or place a standards-compliant token-exchange/security gateway in front.
 
-Create a second web application for the broker control plane:
+## End-user token from Graphit
 
-- grant: Authorization Code;
-- redirect: exactly `https://broker.example.com/admin/auth/callback`;
-- client authentication: a client secret (recommended); store it only in deployment secrets and
-  the protected SQLite control-plane database;
-- PKCE: allow S256—the broker always sends it in addition to confidential-client authentication;
-- scopes: `openid profile email`, or a smaller set containing `openid`;
-- ID token: include immutable `sub`, the administration client ID in `aud`, and normal expiry.
+For a Graphit OIDC provider using direct relay:
+
+1. the user logs in through Graphit Authorization Code + PKCE;
+2. the IdP issues an access token for the shared MCP/broker audience;
+3. Streamable HTTP MCP validates that access token before running any tool;
+4. Graphit binds the verified username/teams and raw bearer to that request;
+5. every broker call forwards that request bearer;
+6. the broker independently verifies it and derives the principal again.
+
+No identity claim is copied from an untrusted request body. Two concurrent MCP users retain
+separate request contexts; neither uses the other user's active profile token.
+
+If MCP and broker require different audiences, configure Graphit's provider with RFC 8693 token
+exchange. Graphit sends the incoming MCP token as `subject_token` to the configured/discovered
+token endpoint, requests the broker audience/resource, and calls the broker with the returned
+short-lived bearer. Exchange tokens are cached by provider revision, source-token digest, and
+target resource only until shortly before expiry. Exchange failure fails closed; Graphit does not
+fall back to relaying a token with the wrong audience.
+
+The broker itself needs no special exchange endpoint: it receives and validates the final
+broker-audience bearer.
+
+## Required IdP values
+
+Collect:
+
+- exact issuer URL;
+- broker API audience;
+- optional required scope;
+- stable username claim;
+- optional organization and group/team claim paths;
+- for Graphit login, native/public client ID, scopes, and redirect policy;
+- for token exchange, client authentication method and whether RFC 8693 is enabled for that client;
+- for administration, confidential web client ID/secret and exact callback.
+
+Test with two users belonging to different teams, an expired token, a token for another audience,
+an invalid signature, and a request with no token. Only the intended grants should resolve.
+
+## Administration OIDC
 
 ```yaml
 administration:
   enabled: true
-  database_path: /var/lib/graphit-auth-broker/broker.db
-  superadmin_subject: ${BROKER_SUPERADMIN_SUBJECT:?required}
+  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?required}"
   session_ttl: 8h
   oidc:
-    issuer: https://id.example.com/realms/acme
+    issuer: https://identity.example.com
     client_id: graphit-broker-admin
-    client_secret: ${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}
+    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
     redirect_url: https://broker.example.com/admin/auth/callback
     scopes: [openid, profile, email]
 ```
 
-Set `BROKER_SUPERADMIN_SUBJECT` to the exact `sub` of the first owner, start with an empty persistent
-database, browse to `/admin/`, and sign in. Before any role assignment exists only that subject is
-accepted. Use **Roles & users** to assign the built-in `admin` role to additional exact subjects.
-The superadmin remains an out-of-band deployment override and is never removed by database edits.
+Register the callback exactly. The browser flow uses code, state, nonce, and PKCE. The broker
+persists only hashed state/session tokens and server-side metadata. Set
+`BROKER_SUPERADMIN_SUBJECT` from the immutable admin `sub`, never an email address.
 
-For providers such as Keycloak, create a confidential client, enable Standard Flow, register the
-exact valid redirect URI, and map any desired name/email claims into the ID token. For Auth0 or
-Okta, create a regular web application and configure the same callback. Provider-specific labels
-differ, but the protocol requirements above are the contract.
+## Common provider notes
 
-## Graphit provider and login
+- **Keycloak:** use separate clients/resources for Graphit native login and broker administration;
+  add protocol mappers for username, organization, and groups; enable standard token exchange when
+  using separate MCP and broker audiences.
+- **Auth0/Okta/Entra-compatible issuers:** create an API audience for the broker, add required
+  custom claims through supported actions/mappers, and ensure group claims fit token-size limits.
+- **Dex/self-hosted providers:** confirm discovery exposes JWKS and token endpoints and that issued
+  access tokens contain the configured audience.
 
-```bash
-graphit provider add company \
-  --type oidc \
-  --issuer https://id.example.com/realms/acme \
-  --client-id graphit-cli \
-  --redirect-uri http://127.0.0.1:8765/callback \
-  --scopes openid,offline_access,graphit.use \
-  --broker-endpoint https://broker.example.com \
-  --broker-audience graphit-broker \
-  --embedding-mode broker \
-  --rerank-mode broker
+Exact console labels change by IdP. The invariant is standards-level: discoverable issuer, signed
+JWT access token, correct audience/scope, stable `sub`, and explicit claim mappings.
 
-graphit login --provider company --profile alice-acme
-```
+## Troubleshooting
 
-For a headless flow, obtain tokens using an approved IdP mechanism and pass all values explicitly:
-
-```bash
-graphit --non-interactive login --provider company --profile ci-acme \
-  --access-token "$ACCESS_TOKEN" \
-  --refresh-token "$REFRESH_TOKEN" \
-  --id-token "$ID_TOKEN" \
-  --token-expires-at 2026-09-07T18:00:00Z
-```
-
-`--non-interactive` is a contract: every missing value that would otherwise prompt is an error.
-Login activates the profile immediately. Subsequent broker calls resolve the active profile and
-refresh OIDC tokens before expiry.
-
-## Claim examples
-
-Flat claims:
-
-```json
-{
-  "iss": "https://id.example.com/realms/acme",
-  "sub": "00u123",
-  "aud": ["graphit-broker"],
-  "scope": "openid graphit.use",
-  "preferred_username": "alice",
-  "org_id": "acme",
-  "groups": ["platform", "developers"]
-}
-```
-
-Use `organization_claim: org_id`. Nested claims work as well:
-
-```json
-{"organization":{"id":"acme"},"authorization":{"teams":["platform"]}}
-```
-
-Use `organization_claim: organization.id` and `teams_claim: authorization.teams`.
-
-## Validation checklist
-
-- Open the issuer's `/.well-known/openid-configuration` from the broker network.
-- Decode a development token locally and compare `iss` byte-for-byte.
-- Confirm `aud`, scopes and configured claim paths.
-- Call discovery, then an authenticated capability with a token from the intended client.
-- Repeat with wrong audience, expired token, missing scope and unauthorized team; expect 401 for
-  authentication failures and 403 for ACL failures.
-- Verify refresh by using a short access-token lifetime in a non-production tenant.
-- Open `/admin/auth/login`, confirm the redirect uses the administration client, then verify the
-  callback establishes an HttpOnly cookie and `/admin/api/v1/session` reports the exact subject.
-- Try an unassigned administration subject and expect 403; assign then revoke `admin` and confirm
-  access changes immediately.
-- Rotate the administration client secret through the full configuration UI/API and confirm the
-  next login uses the replacement while existing sessions expire at their configured lifetime.
+- `401`: bearer missing/malformed, issuer/audience/signature/expiry/scope invalid.
+- `403`: token valid, but no current resource grant matches.
+- Graphit exchange error: RFC 8693 disabled, client authentication wrong, target audience/resource
+  not permitted, or invalid subject token.
+- Admin callback rejected: redirect URI mismatch, code/state/nonce/PKCE failure, or subject lacks
+  `session.read`.

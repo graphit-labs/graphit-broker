@@ -11,13 +11,13 @@
 <body>
 <main>
   <header>
-    <div><div class="eyebrow">Graphit Auth Broker</div><h1>Administration</h1><div class="muted">OIDC-authenticated control plane · deny by default</div></div>
+    <div><div class="eyebrow">Graphit Broker</div><h1>Administration</h1><div class="muted">OIDC-authenticated control plane · deny by default</div></div>
     <div class="session"><span id="identity" class="muted">Checking session…</span><a id="signin" class="button primary hidden" href="/admin/auth/login">Sign in with OIDC</a><button id="logout" class="hidden">Sign out</button></div>
   </header>
   <div id="status" class="status muted"></div>
   <section id="signed-out" class="panel hidden"><h2>Administrator login required</h2><p class="muted">Sign in through the configured identity provider. Access is granted only to the deployment superadmin or to subjects with an assigned role.</p><a class="button primary" style="width:auto" href="/admin/auth/login">Sign in with OIDC</a></section>
   <div id="app" class="hidden">
-    <nav class="nav"><button data-tab="configuration" class="active">Configuration</button><button data-tab="access">Access rules</button><button data-tab="roles">Roles & users</button></nav>
+    <nav class="nav"><button data-tab="configuration" class="active">Configuration</button><button data-tab="access">Resource grants</button><button data-tab="roles">Roles & users</button></nav>
 
     <section id="tab-configuration" class="tab">
       <div class="panel">
@@ -30,21 +30,22 @@
 
     <section id="tab-access" class="tab hidden">
       <div class="panel">
-        <div class="row"><div><h2 id="rule-title">Add access rule</h2><div class="muted">Rules are additive; if no rule matches, the request is denied.</div></div><span id="access-revision" class="revision"></span></div>
+        <div class="row"><div><h2 id="rule-title">Add resource grant</h2><div class="muted">Grants are additive and stored transactionally. If none matches, access is denied.</div></div><span id="access-revision" class="revision"></span></div>
         <div class="form-grid" style="margin-top:14px">
+          <label><span>Stable grant ID</span><input id="rule-id" placeholder="team-platform-projects"></label>
           <label><span>Name</span><input id="rule-name" placeholder="Anonymous project reads"></label>
           <label><span>Access level</span><select id="rule-access"><option>global</option><option>anonymous</option><option>authenticated</option><option>user</option><option>team</option><option>organization</option><option>subject</option></select></label>
           <label><span>Principal ID</span><input id="rule-principal" placeholder="For one user/team/org/subject"></label>
           <label class="wide"><span>Capabilities</span><input id="rule-capabilities" placeholder="embeddings, rerank, s3"></label>
-          <label class="wide"><span>Projects</span><input id="rule-projects" placeholder="*, project ULID, payments-*"></label>
+          <label class="wide"><span>Projects</span><input id="rule-projects" placeholder="*, or exact project ULIDs"></label>
           <label class="wide"><span>S3 operations</span><input id="rule-operations" placeholder="read, write, publish, delete"></label>
           <label><span>S3 route</span><input id="rule-route" placeholder="Default when empty"></label>
           <label class="wide"><span>S3 key prefix templates</span><input id="rule-prefixes" placeholder="v2/projects/{project}"></label>
-          <label><span>&nbsp;</span><button id="apply-rule" class="primary">Add rule</button></label>
+          <label><span>&nbsp;</span><button id="apply-rule" class="primary">Create grant</button></label>
           <label><span>&nbsp;</span><button id="clear-rule">Clear form</button></label>
         </div>
       </div>
-      <div class="panel"><div class="row"><h2>Effective consumer policy</h2><button id="save-access" class="primary" style="width:auto">Save access policy</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Principal</th><th>Capabilities</th><th>Projects / S3</th><th></th></tr></thead><tbody id="rules"></tbody></table></div></div>
+      <div class="panel"><div class="row"><h2>Effective resource grants</h2><button id="reload-access" style="width:auto">Reload</button></div><div class="table-wrap"><table><thead><tr><th>ID / name</th><th>Principal</th><th>Capabilities</th><th>Projects / S3</th><th></th></tr></thead><tbody id="rules"></tbody></table></div></div>
     </section>
 
     <section id="tab-roles" class="tab hidden">
@@ -76,15 +77,15 @@ async function loadConfig(){const [response,body]=await api('/admin/api/v1/confi
 $('reload-config').onclick=()=>loadConfig().then(()=>message('Configuration reloaded.','ok')).catch(e=>message(e.message,'error'));
 $('save-config').onclick=async()=>{try{const [response,body]=await api('/admin/api/v1/config',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':configETag},body:JSON.stringify({yaml:$('config-yaml').value})});configETag=response.headers.get('ETag');$('config-revision').textContent=`revision ${body.revision}`;await Promise.all([loadConfig(),loadAccess()]);message('Configuration validated, persisted, and activated.','ok')}catch(e){message(e.message,'error')}};
 
-async function loadAccess(){const [response,body]=await api('/admin/api/v1/access');accessETag=response.headers.get('ETag');policy=body;$('access-revision').textContent=`revision ${body.revision}`;renderRules()}
-function renderRules(){$('rules').innerHTML=(policy.rules||[]).map((r,i)=>`<tr><td>${escapeHTML(r.name)}</td><td><span class="tag">${escapeHTML(r.access)}</span>${r.principal?`<br>${escapeHTML(r.principal)}`:''}</td><td>${tags(r.capabilities)}</td><td>${tags(r.projects)}${tags(r.s3_operations)}${r.s3_route?`<span class="tag">route:${escapeHTML(r.s3_route)}</span>`:''}${tags(r.s3_prefixes)}</td><td class="actions"><button onclick="editRule(${i})">Edit</button><button class="danger" onclick="removeRule(${i})">Delete</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">No rules. Every consumer request is denied.</td></tr>'}
+async function loadAccess(){const [response,body]=await api('/admin/api/v1/grants');accessETag=response.headers.get('ETag');policy=body;$('access-revision').textContent=`revision ${body.revision}`;renderRules()}
+function renderRules(){$('rules').innerHTML=(policy.rules||[]).map((r,i)=>`<tr><td><code>${escapeHTML(r.id)}</code><br>${escapeHTML(r.name)}</td><td><span class="tag">${escapeHTML(r.access)}</span>${r.principal?`<br>${escapeHTML(r.principal)}`:''}</td><td>${tags(r.capabilities)}</td><td>${tags(r.projects)}${tags(r.s3_operations)}${r.s3_route?`<span class="tag">route:${escapeHTML(r.s3_route)}</span>`:''}${tags(r.s3_prefixes)}</td><td class="actions"><button onclick="editRule(${i})">Edit</button><button class="danger" onclick="removeRule(${i})">Delete</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">No grants. Every consumer request is denied.</td></tr>'}
 const ruleLists={capabilities:'capabilities',projects:'projects',operations:'s3_operations',prefixes:'s3_prefixes'};
-function clearRule(){editingRule=-1;$('rule-title').textContent='Add access rule';$('apply-rule').textContent='Add rule';['name','principal','route',...Object.keys(ruleLists)].forEach(id=>$('rule-'+id).value='');$('rule-access').value='global'}
-window.editRule=i=>{editingRule=i;const r=policy.rules[i];$('rule-name').value=r.name;$('rule-access').value=r.access;$('rule-principal').value=r.principal||'';$('rule-route').value=r.s3_route||'';for(const [id,key] of Object.entries(ruleLists))$('rule-'+id).value=(r[key]||[]).join(', ');$('rule-title').textContent='Edit access rule';$('apply-rule').textContent='Update rule';scrollTo({top:200,behavior:'smooth'})};
-window.removeRule=i=>{policy.rules.splice(i,1);renderRules();clearRule();message('Local access changes are not saved yet.','warn')};
-$('apply-rule').onclick=()=>{const rule={name:$('rule-name').value.trim(),access:$('rule-access').value,capabilities:split('rule-capabilities')};const principal=$('rule-principal').value.trim(),route=$('rule-route').value.trim();if(principal)rule.principal=principal;if(route)rule.s3_route=route;for(const [id,key] of Object.entries(ruleLists)){if(id==='capabilities')continue;const values=split('rule-'+id);if(values.length)rule[key]=values}if(!rule.name||!rule.capabilities.length){message('A name and at least one capability are required.','error');return}if(editingRule<0)policy.rules.push(rule);else policy.rules[editingRule]=rule;renderRules();clearRule();message('Local access changes are not saved yet.','warn')};
+function clearRule(){editingRule=-1;$('rule-title').textContent='Add resource grant';$('apply-rule').textContent='Create grant';$('rule-id').disabled=false;['id','name','principal','route',...Object.keys(ruleLists)].forEach(id=>$('rule-'+id).value='');$('rule-access').value='global'}
+window.editRule=i=>{editingRule=i;const r=policy.rules[i];$('rule-id').value=r.id;$('rule-id').disabled=true;$('rule-name').value=r.name;$('rule-access').value=r.access;$('rule-principal').value=r.principal||'';$('rule-route').value=r.s3_route||'';for(const [id,key] of Object.entries(ruleLists))$('rule-'+id).value=(r[key]||[]).join(', ');$('rule-title').textContent='Edit resource grant';$('apply-rule').textContent='Update grant';scrollTo({top:200,behavior:'smooth'})};
+window.removeRule=async i=>{try{const r=policy.rules[i];await api('/admin/api/v1/grants/'+encodeURIComponent(r.id),{method:'DELETE',headers:{'If-Match':accessETag}});await loadAccess();clearRule();message('Resource grant deleted.','ok')}catch(e){message(e.message,'error')}};
+$('apply-rule').onclick=async()=>{try{const rule={id:$('rule-id').value.trim(),name:$('rule-name').value.trim(),access:$('rule-access').value,capabilities:split('rule-capabilities')};const principal=$('rule-principal').value.trim(),route=$('rule-route').value.trim();if(principal)rule.principal=principal;if(route)rule.s3_route=route;for(const [id,key] of Object.entries(ruleLists)){if(id==='capabilities')continue;const values=split('rule-'+id);if(values.length)rule[key]=values}if(!rule.id||!rule.name||!rule.capabilities.length)throw new Error('A stable ID, name, and at least one capability are required.');const path=editingRule<0?'/admin/api/v1/grants':'/admin/api/v1/grants/'+encodeURIComponent(rule.id),method=editingRule<0?'POST':'PUT';await api(path,{method,headers:{'Content-Type':'application/json','If-Match':accessETag},body:JSON.stringify(rule)});await loadAccess();clearRule();message(`Resource grant ${method==='POST'?'created':'updated'}.`,'ok')}catch(e){message(e.message,'error')}};
 $('clear-rule').onclick=clearRule;
-$('save-access').onclick=async()=>{try{await api('/admin/api/v1/access',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':accessETag},body:JSON.stringify({v:1,rules:policy.rules})});await Promise.all([loadAccess(),loadConfig()]);message('Access policy persisted and activated.','ok')}catch(e){message(e.message,'error')}};
+$('reload-access').onclick=()=>loadAccess().then(()=>message('Resource grants reloaded.','ok')).catch(e=>message(e.message,'error'));
 
 async function loadRoles(){const [roleBody,assignmentBody]=await Promise.all([api('/admin/api/v1/roles').then(x=>x[1]),api('/admin/api/v1/role-assignments').then(x=>x[1])]);roles=roleBody.roles||[];actions=roleBody.actions||[];renderRoles(assignmentBody)}
 function renderRoles(assignmentsBody){$('role-list').innerHTML=roles.map(role=>`<div class="subpanel" style="margin-bottom:10px"><div class="row"><strong>${escapeHTML(role.name)}</strong><span><button style="width:auto" data-edit-role="${escapeHTML(role.name)}">Edit</button>${role.name==='admin'?'':` <button class="danger" style="width:auto" data-delete-role="${escapeHTML(role.name)}">Delete</button>`}</span></div><div>${tags(role.permissions)}</div></div>`).join('');$('assignment-role').innerHTML=roles.map(r=>`<option>${escapeHTML(r.name)}</option>`).join('');$('role-permissions').innerHTML=actions.map(action=>`<label><input type="checkbox" value="${escapeHTML(action)}">${escapeHTML(action)}</label>`).join('');$('bootstrap-note').classList.toggle('hidden',!assignmentsBody.bootstrap_only);$('assignments').innerHTML=(assignmentsBody.assignments||[]).map(a=>`<tr><td>${escapeHTML(a.subject)}</td><td><span class="tag">${escapeHTML(a.role)}</span></td><td class="actions"><button class="danger" data-revoke-subject="${escapeHTML(a.subject)}" data-revoke-role="${escapeHTML(a.role)}">Revoke</button></td></tr>`).join('')||'<tr><td colspan="3" class="muted">No role assignments.</td></tr>'}

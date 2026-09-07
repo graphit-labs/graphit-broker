@@ -142,7 +142,7 @@ func (s *AWSPresignService) Presign(ctx context.Context, grant S3Grant, request 
 	if err != nil {
 		return PresignResponse{}, fmt.Errorf("presign S3 %s: %w", request.Operation, err)
 	}
-	return PresignResponse{Method: method, URL: signedURL, Headers: cloneHeader(signedHeaders), ExpiresAt: s.now().Add(duration).UTC(), Key: strings.Trim(request.Key, "/"), Operation: strings.ToLower(request.Operation), AuthorizationRevision: s.config.AuthorizationRevision}, nil
+	return PresignResponse{Method: method, URL: signedURL, Headers: cloneHeader(signedHeaders), ExpiresAt: s.now().Add(duration).UTC(), Key: strings.Trim(request.Key, "/"), Operation: strings.ToLower(request.Operation)}, nil
 }
 
 func presignList(ctx context.Context, config S3RouteConfig, prefix string, limit int32, cursor string, expires time.Duration, now time.Time) (string, http.Header, error) {

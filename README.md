@@ -1,90 +1,97 @@
-# Graphit Auth Broker
+# Graphit Broker
 
-Graphit Auth Broker is the server-side trust boundary for Graphit installations. It validates
-OIDC access tokens (or explicitly configured service keys), evaluates deny-by-default ACLs, and
-exposes three independently deployable capabilities:
+Graphit Broker is the server-side identity, authorization, AI, and storage gateway for
+Graphit. It validates end-user OIDC access tokens or explicitly configured service API keys,
+evaluates deny-by-default resource grants from SQL, and exposes:
 
-- OpenAI-compatible embeddings at `POST /v1/embeddings`;
-- Graphit rerank v1 at `POST /v1/rerank`;
-- per-operation S3 pre-signed requests at `POST /v1/s3/presign`, including anonymous grants.
+- `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
+- `POST /v1/s3/presign` — one narrowly scoped pre-signed request for each S3 operation;
+- `POST /v1/embeddings` — the OpenAI embeddings contract backed by a broker-owned upstream;
+- `POST /v1/rerank` — the versioned Graphit rerank contract backed by a broker-owned adapter;
+- `/admin/` — an OIDC-protected administration UI for configuration, resource grants, roles,
+  and user-role assignments.
 
-It also includes an OIDC-protected control plane at `/admin/`. Administrators can edit the complete
-broker configuration, publish global/anonymous/authenticated/user/team/organization/subject grants,
-and assign action-based roles without restarting the process. SQLite persists configuration,
-administrative sessions and role assignments in a Docker-mountable volume. Configuration changes
-use revision-based compare-and-swap and are activated atomically in the running broker.
+Only the broker knows AI API keys, upstream models, S3 credentials, bucket, region, endpoint,
+base prefixes, and route selection. Graphit receives no cloud credential and requests a fresh URL
+for every object operation. Anonymous requests are accepted only when an explicit `anonymous`
+grant matches.
 
-The broker exclusively owns upstream AI credentials, model selection, bucket/region/endpoint,
-storage prefixes, direct S3 signing credentials and cache policy. A Graphit
-user authenticates once with the named provider and sends only the resulting access token. The
-client cannot select or override the broker's upstream model or storage topology, and never
-receives cloud credentials.
+For HTTP MCP, Graphit validates the end user's OIDC bearer and preserves it for every broker call.
+The default direct-relay mode uses one shared MCP/broker audience. If the IdP supports RFC 8693,
+Graphit may instead exchange the MCP token for a short-lived broker-audience token. The broker
+validates the final token independently in both modes; exchange failure never downgrades to relay
+or anonymous access.
 
-Storage can define multiple named routes. ACL rules select a route dynamically per trusted
-principal/project/operation, so one broker can isolate organizations across different accounts,
-buckets, regions or S3-compatible services without changing any Graphit provider or profile.
+## Persistence and authorization
 
-## Quick start
+All durable broker state is stored in the configured SQL database: complete mutable configuration,
+normalized resource grants, grant revision, administrative roles and assignments, OIDC login
+flows, and sessions. SQLite is the default single-node deployment; PostgreSQL and MySQL use the
+same domain model and transaction boundaries.
 
-Requirements: Docker 24+ (recommended), or Go 1.26+ for a source build.
+`config.yaml` seeds an empty database. It is not an ACL file and is not re-imported after the
+database has state. Resource grants are created through the UI or administration API. A new
+database has no grants and therefore denies every consumer operation.
 
-Before starting, register a confidential OIDC web application whose exact callback is
-`https://YOUR-BROKER/admin/auth/callback`, identify the immutable `sub` claim for the first owner,
-and place that value in `BROKER_SUPERADMIN_SUBJECT`. On an empty database no other identity can
-open administration; the superadmin can then assign the built-in `admin` role or create narrower
-roles in the UI.
+There is deliberately no migration, compatibility loader, dual read/write, or fallback path in
+this development version. Recreate the database when the schema version changes.
+
+Administrative RBAC and resource authorization are separate:
+
+- roles control who may operate the administration API;
+- resource grants control which verified consumer may use `hub`, `s3`, `embeddings`, and
+  `rerank`, for which exact projects and S3 operations/routes/prefixes.
+
+## Quick start with Docker
+
+Requirements: Docker 24+, an OIDC web client for administration, an immutable `sub` for the first
+superadmin, and the credentials for enabled upstream services.
 
 ```bash
 cp config.example.yaml config.yaml
 cp .env.example .env
-# Fill administration OIDC, upstream API and S3 values in .env/config.yaml.
-docker compose -f docker-compose.example.yml up --build -d
+# Fill only your local, uncommitted copies.
+docker compose -f docker-compose.yml up --build -d
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 curl --fail http://127.0.0.1:8080/.well-known/graphit-broker
-# Then open https://YOUR-BROKER/admin/ and sign in through OIDC.
 ```
 
-Validate before deploying:
+Open `https://YOUR-BROKER/admin/`, sign in, and create the first resource grants. Until then,
+consumer endpoints correctly return `403`.
+
+Validate a configuration without starting the service:
 
 ```bash
-docker build -t graphit-auth-broker:local .
+docker build -t graphit-broker:local .
 docker run --rm --env-file .env \
-  -v "$PWD/config.yaml:/etc/graphit-auth-broker/config.yaml:ro" \
-  graphit-auth-broker:local --check-config
+  -v "$PWD/config.yaml:/etc/graphit-broker/config.yaml:ro" \
+  graphit-broker:local --check-config
 ```
 
-The named `broker-state` volume contains `/var/lib/graphit-auth-broker/broker.db`. After its first
-successful start, SQLite is authoritative for mutable settings; `config.yaml` is the seed for a new
-database. `administration.database_path` and `BROKER_SUPERADMIN_SUBJECT` remain deployment-owned
-bootstrap controls. See the administration and operations guides before backing up, restoring or
-rotating secrets.
-
-SQLite (including its WAL/SHM companions) is the broker's only mutable persistence. ACLs, complete
-configuration, roles, assignments, OIDC login flows and admin sessions are all tables in that
-database. AI caches are deliberately memory-only and signed URLs are never persisted. There is no
-legacy file loader, compatibility mode or database migration path in this development version.
-
-For a harmless smoke test with every external capability disabled:
+For a harmless health-only smoke test:
 
 ```bash
-docker build -t graphit-auth-broker:local .
+docker build -t graphit-broker:local .
 docker run --rm -d --name graphit-broker-smoke -p 18080:8080 \
-  -v "$PWD/examples/health-only.yaml:/etc/graphit-auth-broker/config.yaml:ro" \
-  graphit-auth-broker:local
+  --tmpfs /tmp:size=16m,mode=1777 \
+  -v "$PWD/examples/health-only.yaml:/etc/graphit-broker/config.yaml:ro" \
+  graphit-broker:local
 curl --fail http://127.0.0.1:18080/healthz
 docker rm -f graphit-broker-smoke
 ```
 
 ## Documentation
 
-- [Configuration](docs/configuration.md)
+- [Configuration reference](docs/configuration.md)
+- [Database backends](docs/database.md)
 - [OIDC integration](docs/oidc.md)
-- [HTTP API contracts](docs/api.md)
-- [Deployment and AWS](docs/deployment.md)
-- [Security and ACL model](docs/security.md)
+- [Resource authorization](docs/authorization.md)
+- [Administration UI and API](docs/administration.md)
+- [Consumer HTTP API](docs/api.md)
+- [Deployment](docs/deployment.md)
+- [Security model](docs/security.md)
 - [Operations and troubleshooting](docs/operations.md)
-- [Administration UI and access policy](docs/administration.md)
 
 ## Development
 
@@ -95,5 +102,5 @@ make vet
 make build
 ```
 
-All unit tests are hermetic: OIDC and upstream AI are represented by in-process fakes; S3 signing
-uses synthetic route credentials and performs no network request.
+The unit suite is hermetic. OIDC, AI upstreams, and storage are represented by in-process synthetic
+servers; tests do not contact real identity, model, database, or object-storage services.

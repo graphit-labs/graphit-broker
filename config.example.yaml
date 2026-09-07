@@ -1,3 +1,11 @@
+database:
+  # sqlite (default), postgres, or mysql. The DSN and driver are deployment-owned.
+  driver: "sqlite"
+  dsn: "/var/lib/graphit-broker/broker.db"
+  max_open_conns: 1
+  max_idle_conns: 1
+  conn_max_lifetime: 3m
+
 server:
   address: ":8080"
   public_url: "https://broker.example.com"
@@ -24,11 +32,10 @@ authentication:
   #     organization: "local"
   #     teams: ["automation"]
 
-# Administration uses its own confidential OIDC client. SQLite becomes authoritative after the
-# first start; the deployment-owned database path and superadmin subject always remain external.
+# Administration uses its own confidential OIDC client. The database and bootstrap superadmin
+# remain deployment-owned; the UI/API manage all other persisted configuration and grants.
 administration:
   enabled: true
-  database_path: "/var/lib/graphit-auth-broker/broker.db"
   superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?set the exact OIDC sub for the bootstrap superadmin}"
   session_ttl: 8h
   oidc:
@@ -38,43 +45,8 @@ administration:
     redirect_url: "${BROKER_ADMIN_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
     scopes: ["openid", "profile", "email"]
 
-authorization:
-  rules:
-    - name: "organization AI"
-      access: "organization"
-      principal: "acme"
-      capabilities: ["embeddings", "rerank"]
-    - name: "platform project storage"
-      access: "team"
-      principal: "platform"
-      capabilities: ["s3"]
-      projects: ["platform-*"]
-      s3_operations: ["read", "write", "publish"]
-      s3_route: "primary"
-      # Prefixes are logical; bucket/base_prefix are applied only after authorization.
-      s3_prefixes: ["v2/projects/{project}"]
-    # Graphit asks for project "global" when reading the Hub control plane. Grant only the
-    # logical prefixes that this principal must discover; the physical route stays private.
-    - name: "platform Hub control plane"
-      access: "team"
-      principal: "platform"
-      capabilities: ["s3"]
-      projects: ["global"]
-      s3_operations: ["read"]
-      s3_route: "primary"
-      s3_prefixes: ["v2/registry", "v2/global", "v2/authenticated", "v2/teams/platform"]
-    # Anonymous access is opt-in and should normally be read-only.
-    # - name: "public catalog"
-    #   access: "anonymous"
-    #   capabilities: ["s3"]
-    #   projects: ["public-catalog"]
-    #   s3_operations: ["read"]
-    #   s3_route: "public"
-    #   s3_prefixes: ["v2/projects/public-catalog"]
-    # - name: "local automation"
-    #   access: "subject"
-    #   principal: "local-automation"
-    #   capabilities: ["embeddings", "rerank"]
+# Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
+# /admin/, then create grants in Resource grants or through /admin/api/v1/grants.
 
 services:
   embeddings:
@@ -121,7 +93,6 @@ services:
     default_route: "primary"
     presign_expiry: 5m
     max_presign_expiry: 15m
-    authorization_revision: "acl-2026-09-07.1"
     routes:
       primary:
         region: "us-east-1"

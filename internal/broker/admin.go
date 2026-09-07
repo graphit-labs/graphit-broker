@@ -146,7 +146,8 @@ func (s *Server) adminConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		redacted := redactConfig(stored.Config)
-		redacted.Administration.DatabasePath = s.bootstrap.Administration.DatabasePath
+		redacted.Database = s.bootstrap.Database
+		redacted.Database.DSN = configuredSecret
 		redacted.Administration.SuperadminSubject = s.bootstrap.Administration.SuperadminSubject
 		encoded, err := yaml.Marshal(redacted)
 		if err != nil {
@@ -177,8 +178,8 @@ func (s *Server) adminConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next.defaults()
+	next.Database = s.bootstrap.Database
 	next.Administration.Enabled = true
-	next.Administration.DatabasePath = s.bootstrap.Administration.DatabasePath
 	next.Administration.SuperadminSubject = s.bootstrap.Administration.SuperadminSubject
 	mergeConfiguredSecrets(&next, stored.Config)
 	updated, err := s.replaceRuntimeConfig(r.Context(), expected, next)
@@ -199,7 +200,7 @@ func (s *Server) replaceRuntimeConfig(ctx context.Context, expected uint64, next
 	if err := next.Validate(); err != nil {
 		return StoredConfig{}, err
 	}
-	prepared, err := buildRuntime(ctx, next, expected+1, s.adminProviderFactory)
+	prepared, err := buildRuntime(ctx, next, expected+1, s.adminProviderFactory, s.control)
 	if err != nil {
 		return StoredConfig{}, err
 	}
@@ -212,16 +213,16 @@ func (s *Server) replaceRuntimeConfig(ctx context.Context, expected uint64, next
 	return stored, nil
 }
 
-func (s *Server) adminAccess(w http.ResponseWriter, r *http.Request) {
-	stored, err := s.control.Config(r.Context())
+func (s *Server) adminGrants(w http.ResponseWriter, r *http.Request) {
+	document, err := s.control.ResourceGrants(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "access_read_failed", "could not read access policy", requestID(r.Context()))
+		writeError(w, http.StatusInternalServerError, "grants_read_failed", "could not read resource grants", requestID(r.Context()))
 		return
 	}
 	if r.Method == http.MethodGet {
-		w.Header().Set("ETag", configETag(stored.Revision))
+		w.Header().Set("ETag", configETag(document.Revision))
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"v": 1, "revision": stored.Revision, "rules": stored.Config.Authorization.Rules})
+		writeJSON(w, http.StatusOK, document)
 		return
 	}
 	expected, err := parseConfigETag(r.Header.Get("If-Match"))
@@ -229,30 +230,49 @@ func (s *Server) adminAccess(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionRequired, "precondition_required", "If-Match with the current configuration revision is required", requestID(r.Context()))
 		return
 	}
-	var request struct {
-		Version int             `json:"v"`
-		Rules   []ACLRuleConfig `json:"rules"`
-	}
-	if err := s.decodeRequest(w, r, &request); err != nil {
+	var grant ACLRuleConfig
+	if err := s.decodeRequest(w, r, &grant); err != nil {
 		return
 	}
-	if request.Version != 1 {
-		writeError(w, http.StatusBadRequest, "invalid_policy", "policy version must be 1", requestID(r.Context()))
-		return
-	}
-	next := stored.Config
-	next.Authorization.Rules = cloneRules(request.Rules)
-	updated, err := s.replaceRuntimeConfig(r.Context(), expected, next)
+	updated, err := s.control.CreateResourceGrant(r.Context(), expected, grant, s.runtime().config.Services.S3)
 	if errors.Is(err, ErrRevisionConflict) {
-		writeError(w, http.StatusConflict, "revision_conflict", "broker configuration changed; reload before saving", requestID(r.Context()))
+		writeError(w, http.StatusConflict, "revision_conflict", "resource grants changed; reload before saving", requestID(r.Context()))
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_policy", err.Error(), requestID(r.Context()))
+		writeError(w, http.StatusBadRequest, "invalid_grant", err.Error(), requestID(r.Context()))
 		return
 	}
 	w.Header().Set("ETag", configETag(updated.Revision))
-	writeJSON(w, http.StatusOK, map[string]any{"v": 1, "revision": updated.Revision, "rules": request.Rules})
+	writeJSON(w, http.StatusCreated, updated)
+}
+
+func (s *Server) adminGrant(w http.ResponseWriter, r *http.Request) {
+	expected, err := parseConfigETag(r.Header.Get("If-Match"))
+	if err != nil {
+		writeError(w, http.StatusPreconditionRequired, "precondition_required", "If-Match with the current grants revision is required", requestID(r.Context()))
+		return
+	}
+	var updated PolicyDocument
+	if r.Method == http.MethodDelete {
+		updated, err = s.control.DeleteResourceGrant(r.Context(), expected, r.PathValue("grant"), s.runtime().config.Services.S3)
+	} else {
+		var grant ACLRuleConfig
+		if decodeErr := s.decodeRequest(w, r, &grant); decodeErr != nil {
+			return
+		}
+		updated, err = s.control.UpdateResourceGrant(r.Context(), expected, r.PathValue("grant"), grant, s.runtime().config.Services.S3)
+	}
+	if errors.Is(err, ErrRevisionConflict) {
+		writeError(w, http.StatusConflict, "revision_conflict", "resource grants changed; reload before saving", requestID(r.Context()))
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "grant_write_failed", err.Error(), requestID(r.Context()))
+		return
+	}
+	w.Header().Set("ETag", configETag(updated.Revision))
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) adminPrincipals(w http.ResponseWriter, r *http.Request) {
