@@ -2,14 +2,11 @@ package broker
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestPolicyStorePersistsAtomicallyAndRejectsStaleRevision(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state", "access.json")
-	store, err := NewPolicyStore(AdministrationConfig{StateFile: path}, AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "public", Access: "global", Capabilities: []string{"embeddings"}}}}, "acl-test")
+func TestPolicyStoreReplacesAtomicallyAndRejectsStaleRevision(t *testing.T) {
+	store, err := NewPolicyStore(AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "public", Access: "global", Capabilities: []string{"embeddings"}}}}, "acl-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,23 +24,10 @@ func TestPolicyStorePersistsAtomicallyAndRejectsStaleRevision(t *testing.T) {
 	if _, err := store.Replace(initial.Revision, nil); !errors.Is(err, ErrPolicyConflict) {
 		t.Fatalf("stale replace error=%v", err)
 	}
-	reloaded, err := NewPolicyStore(AdministrationConfig{StateFile: path}, AuthorizationConfig{}, "acl-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := reloaded.Snapshot(); got.Revision != 2 || got.Rules[0].Access != "authenticated" {
-		t.Fatalf("reloaded=%#v", got)
-	}
-	if mode := mustFileMode(t, filepath.Dir(path)); mode != 0o700 {
-		t.Fatalf("directory mode=%o", mode)
-	}
-	if mode := mustFileMode(t, path); mode != 0o600 {
-		t.Fatalf("file mode=%o", mode)
-	}
 }
 
 func TestPolicyStoreRejectsInvalidManagedRule(t *testing.T) {
-	store, err := NewPolicyStore(AdministrationConfig{}, AuthorizationConfig{}, "acl")
+	store, err := NewPolicyStore(AuthorizationConfig{}, "acl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +42,7 @@ func TestPolicyStoreRejectsUnavailableRoutesAndAllowsAnonymousNamedRoutes(t *tes
 		"primary": {AccessKeyID: "primary", SecretAccessKey: "secret"},
 		"public":  {AccessKeyID: "public", SecretAccessKey: "secret"},
 	}}
-	store, err := NewPolicyStore(AdministrationConfig{}, AuthorizationConfig{}, "acl", storage)
+	store, err := NewPolicyStore(AuthorizationConfig{}, "acl", storage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,13 +54,4 @@ func TestPolicyStoreRejectsUnavailableRoutesAndAllowsAnonymousNamedRoutes(t *tes
 	if _, err := store.Replace(1, []ACLRuleConfig{public}); err != nil {
 		t.Fatalf("rejected anonymous named route: %v", err)
 	}
-}
-
-func mustFileMode(t *testing.T, path string) os.FileMode {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return info.Mode().Perm()
 }

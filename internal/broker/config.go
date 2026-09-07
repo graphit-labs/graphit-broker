@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -16,11 +17,11 @@ import (
 )
 
 type Config struct {
-	Server         ServerConfig         `yaml:"server"`
-	Authentication AuthenticationConfig `yaml:"authentication"`
-	Administration AdministrationConfig `yaml:"administration"`
-	Authorization  AuthorizationConfig  `yaml:"authorization"`
-	Services       ServicesConfig       `yaml:"services"`
+	Server         ServerConfig         `yaml:"server" json:"server"`
+	Authentication AuthenticationConfig `yaml:"authentication" json:"authentication"`
+	Administration AdministrationConfig `yaml:"administration" json:"administration"`
+	Authorization  AuthorizationConfig  `yaml:"authorization" json:"authorization"`
+	Services       ServicesConfig       `yaml:"services" json:"services"`
 }
 
 type ServerConfig struct {
@@ -58,15 +59,19 @@ type APIKeyConfig struct {
 }
 
 type AdministrationConfig struct {
-	Enabled   bool             `yaml:"enabled"`
-	StateFile string           `yaml:"state_file"`
-	APIKeys   []AdminKeyConfig `yaml:"api_keys"`
+	Enabled           bool            `yaml:"enabled" json:"enabled"`
+	DatabasePath      string          `yaml:"database_path" json:"database_path"`
+	SuperadminSubject string          `yaml:"superadmin_subject" json:"superadmin_subject"`
+	SessionTTL        time.Duration   `yaml:"session_ttl" json:"session_ttl"`
+	OIDC              AdminOIDCConfig `yaml:"oidc" json:"oidc"`
 }
 
-type AdminKeyConfig struct {
-	Name        string `yaml:"name"`
-	Token       string `yaml:"token"`
-	TokenSHA256 string `yaml:"token_sha256"`
+type AdminOIDCConfig struct {
+	Issuer       string   `yaml:"issuer" json:"issuer"`
+	ClientID     string   `yaml:"client_id" json:"client_id"`
+	ClientSecret string   `yaml:"client_secret" json:"client_secret,omitempty"`
+	RedirectURL  string   `yaml:"redirect_url" json:"redirect_url"`
+	Scopes       []string `yaml:"scopes" json:"scopes,omitempty"`
 }
 
 type AuthorizationConfig struct {
@@ -74,18 +79,14 @@ type AuthorizationConfig struct {
 }
 
 type ACLRuleConfig struct {
-	Name          string   `yaml:"name" json:"name"`
-	Access        string   `yaml:"access" json:"access"`
-	Principal     string   `yaml:"principal" json:"principal,omitempty"`
-	Subjects      []string `yaml:"subjects" json:"subjects,omitempty"`
-	Users         []string `yaml:"users" json:"users,omitempty"`
-	Organizations []string `yaml:"organizations" json:"organizations,omitempty"`
-	Teams         []string `yaml:"teams" json:"teams,omitempty"`
-	Capabilities  []string `yaml:"capabilities" json:"capabilities"`
-	Projects      []string `yaml:"projects" json:"projects,omitempty"`
-	S3Operations  []string `yaml:"s3_operations" json:"s3_operations,omitempty"`
-	S3Prefixes    []string `yaml:"s3_prefixes" json:"s3_prefixes,omitempty"`
-	S3Route       string   `yaml:"s3_route" json:"s3_route,omitempty"`
+	Name         string   `yaml:"name" json:"name"`
+	Access       string   `yaml:"access" json:"access"`
+	Principal    string   `yaml:"principal" json:"principal,omitempty"`
+	Capabilities []string `yaml:"capabilities" json:"capabilities"`
+	Projects     []string `yaml:"projects" json:"projects,omitempty"`
+	S3Operations []string `yaml:"s3_operations" json:"s3_operations,omitempty"`
+	S3Prefixes   []string `yaml:"s3_prefixes" json:"s3_prefixes,omitempty"`
+	S3Route      string   `yaml:"s3_route" json:"s3_route,omitempty"`
 }
 
 type ServicesConfig struct {
@@ -173,6 +174,9 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
+	if subject := strings.TrimSpace(getenv("BROKER_SUPERADMIN_SUBJECT")); subject != "" {
+		cfg.Administration.SuperadminSubject = subject
+	}
 	cfg.defaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -220,6 +224,15 @@ func (c *Config) defaults() {
 	}
 	if c.Server.MaxRequestBytes == 0 {
 		c.Server.MaxRequestBytes = 4 << 20
+	}
+	if c.Administration.DatabasePath == "" {
+		c.Administration.DatabasePath = "/var/lib/graphit-auth-broker/broker.db"
+	}
+	if c.Administration.SessionTTL == 0 {
+		c.Administration.SessionTTL = 8 * time.Hour
+	}
+	if len(c.Administration.OIDC.Scopes) == 0 {
+		c.Administration.OIDC.Scopes = []string{"openid", "profile", "email"}
 	}
 	if c.Services.Embeddings.Route == "" {
 		c.Services.Embeddings.Route = "graphit-default"
@@ -309,25 +322,23 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Administration.Enabled {
-		if strings.TrimSpace(c.Administration.StateFile) == "" {
-			return errors.New("administration.state_file is required when administration is enabled")
+		if strings.TrimSpace(c.Administration.DatabasePath) == "" {
+			return errors.New("administration.database_path is required when administration is enabled")
 		}
-		if len(c.Administration.APIKeys) == 0 {
-			return errors.New("administration.api_keys needs at least one key when administration is enabled")
+		if strings.TrimSpace(c.Administration.SuperadminSubject) == "" {
+			return errors.New("administration.superadmin_subject or BROKER_SUPERADMIN_SUBJECT is required when administration is enabled")
 		}
-	}
-	for i, key := range c.Administration.APIKeys {
-		if strings.TrimSpace(key.Name) == "" {
-			return fmt.Errorf("administration.api_keys[%d].name is required", i)
+		if err := validateHTTPSURL(c.Administration.OIDC.Issuer, "administration OIDC issuer"); err != nil {
+			return err
 		}
-		if (key.Token == "") == (key.TokenSHA256 == "") {
-			return fmt.Errorf("administration.api_keys[%d] must set exactly one of token or token_sha256", i)
+		if strings.TrimSpace(c.Administration.OIDC.ClientID) == "" {
+			return errors.New("administration.oidc.client_id is required when administration is enabled")
 		}
-		if key.TokenSHA256 != "" {
-			decoded, err := hex.DecodeString(key.TokenSHA256)
-			if err != nil || len(decoded) != sha256.Size {
-				return fmt.Errorf("administration.api_keys[%d].token_sha256 must be a 64-character hexadecimal SHA-256", i)
-			}
+		if err := validateHTTPSOrLoopbackURL(c.Administration.OIDC.RedirectURL, "administration OIDC redirect URL"); err != nil {
+			return err
+		}
+		if c.Administration.SessionTTL < 5*time.Minute || c.Administration.SessionTTL > 7*24*time.Hour {
+			return errors.New("administration.session_ttl must be between 5m and 168h")
 		}
 	}
 	for i, rule := range c.Authorization.Rules {
@@ -407,15 +418,8 @@ func validateACLRule(rule ACLRuleConfig) error {
 		return errors.New("s3_route must be a safe route name")
 	}
 	access := strings.ToLower(strings.TrimSpace(rule.Access))
-	legacy := len(rule.Subjects)+len(rule.Users)+len(rule.Organizations)+len(rule.Teams) > 0
 	if access == "" {
-		if !legacy {
-			return errors.New("access is required (global, anonymous, authenticated, user, team, organization, or subject)")
-		}
-		return nil
-	}
-	if legacy {
-		return errors.New("access/principal cannot be combined with legacy identity selector fields")
+		return errors.New("access is required (global, anonymous, authenticated, user, team, organization, or subject)")
 	}
 	switch access {
 	case "global", "anonymous", "authenticated":
@@ -460,6 +464,22 @@ func validateHTTPSURL(raw, name string) error {
 		return fmt.Errorf("%s must use HTTPS", name)
 	}
 	return nil
+}
+
+func validateHTTPSOrLoopbackURL(raw, name string) error {
+	if err := validateHTTPURL(raw, name); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	ip := net.ParseIP(host)
+	if host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("%s must use HTTPS except on loopback", name)
 }
 
 func validateHTTPURL(raw, name string) error {

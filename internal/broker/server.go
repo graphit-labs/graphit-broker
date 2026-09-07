@@ -11,20 +11,30 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
+type runtimeState struct {
+	config                Config
+	configurationRevision uint64
+	authenticator         Authenticator
+	policy                *PolicyStore
+	acl                   *ACL
+	ai                    *AIService
+	presigner             PresignService
+	adminOIDC             AdminIdentityProvider
+}
+
 type Server struct {
-	config        Config
-	authenticator Authenticator
-	adminAuth     *AdminAuthenticator
-	policy        *PolicyStore
-	acl           *ACL
-	ai            *AIService
-	presigner     PresignService
-	handler       http.Handler
-	ready         bool
+	bootstrap            Config
+	state                atomic.Pointer[runtimeState]
+	control              *ControlStore
+	adminProviderFactory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)
+	handler              http.Handler
+	ready                atomic.Bool
 }
 
 type contextKey string
@@ -35,11 +45,46 @@ const (
 )
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
+	return newServerWithFactory(ctx, cfg, NewAdminIdentityProvider)
+}
+
+func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) (*Server, error) {
+	effective, revision := cfg, uint64(0)
+	var control *ControlStore
+	var err error
+	if cfg.Administration.Enabled {
+		var stored StoredConfig
+		control, stored, err = OpenControlStore(cfg.Administration.DatabasePath, cfg)
+		if err != nil {
+			return nil, err
+		}
+		effective, revision = stored.Config, stored.Revision
+		// These bootstrap values are controlled by the deployment and never overridden by SQLite.
+		effective.Administration.Enabled = true
+		effective.Administration.DatabasePath = cfg.Administration.DatabasePath
+		effective.Administration.SuperadminSubject = cfg.Administration.SuperadminSubject
+	}
+	runtime, err := buildRuntime(ctx, effective, revision, factory)
+	if err != nil {
+		if control != nil {
+			_ = control.Close()
+		}
+		return nil, err
+	}
+	s := newServerFromRuntime(cfg, runtime, control, factory)
+	return s, nil
+}
+
+func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) (*runtimeState, error) {
 	authenticator, err := NewAuthenticator(ctx, cfg.Authentication)
 	if err != nil {
 		return nil, err
 	}
-	policy, err := NewPolicyStore(cfg.Administration, cfg.Authorization, cfg.Services.S3.AuthorizationRevision, cfg.Services.S3)
+	authorizationRevision := cfg.Services.S3.AuthorizationRevision
+	if revision > 0 {
+		authorizationRevision += ".c" + strconv.FormatUint(revision, 10)
+	}
+	policy, err := NewPolicyStore(cfg.Authorization, authorizationRevision, cfg.Services.S3)
 	if err != nil {
 		return nil, err
 	}
@@ -47,20 +92,36 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.Services.S3.Enabled {
 		presigner = NewAWSPresignService(cfg.Services.S3)
 	}
-	return newServerWithDependencies(cfg, authenticator, NewAdminAuthenticator(cfg.Administration), NewAIService(cfg.Services), presigner, policy), nil
+	var adminOIDC AdminIdentityProvider
+	if cfg.Administration.Enabled {
+		adminOIDC, err = factory(ctx, cfg.Administration.OIDC)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &runtimeState{config: cfg, configurationRevision: revision, authenticator: authenticator,
+		policy: policy, acl: NewACLWithPolicy(policy), ai: NewAIService(cfg.Services), presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
 func newServer(cfg Config, authenticator Authenticator, ai *AIService) *Server {
-	policy, _ := NewPolicyStore(AdministrationConfig{}, cfg.Authorization, cfg.Services.S3.AuthorizationRevision, cfg.Services.S3)
+	policy, _ := NewPolicyStore(cfg.Authorization, cfg.Services.S3.AuthorizationRevision, cfg.Services.S3)
 	var presigner PresignService
 	if cfg.Services.S3.Enabled {
 		presigner = NewAWSPresignService(cfg.Services.S3)
 	}
-	return newServerWithDependencies(cfg, authenticator, NewAdminAuthenticator(cfg.Administration), ai, presigner, policy)
+	runtime := &runtimeState{config: cfg, authenticator: authenticator, policy: policy, acl: NewACLWithPolicy(policy), ai: ai, presigner: presigner}
+	return newServerFromRuntime(cfg, runtime, nil, nil)
 }
 
-func newServerWithDependencies(cfg Config, authenticator Authenticator, adminAuth *AdminAuthenticator, ai *AIService, presigner PresignService, policy *PolicyStore) *Server {
-	s := &Server{config: cfg, authenticator: authenticator, adminAuth: adminAuth, policy: policy, acl: NewACLWithPolicy(policy), ai: ai, presigner: presigner, ready: true}
+func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, policy *PolicyStore, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
+	runtime := &runtimeState{config: cfg, authenticator: authenticator, policy: policy, acl: NewACLWithPolicy(policy), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
+	return newServerFromRuntime(cfg, runtime, control, nil)
+}
+
+func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *ControlStore, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) *Server {
+	s := &Server{bootstrap: bootstrap, control: control, adminProviderFactory: factory}
+	s.state.Store(runtime)
+	s.ready.Store(true)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
@@ -68,23 +129,46 @@ func newServerWithDependencies(cfg Config, authenticator Authenticator, adminAut
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
 	mux.Handle("POST /v1/s3/presign", s.resolvePrincipal(http.HandlerFunc(s.s3Presign)))
-	if cfg.Administration.Enabled {
+	if bootstrap.Administration.Enabled {
 		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 		})
 		mux.HandleFunc("GET /admin/{$}", s.adminPage)
-		mux.Handle("/admin/api/v1/access", s.requireAdministration(http.HandlerFunc(s.adminAccess)))
-		mux.Handle("/admin/api/v1/principals", s.requireAdministration(http.HandlerFunc(s.adminPrincipals)))
+		mux.HandleFunc("GET /admin/auth/login", s.adminLogin)
+		mux.HandleFunc("GET /admin/auth/callback", s.adminCallback)
+		mux.HandleFunc("POST /admin/auth/logout", s.adminLogout)
+		mux.Handle("GET /admin/api/v1/session", s.requireAdministration("session.read", http.HandlerFunc(s.adminSession)))
+		mux.Handle("GET /admin/api/v1/config", s.requireAdministration("configuration.read", http.HandlerFunc(s.adminConfig)))
+		mux.Handle("PUT /admin/api/v1/config", s.requireAdministration("configuration.write", http.HandlerFunc(s.adminConfig)))
+		mux.Handle("GET /admin/api/v1/access", s.requireAdministration("access.read", http.HandlerFunc(s.adminAccess)))
+		mux.Handle("PUT /admin/api/v1/access", s.requireAdministration("access.write", http.HandlerFunc(s.adminAccess)))
+		mux.Handle("GET /admin/api/v1/principals", s.requireAdministration("access.read", http.HandlerFunc(s.adminPrincipals)))
+		mux.Handle("GET /admin/api/v1/roles", s.requireAdministration("roles.read", http.HandlerFunc(s.adminRoles)))
+		mux.Handle("PUT /admin/api/v1/roles/{role}", s.requireAdministration("roles.write", http.HandlerFunc(s.adminRole)))
+		mux.Handle("DELETE /admin/api/v1/roles/{role}", s.requireAdministration("roles.write", http.HandlerFunc(s.adminRole)))
+		mux.Handle("GET /admin/api/v1/role-assignments", s.requireAdministration("roles.read", http.HandlerFunc(s.adminAssignments)))
+		mux.Handle("POST /admin/api/v1/role-assignments", s.requireAdministration("roles.write", http.HandlerFunc(s.adminAssignments)))
+		mux.Handle("DELETE /admin/api/v1/role-assignments", s.requireAdministration("roles.write", http.HandlerFunc(s.adminAssignments)))
 	}
 	s.handler = s.observability(mux)
 	return s
 }
 
+func (s *Server) runtime() *runtimeState { return s.state.Load() }
+
+func (s *Server) Close() error {
+	if s.control != nil {
+		return s.control.Close()
+	}
+	return nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 
 func (s *Server) HTTPServer() *http.Server {
-	return &http.Server{Addr: s.config.Server.Address, Handler: s, ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout: s.config.Server.ReadTimeout, WriteTimeout: s.config.Server.WriteTimeout, IdleTimeout: s.config.Server.IdleTimeout}
+	cfg := s.runtime().config.Server
+	return &http.Server{Addr: cfg.Address, Handler: s, ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout: cfg.ReadTimeout, WriteTimeout: cfg.WriteTimeout, IdleTimeout: cfg.IdleTimeout}
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -92,7 +176,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) readyHandler(w http.ResponseWriter, _ *http.Request) {
-	if !s.ready {
+	if !s.ready.Load() {
 		writeError(w, http.StatusServiceUnavailable, "not_ready", "broker is not ready", "")
 		return
 	}
@@ -100,34 +184,36 @@ func (s *Server) readyHandler(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
+	state := s.runtime()
 	services := map[string]any{}
-	if cfg := s.config.Services.Embeddings; cfg.Enabled {
+	if cfg := state.config.Services.Embeddings; cfg.Enabled {
 		services["embeddings"] = map[string]any{"protocol": "openai-embeddings-v1", "path": "/v1/embeddings", "route": cfg.Route,
 			"revision": cfg.Revision, "dimensions": cfg.Dimensions, "max_batch": cfg.MaxBatch}
 	}
-	if cfg := s.config.Services.Rerank; cfg.Enabled {
+	if cfg := state.config.Services.Rerank; cfg.Enabled {
 		services["rerank"] = map[string]any{"protocol": "graphit-rerank-v1", "path": "/v1/rerank", "route": cfg.Route,
 			"revision": cfg.Revision, "max_documents": cfg.MaxDocuments}
 	}
-	if cfg := s.config.Services.S3; cfg.Enabled {
+	if cfg := state.config.Services.S3; cfg.Enabled {
 		services["s3_presign"] = map[string]any{"protocol": "graphit-s3-presign-v1", "path": "/v1/s3/presign",
-			"authorization_revision": s.acl.Revision(), "default_expires_in": int64(cfg.PresignExpiry / time.Second), "max_expires_in": int64(cfg.MaxPresignExpiry / time.Second)}
+			"authorization_revision": state.acl.Revision(), "default_expires_in": int64(cfg.PresignExpiry / time.Second), "max_expires_in": int64(cfg.MaxPresignExpiry / time.Second)}
 	}
 	audiences := []string{}
-	for _, issuer := range s.config.Authentication.OIDC {
+	for _, issuer := range state.config.Authentication.OIDC {
 		audiences = append(audiences, issuer.Audiences...)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.config.Server.PublicURL,
+	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": state.config.Server.PublicURL,
 		"authentication": map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}, "services": services})
 }
 
 func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Services.Embeddings.Enabled {
+	state := s.runtime()
+	if !state.config.Services.Embeddings.Enabled {
 		writeError(w, http.StatusNotFound, "capability_disabled", "embeddings are disabled", requestID(r.Context()))
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if err := s.acl.AuthorizeCapability(principal, "embeddings"); err != nil {
+	if err := state.acl.AuthorizeCapability(principal, "embeddings"); err != nil {
 		writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
 		return
 	}
@@ -143,7 +229,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), requestID(r.Context()))
 		return
 	}
-	cfg := s.config.Services.Embeddings
+	cfg := state.config.Services.Embeddings
 	if len(inputs) == 0 || len(inputs) > cfg.MaxBatch {
 		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("input must contain between 1 and %d items", cfg.MaxBatch), requestID(r.Context()))
 		return
@@ -160,7 +246,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "embedding input exceeds configured limit", requestID(r.Context()))
 		return
 	}
-	response, cached, err := s.ai.Embed(r.Context(), principal, inputs)
+	response, cached, err := state.ai.Embed(r.Context(), principal, inputs)
 	if err != nil {
 		s.upstreamFailure(w, r, err)
 		return
@@ -193,12 +279,13 @@ func validateRequestProjectKey(project, key string) error {
 }
 
 func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Services.Rerank.Enabled {
+	state := s.runtime()
+	if !state.config.Services.Rerank.Enabled {
 		writeError(w, http.StatusNotFound, "capability_disabled", "rerank is disabled", requestID(r.Context()))
 		return
 	}
 	principal := principalFromContext(r.Context())
-	if err := s.acl.AuthorizeCapability(principal, "rerank"); err != nil {
+	if err := state.acl.AuthorizeCapability(principal, "rerank"); err != nil {
 		writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
 		return
 	}
@@ -211,7 +298,7 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
 	}
-	cfg := s.config.Services.Rerank
+	cfg := state.config.Services.Rerank
 	if strings.TrimSpace(request.Query) == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "query is required", requestID(r.Context()))
 		return
@@ -233,7 +320,7 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "top_n must be between 1 and the number of documents", requestID(r.Context()))
 		return
 	}
-	response, cached, err := s.ai.Rerank(r.Context(), principal, request.Query, request.Documents, request.TopN)
+	response, cached, err := state.ai.Rerank(r.Context(), principal, request.Query, request.Documents, request.TopN)
 	if err != nil {
 		s.upstreamFailure(w, r, err)
 		return
@@ -248,7 +335,8 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Services.S3.Enabled || s.presigner == nil {
+	state := s.runtime()
+	if !state.config.Services.S3.Enabled || state.presigner == nil {
 		writeError(w, http.StatusNotFound, "capability_disabled", "S3 presigned operations are disabled", requestID(r.Context()))
 		return
 	}
@@ -261,7 +349,7 @@ func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	principal := principalFromContext(r.Context())
-	grant, err := s.acl.AuthorizeS3Request(principal, request.Project, request.Operation, s.config.Services.S3.DefaultRoute)
+	grant, err := state.acl.AuthorizeS3Request(principal, request.Project, request.Operation, state.config.Services.S3.DefaultRoute)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
@@ -270,7 +358,7 @@ func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response, err := s.presigner.Presign(r.Context(), grant, request)
+	response, err := state.presigner.Presign(r.Context(), grant, request)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
@@ -280,7 +368,7 @@ func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response.AuthorizationRevision = s.acl.Revision()
+	response.AuthorizationRevision = state.acl.Revision()
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, response)
 }
@@ -299,7 +387,7 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "authorization must use one bearer credential", requestID(r.Context()))
 			return
 		}
-		principal, err := s.authenticator.Authenticate(r.Context(), raw)
+		principal, err := s.runtime().authenticator.Authenticate(r.Context(), raw)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="graphit-auth-broker"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer credentials are required", requestID(r.Context()))
@@ -331,7 +419,7 @@ func (s *Server) observability(next http.Handler) http.Handler {
 }
 
 func (s *Server) decodeRequest(w http.ResponseWriter, r *http.Request, target any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, s.config.Server.MaxRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, s.runtime().config.Server.MaxRequestBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

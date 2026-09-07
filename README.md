@@ -8,9 +8,11 @@ exposes three independently deployable capabilities:
 - Graphit rerank v1 at `POST /v1/rerank`;
 - per-operation S3 pre-signed requests at `POST /v1/s3/presign`, including anonymous grants.
 
-It also includes a separately protected ACL console at `/admin/`. Administrators can publish
-global, anonymous, authenticated, user, team, organization and subject grants without restarting
-the process. Changes use revision-based compare-and-swap and an atomically persisted policy file.
+It also includes an OIDC-protected control plane at `/admin/`. Administrators can edit the complete
+broker configuration, publish global/anonymous/authenticated/user/team/organization/subject grants,
+and assign action-based roles without restarting the process. SQLite persists configuration,
+administrative sessions and role assignments in a Docker-mountable volume. Configuration changes
+use revision-based compare-and-swap and are activated atomically in the running broker.
 
 The broker exclusively owns upstream AI credentials, model selection, bucket/region/endpoint,
 storage prefixes, direct S3 signing credentials and cache policy. A Graphit
@@ -26,14 +28,21 @@ buckets, regions or S3-compatible services without changing any Graphit provider
 
 Requirements: Docker 24+ (recommended), or Go 1.26+ for a source build.
 
+Before starting, register a confidential OIDC web application whose exact callback is
+`https://YOUR-BROKER/admin/auth/callback`, identify the immutable `sub` claim for the first owner,
+and place that value in `BROKER_SUPERADMIN_SUBJECT`. On an empty database no other identity can
+open administration; the superadmin can then assign the built-in `admin` role or create narrower
+roles in the UI.
+
 ```bash
 cp config.example.yaml config.yaml
 cp .env.example .env
-# Fill the IdP, upstream API and AWS values in .env/config.yaml.
+# Fill administration OIDC, upstream API and S3 values in .env/config.yaml.
 docker compose -f docker-compose.example.yml up --build -d
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 curl --fail http://127.0.0.1:8080/.well-known/graphit-broker
+# Then open https://YOUR-BROKER/admin/ and sign in through OIDC.
 ```
 
 Validate before deploying:
@@ -44,6 +53,17 @@ docker run --rm --env-file .env \
   -v "$PWD/config.yaml:/etc/graphit-auth-broker/config.yaml:ro" \
   graphit-auth-broker:local --check-config
 ```
+
+The named `broker-state` volume contains `/var/lib/graphit-auth-broker/broker.db`. After its first
+successful start, SQLite is authoritative for mutable settings; `config.yaml` is the seed for a new
+database. `administration.database_path` and `BROKER_SUPERADMIN_SUBJECT` remain deployment-owned
+bootstrap controls. See the administration and operations guides before backing up, restoring or
+rotating secrets.
+
+SQLite (including its WAL/SHM companions) is the broker's only mutable persistence. ACLs, complete
+configuration, roles, assignments, OIDC login flows and admin sessions are all tables in that
+database. AI caches are deliberately memory-only and signed URLs are never persisted. There is no
+legacy file loader, compatibility mode or database migration path in this development version.
 
 For a harmless smoke test with every external capability disabled:
 

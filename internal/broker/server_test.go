@@ -112,72 +112,12 @@ func TestServerAllowsOnlyExplicitAnonymousAndNeverDowngradesInvalidBearer(t *tes
 	_ = resp.Body.Close()
 }
 
-func TestServerAdminAPIProtectsAndAtomicallyUpdatesPolicy(t *testing.T) {
-	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
-	cfg.Administration = AdministrationConfig{Enabled: true, StateFile: t.TempDir() + "/access.json", APIKeys: []AdminKeyConfig{{Name: "owner", Token: "admin-secret"}}}
-	policy, err := NewPolicyStore(cfg.Administration, cfg.Authorization, "acl-1", cfg.Services.S3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(context.Context, string) (Principal, error) { return Principal{}, ErrUnauthenticated }), NewAdminAuthenticator(cfg.Administration), NewAIService(cfg.Services), nil, policy))
-	defer server.Close()
-
-	page, err := http.Get(server.URL + "/admin/")
-	if err != nil || page.StatusCode != http.StatusOK {
-		t.Fatalf("admin page status=%s err=%v", statusText(page), err)
-	}
-	if page.Header.Get("Content-Security-Policy") == "" || page.Header.Get("X-Frame-Options") != "DENY" {
-		t.Fatalf("admin page security headers missing: %#v", page.Header)
-	}
-	_ = page.Body.Close()
-	unauthorized, _ := http.Get(server.URL + "/admin/api/v1/access")
-	if unauthorized.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("admin API without token=%d", unauthorized.StatusCode)
-	}
-	_ = unauthorized.Body.Close()
-
-	get, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/api/v1/access", nil)
-	get.Header.Set("Authorization", "Bearer admin-secret")
-	current, err := http.DefaultClient.Do(get)
-	if err != nil || current.StatusCode != http.StatusOK || current.Header.Get("ETag") != `"1"` {
-		t.Fatalf("admin get status=%s etag=%q err=%v", statusText(current), current.Header.Get("ETag"), err)
-	}
-	_ = current.Body.Close()
-
-	body := `{"v":1,"rules":[{"name":"public embeddings","access":"anonymous","capabilities":["embeddings"]}]}`
-	put, _ := http.NewRequest(http.MethodPut, server.URL+"/admin/api/v1/access", bytes.NewBufferString(body))
-	put.Header.Set("Authorization", "Bearer admin-secret")
-	put.Header.Set("Content-Type", "application/json")
-	put.Header.Set("If-Match", `"1"`)
-	updated, err := http.DefaultClient.Do(put)
-	if err != nil || updated.StatusCode != http.StatusOK || updated.Header.Get("ETag") != `"2"` {
-		t.Fatalf("admin put status=%s etag=%q err=%v", statusText(updated), updated.Header.Get("ETag"), err)
-	}
-	_ = updated.Body.Close()
-	if err := newServer(cfg, nil, nil).acl.AuthorizeCapability(AnonymousPrincipal(), "embeddings"); err == nil {
-		t.Fatal("separate server unexpectedly shared policy")
-	}
-	if err := NewACLWithPolicy(policy).AuthorizeCapability(AnonymousPrincipal(), "embeddings"); err != nil {
-		t.Fatalf("updated policy not effective: %v", err)
-	}
-
-	stale, _ := http.NewRequest(http.MethodPut, server.URL+"/admin/api/v1/access", bytes.NewBufferString(body))
-	stale.Header.Set("Authorization", "Bearer admin-secret")
-	stale.Header.Set("Content-Type", "application/json")
-	stale.Header.Set("If-Match", `"1"`)
-	conflict, err := http.DefaultClient.Do(stale)
-	if err != nil || conflict.StatusCode != http.StatusConflict {
-		t.Fatalf("stale update status=%s err=%v", statusText(conflict), err)
-	}
-	_ = conflict.Body.Close()
-}
-
 func TestServerPresignsAnonymousRequestOnlyWhenACLAllowsIt(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
 	cfg.Services.S3.PresignExpiry = time.Minute
 	cfg.Services.S3.MaxPresignExpiry = 5 * time.Minute
 	cfg.Authorization.Rules = []ACLRuleConfig{{Name: "public project", Access: "anonymous", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"read"}, S3Prefixes: []string{"v2/projects/{project}"}}}
-	policy, _ := NewPolicyStore(AdministrationConfig{}, cfg.Authorization, "acl-1", cfg.Services.S3)
+	policy, _ := NewPolicyStore(cfg.Authorization, "acl-1", cfg.Services.S3)
 	called := false
 	presigner := presignFunc(func(_ context.Context, grant S3Grant, request PresignRequest) (PresignResponse, error) {
 		called = true
@@ -186,7 +126,7 @@ func TestServerPresignsAnonymousRequestOnlyWhenACLAllowsIt(t *testing.T) {
 		}
 		return PresignResponse{Method: http.MethodGet, URL: "https://s3.example/signed", ExpiresAt: time.Now().Add(time.Minute)}, nil
 	})
-	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(context.Context, string) (Principal, error) { return Principal{}, ErrUnauthenticated }), nil, NewAIService(cfg.Services), presigner, policy))
+	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(context.Context, string) (Principal, error) { return Principal{}, ErrUnauthenticated }), NewAIService(cfg.Services), presigner, policy, nil, nil))
 	defer server.Close()
 	resp := post(t, server.URL+"/v1/s3/presign", "", `{"project":"project-a","operation":"get","key":"v2/projects/project-a/object"}`)
 	if resp.StatusCode != http.StatusOK || !called {
@@ -255,8 +195,8 @@ func testServerConfig(embeddingURL, rerankURL string) Config {
 	return Config{
 		Server: ServerConfig{MaxRequestBytes: 1 << 20},
 		Authorization: AuthorizationConfig{Rules: []ACLRuleConfig{
-			{Name: "ai", Organizations: []string{"acme"}, Capabilities: []string{"embeddings", "rerank"}},
-			{Name: "s3", Organizations: []string{"acme"}, Teams: []string{"platform"}, Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/projects/{project}"}},
+			{Name: "ai", Access: "organization", Principal: "acme", Capabilities: []string{"embeddings", "rerank"}},
+			{Name: "s3", Access: "team", Principal: "platform", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/projects/{project}"}},
 		}},
 		Services: ServicesConfig{
 			Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "default", Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: HTTPUpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},

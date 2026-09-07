@@ -24,14 +24,19 @@ authentication:
   #     organization: "local"
   #     teams: ["automation"]
 
-# The management UI uses a separate credential namespace. Its token can never authorize an AI
-# or S3 request. The state file contains ACL policy, not credentials, and is written atomically.
+# Administration uses its own confidential OIDC client. SQLite becomes authoritative after the
+# first start; the deployment-owned database path and superadmin subject always remain external.
 administration:
   enabled: true
-  state_file: "/var/lib/graphit-auth-broker/access-policy.json"
-  api_keys:
-    - name: "platform-admin"
-      token_sha256: "${BROKER_ADMIN_TOKEN_SHA256:?set the SHA-256 of the administration token}"
+  database_path: "/var/lib/graphit-auth-broker/broker.db"
+  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?set the exact OIDC sub for the bootstrap superadmin}"
+  session_ttl: 8h
+  oidc:
+    issuer: "${BROKER_ADMIN_OIDC_ISSUER:?set the administration OIDC issuer}"
+    client_id: "${BROKER_ADMIN_OIDC_CLIENT_ID:?set the administration OIDC client ID}"
+    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?set the confidential client secret}"
+    redirect_url: "${BROKER_ADMIN_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
+    scopes: ["openid", "profile", "email"]
 
 authorization:
   rules:
@@ -67,7 +72,8 @@ authorization:
     #   s3_route: "public"
     #   s3_prefixes: ["v2/projects/public-catalog"]
     # - name: "local automation"
-    #   subjects: ["local-automation"]
+    #   access: "subject"
+    #   principal: "local-automation"
     #   capabilities: ["embeddings", "rerank"]
 
 services:

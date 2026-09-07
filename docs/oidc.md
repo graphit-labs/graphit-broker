@@ -1,5 +1,14 @@
 # OIDC integration guide
 
+Most installations register two OIDC applications:
+
+1. a public/native client used by Graphit users to obtain consumer access/refresh tokens;
+2. a confidential web client used by the broker administration UI to obtain administrator ID
+   tokens and establish a server-side session.
+
+They can share one issuer, but have different redirect URIs, audiences, credentials and trust
+boundaries. Assigning the same human to both does not merge the permissions.
+
 ## What the identity provider must issue
 
 The Graphit CLI uses Authorization Code + PKCE and obtains an access token and refresh token. The
@@ -50,6 +59,42 @@ accepted only by the verifier for its exact `iss`. If Graphit's MCP endpoint and
 the same token, configure the same audience for both. For IdPs that cannot mint one token usable by
 both resources, use a dedicated common API audience or introduce token exchange at your gateway;
 the current Graphit profile intentionally keeps a single refreshable access-token session.
+
+## Administration OIDC application
+
+Create a second web application for the broker control plane:
+
+- grant: Authorization Code;
+- redirect: exactly `https://broker.example.com/admin/auth/callback`;
+- client authentication: a client secret (recommended); store it only in deployment secrets and
+  the protected SQLite control-plane database;
+- PKCE: allow S256—the broker always sends it in addition to confidential-client authentication;
+- scopes: `openid profile email`, or a smaller set containing `openid`;
+- ID token: include immutable `sub`, the administration client ID in `aud`, and normal expiry.
+
+```yaml
+administration:
+  enabled: true
+  database_path: /var/lib/graphit-auth-broker/broker.db
+  superadmin_subject: ${BROKER_SUPERADMIN_SUBJECT:?required}
+  session_ttl: 8h
+  oidc:
+    issuer: https://id.example.com/realms/acme
+    client_id: graphit-broker-admin
+    client_secret: ${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}
+    redirect_url: https://broker.example.com/admin/auth/callback
+    scopes: [openid, profile, email]
+```
+
+Set `BROKER_SUPERADMIN_SUBJECT` to the exact `sub` of the first owner, start with an empty persistent
+database, browse to `/admin/`, and sign in. Before any role assignment exists only that subject is
+accepted. Use **Roles & users** to assign the built-in `admin` role to additional exact subjects.
+The superadmin remains an out-of-band deployment override and is never removed by database edits.
+
+For providers such as Keycloak, create a confidential client, enable Standard Flow, register the
+exact valid redirect URI, and map any desired name/email claims into the ID token. For Auth0 or
+Okta, create a regular web application and configure the same callback. Provider-specific labels
+differ, but the protocol requirements above are the contract.
 
 ## Graphit provider and login
 
@@ -115,3 +160,9 @@ Use `organization_claim: organization.id` and `teams_claim: authorization.teams`
 - Repeat with wrong audience, expired token, missing scope and unauthorized team; expect 401 for
   authentication failures and 403 for ACL failures.
 - Verify refresh by using a short access-token lifetime in a non-production tenant.
+- Open `/admin/auth/login`, confirm the redirect uses the administration client, then verify the
+  callback establishes an HttpOnly cookie and `/admin/api/v1/session` reports the exact subject.
+- Try an unassigned administration subject and expect 403; assign then revoke `admin` and confirm
+  access changes immediately.
+- Rotate the administration client secret through the full configuration UI/API and confirm the
+  next login uses the replacement while existing sessions expire at their configured lifetime.

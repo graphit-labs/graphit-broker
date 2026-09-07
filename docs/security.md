@@ -30,10 +30,11 @@ adding the replacement, rolling clients, then removing the old entry.
 
 ## ACL semantics
 
-There are no implicit grants. Every non-empty selector category on a rule is conjunctive; values
-inside a category are alternatives. A broad wildcard is therefore powerful and should be paired
-with organization/team selectors. Treat claim-mapping changes as security changes and test both
-positive and negative cases.
+There are no implicit grants. Each rule has one canonical access level and, for user/team/
+organization/subject, one exact verified principal. Project/capability patterns within the rule are
+additional constraints. Broad wildcards are powerful; prefer a narrowly scoped access principal and
+project/prefix set. Treat claim-mapping changes as security changes and test both positive and
+negative cases.
 
 For S3, the broker resolves the ACL-selected route, verifies the logical project, operation and
 prefix, prepends the private route `base_prefix`, and signs only that method and object/list prefix.
@@ -58,10 +59,28 @@ next presign request.
 
 ## Administration plane
 
-Administration tokens are hashed and compared in constant time, live in a separate namespace, and
-cannot be used as consumer credentials. The policy file is mode 0600 and replaced atomically.
-Protect the UI with HTTPS and preferably an additional network/identity boundary; back up policy
-state and rotate admin tokens independently.
+Administration uses a separate OIDC Authorization Code client. Login state and nonce are one-time
+and expiring; PKCE S256 is used even with a confidential client secret. ID tokens are checked for
+signature, exact issuer, administration client audience and expiration. The browser session is an
+opaque random value stored only as a SHA-256 hash in SQLite and delivered as `HttpOnly`,
+`SameSite=Lax`, and (under HTTPS) `Secure`. Cookie-backed mutations also require a per-session CSRF
+token. Logout deletes the server-side session.
+
+Authorization is action-based RBAC. The environment-defined exact superadmin subject always has all
+administration actions; unassigned subjects have none. With no role assignments, this leaves only
+the superadmin. The built-in `admin` role grants every current action, and narrower roles can be
+created without weakening authentication. Protect `roles.write` carefully because it delegates
+administrative authority.
+
+SQLite uses a `0700` parent and `0600` database. It contains the mutable full configuration,
+including actual AI/S3/API-key/OIDC client secrets, plus roles, assignments and sessions. Read APIs
+replace populated secrets with `[configured-secret]`, but a filesystem reader can recover them;
+encrypt and access-control the volume and backups accordingly. Configuration saves validate and
+prepare a complete new runtime before compare-and-swap persistence and atomic activation.
+
+Protect `/admin/` with HTTPS and preferably an additional network boundary. Use a dedicated
+administration OIDC client, short sessions, IdP MFA/conditional access, exact subject assignments,
+and regular role review. Never reuse a consumer API key as an administration credential.
 
 ## AI and cache isolation
 

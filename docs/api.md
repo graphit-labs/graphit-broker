@@ -117,7 +117,47 @@ method, operation, key, revision, expiry and destination, executes it immediatel
 
 ## Administration API
 
-`GET|PUT /admin/api/v1/access` and `GET /admin/api/v1/principals` require a separately configured
-administration bearer token. PUT replaces the complete policy and requires the prior ETag in
-`If-Match`; stale updates return 409. See [Administration UI](administration.md) for schema and
-operational details.
+All administration APIs require an OIDC-authenticated subject authorized for the endpoint action.
+The browser uses an opaque server-side session cookie; state-changing calls additionally send
+`X-CSRF-Token` from `GET /admin/api/v1/session`. API clients may instead use an OIDC ID token whose
+audience is the configured administration client ID. A consumer bearer key is not an administrator
+credential merely because both use the Authorization header.
+
+| Method and path | Required action | Purpose |
+|---|---|---|
+| `GET /admin/api/v1/session` | `session.read` | current subject, name/email, roles/permissions, superadmin status and CSRF token |
+| `GET /admin/api/v1/config` | `configuration.read` | complete strict YAML with secrets redacted, revision and timestamp |
+| `PUT /admin/api/v1/config` | `configuration.write` | validate, persist and atomically activate the complete YAML |
+| `GET /admin/api/v1/access` | `access.read` | structured consumer ACL document |
+| `PUT /admin/api/v1/access` | `access.write` | replace ACLs and atomically activate them |
+| `GET /admin/api/v1/principals` | `access.read` | built-in and API-key principals without credentials |
+| `GET /admin/api/v1/roles` | `roles.read` | role definitions and supported actions |
+| `PUT /admin/api/v1/roles/{role}` | `roles.write` | create or replace a role's permissions |
+| `DELETE /admin/api/v1/roles/{role}` | `roles.write` | delete a custom role and its assignments; built-in `admin` is protected |
+| `GET /admin/api/v1/role-assignments` | `roles.read` | assignments and bootstrap-only status |
+| `POST /admin/api/v1/role-assignments` | `roles.write` | assign a role to an exact OIDC subject |
+| `DELETE /admin/api/v1/role-assignments` | `roles.write` | revoke one subject/role assignment |
+
+Complete configuration reads return this envelope and an `ETag` header:
+
+```json
+{"revision":4,"updated_at":"2026-09-07T18:00:00Z","yaml":"server:\n  ..."}
+```
+
+Every populated secret in `yaml` is `[configured-secret]`. A PUT sends
+`{"yaml":"..."}` with the current `If-Match`; unchanged placeholders retain stored secrets.
+Access PUT similarly requires `If-Match` and sends the complete document:
+
+```json
+{"v":1,"rules":[{"name":"public catalog","access":"anonymous","capabilities":["s3"],"projects":["catalog"],"s3_operations":["read"],"s3_prefixes":["v2/projects/catalog"]}]}
+```
+
+Role writes use `{"permissions":["configuration.read","access.read"]}`. Assignment POST and
+DELETE both use `{"subject":"immutable-oidc-sub","role":"admin"}`. Missing preconditions return
+`428`, stale configuration revisions return `409`, invalid credentials return `401`, and a valid
+identity without the required action returns `403`.
+
+OIDC browser endpoints are `GET /admin/auth/login`, `GET /admin/auth/callback`, and
+`POST /admin/auth/logout`. Login creates one-time state/nonce/PKCE data; callback consumes it and
+creates the session; logout requires the session CSRF token and invalidates the server-side session.
+See [Administration](administration.md) for bootstrap, role and secret semantics.

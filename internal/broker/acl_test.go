@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-func TestACLIsDenyByDefaultAndRequiresAllConfiguredSelectors(t *testing.T) {
+func TestACLIsDenyByDefaultAndRequiresConfiguredAccessPrincipal(t *testing.T) {
 	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{
-		Name: "platform", Organizations: []string{"acme"}, Teams: []string{"platform"}, Capabilities: []string{"embeddings"},
+		Name: "platform", Access: "team", Principal: "platform", Capabilities: []string{"embeddings"},
 	}}}, "rev")
 	allowed := Principal{Issuer: "https://id", Subject: "1", Username: "alice", Organization: "acme", Teams: []string{"platform"}}
 	if err := acl.AuthorizeCapability(allowed, "embeddings"); err != nil {
@@ -22,7 +22,7 @@ func TestACLIsDenyByDefaultAndRequiresAllConfiguredSelectors(t *testing.T) {
 }
 
 func TestACLBuildsTemplatedS3Grant(t *testing.T) {
-	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "publish", Organizations: []string{"acme"}, Teams: []string{"platform"},
+	acl := NewACL(AuthorizationConfig{Rules: []ACLRuleConfig{{Name: "publish", Access: "organization", Principal: "acme",
 		Capabilities: []string{"s3"}, Projects: []string{"platform-*"}, S3Operations: []string{"publish"},
 		S3Prefixes: []string{"v2/organizations/{organization}/projects/{project}"}, S3Route: "tenant-a",
 	}}}, "rev")

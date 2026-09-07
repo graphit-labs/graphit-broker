@@ -12,7 +12,8 @@ authentication:
 authorization:
   rules:
     - name: "synthetic principal"
-      subjects: ["smoke-test"]
+      access: "subject"
+      principal: "smoke-test"
       capabilities: ["embeddings"]
 
 services:

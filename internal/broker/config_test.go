@@ -16,7 +16,8 @@ authentication:
 authorization:
   rules:
     - name: allow
-      subjects: [service]
+      access: subject
+      principal: service
       capabilities: [embeddings]
 services:
   embeddings:
@@ -63,6 +64,37 @@ func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
 	cfg.defaults()
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestAdministrationConfigUsesEnvironmentSuperadminAndRejectsRemoteHTTPCallback(t *testing.T) {
+	input := `
+administration:
+  enabled: true
+  database_path: /tmp/broker.db
+  superadmin_subject: yaml-subject
+  session_ttl: 1h
+  oidc:
+    issuer: https://identity.example.com
+    client_id: broker-admin
+    client_secret: secret
+    redirect_url: http://localhost:8080/admin/auth/callback
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
+		if name == "BROKER_SUPERADMIN_SUBJECT" {
+			return "environment-subject"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Administration.SuperadminSubject != "environment-subject" {
+		t.Fatalf("superadmin=%q", cfg.Administration.SuperadminSubject)
+	}
+	cfg.Administration.OIDC.RedirectURL = "http://broker.example.com/admin/auth/callback"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS except on loopback") {
+		t.Fatalf("remote HTTP callback validation=%v", err)
 	}
 }
 
@@ -128,8 +160,8 @@ services:
 	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
 		t.Fatalf("DecodeConfig error=%v", err)
 	}
-	legacy := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: legacy\n", 1)
-	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
-		t.Fatal("legacy storage field was accepted")
+	unsupported := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: removed\n", 1)
+	if _, err := DecodeConfig(strings.NewReader(unsupported), func(string) string { return "" }); err == nil {
+		t.Fatal("removed storage field was accepted")
 	}
 }

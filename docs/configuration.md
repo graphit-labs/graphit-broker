@@ -6,6 +6,16 @@ The broker reads one strict YAML document. Unknown fields are rejected. Set its 
 `${NAME:?message}` makes it mandatory. Run `graphit-auth-broker --config FILE --check-config`
 before rollout.
 
+When administration is enabled, that document seeds a newly created SQLite database. Afterwards,
+the database configuration is authoritative and can be edited through the UI/API. The deployment
+still controls the database path, whether admin routes exist, and the effective superadmin subject.
+This prevents a database edit or restore from redirecting the state path or replacing emergency
+ownership.
+
+SQLite is the only mutable persistence. There is no import of an earlier policy file, compatibility
+decoder, schema migration, or precedence merge with changed seed YAML. During development, an
+incompatible schema change requires a deliberately new/empty database volume.
+
 ## Server
 
 | Field | Default | Meaning |
@@ -68,15 +78,34 @@ printf '%s' 'a-long-random-value' | sha256sum
 ```yaml
 administration:
   enabled: true
-  state_file: /var/lib/graphit-auth-broker/access-policy.json
-  api_keys:
-    - name: platform-admin
-      token_sha256: ${BROKER_ADMIN_TOKEN_SHA256:?required}
+  database_path: /var/lib/graphit-auth-broker/broker.db
+  superadmin_subject: ${BROKER_SUPERADMIN_SUBJECT:?required}
+  session_ttl: 8h
+  oidc:
+    issuer: ${BROKER_ADMIN_OIDC_ISSUER:?required}
+    client_id: ${BROKER_ADMIN_OIDC_CLIENT_ID:?required}
+    client_secret: ${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}
+    redirect_url: ${BROKER_ADMIN_OIDC_REDIRECT_URL:?required}
+    scopes: [openid, profile, email]
 ```
 
-Administration credentials are separate from consumer credentials. Configure exactly one of
-`token` or `token_sha256` per key; a digest is recommended. `state_file` must be on a writable,
-persistent filesystem. Disable this section to remove every `/admin` route.
+| Field | Default | Meaning |
+|---|---:|---|
+| `enabled` | `false` | Mount the administration routes and initialize the control plane. |
+| `database_path` | `/var/lib/graphit-auth-broker/broker.db` | SQLite file on a writable persistent volume. |
+| `superadmin_subject` | none | Exact immutable OIDC `sub`; `BROKER_SUPERADMIN_SUBJECT` overrides it. |
+| `session_ttl` | `8h` | Server-side browser session lifetime, from `5m` through `168h`. |
+| `oidc.issuer` | none | HTTPS discovery issuer for administrator identities. |
+| `oidc.client_id` | none | Administration application's client/audience ID. |
+| `oidc.client_secret` | empty | Confidential-client secret; optional only when the IdP permits a public client. |
+| `oidc.redirect_url` | none | Exact absolute callback URL ending in `/admin/auth/callback`. |
+| `oidc.scopes` | `openid profile email` | Authorization request scopes; `openid` is always included. |
+
+The administration OIDC client is independent of consumer authentication. Its ID tokens do not
+automatically grant consumer ACL access, and consumer tokens do not grant administrative actions.
+The database stores mutable configuration, actual secret values, roles, assignments, login flows
+and sessions, so protect and back it up as secret material. Disable this section to remove every
+`/admin` route. See [Administration](administration.md) for role and bootstrap semantics.
 
 ## Authorization
 
@@ -102,9 +131,9 @@ authorization:
         - v2/projects/{project}
 ```
 
-The older selector arrays remain accepted only as an alternative representation and cannot be
-mixed with `access`/`principal`. Capabilities are
-`embeddings`, `rerank`, `s3`, or operation-specific values such as `s3:read`. S3 rules may also
+There is no legacy selector-array form: every rule must use exactly one canonical `access` level
+and its corresponding `principal` when required. Capabilities are `embeddings`, `rerank`, `s3`, or
+operation-specific values such as `s3:read`. S3 rules may also
 restrict `projects`, `s3_operations`, `s3_route`, and `s3_prefixes`. Prefixes are logical Graphit
 keys, not physical bucket paths. Prefix placeholders are `{project}`,
 `{username}`, `{organization}`, and `{subject}`. Every substituted value must be one safe path

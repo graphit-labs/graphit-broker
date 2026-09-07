@@ -59,6 +59,7 @@ func main() {
 		logger.Error("broker initialization failed", "error", err)
 		os.Exit(1)
 	}
+	defer service.Close()
 	server := service.HTTPServer()
 	errCh := make(chan error, 1)
 	go func() {

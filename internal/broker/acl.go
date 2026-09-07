@@ -23,7 +23,7 @@ type S3Grant struct {
 }
 
 func NewACL(cfg AuthorizationConfig, revision string) *ACL {
-	policy, _ := NewPolicyStore(AdministrationConfig{}, cfg, revision)
+	policy, _ := NewPolicyStore(cfg, revision)
 	return &ACL{policy: policy}
 }
 
@@ -147,39 +147,7 @@ func matchesPrincipal(rule ACLRuleConfig, principal Principal) bool {
 		value := strings.TrimSpace(rule.Principal)
 		return !principal.IsAnonymous() && (principal.Subject == value || principal.CanonicalSubject() == value)
 	}
-	matchedSelector := false
-	if len(rule.Subjects) > 0 {
-		matchedSelector = true
-		if !matchesValue(rule.Subjects, principal.CanonicalSubject()) && !matchesValue(rule.Subjects, principal.Subject) {
-			return false
-		}
-	}
-	if len(rule.Users) > 0 {
-		matchedSelector = true
-		if !matchesValue(rule.Users, principal.Username) {
-			return false
-		}
-	}
-	if len(rule.Organizations) > 0 {
-		matchedSelector = true
-		if !matchesValue(rule.Organizations, principal.Organization) {
-			return false
-		}
-	}
-	if len(rule.Teams) > 0 {
-		matchedSelector = true
-		matched := false
-		for _, team := range principal.Teams {
-			if matchesValue(rule.Teams, team) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-	return matchedSelector
+	return false
 }
 
 func matchesValue(patterns []string, value string) bool {
