@@ -1,4 +1,4 @@
-# Deployment and AWS guide
+# Deployment and object-storage guide
 
 ## Container
 
@@ -11,45 +11,44 @@ docker run -d --name graphit-auth-broker --restart unless-stopped \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --env-file /etc/graphit-auth-broker/broker.env \
   -v /etc/graphit-auth-broker/config.yaml:/etc/graphit-auth-broker/config.yaml:ro \
+  -v graphit-broker-state:/var/lib/graphit-auth-broker \
   -p 127.0.0.1:8080:8080 registry.example.com/graphit-auth-broker:1.0.0
 ```
 
 Place an HTTPS reverse proxy/load balancer in front, preserve `X-Request-ID`, and use `/healthz`
 for liveness and `/readyz` for readiness. The built-in Docker healthcheck targets port 8080.
 
-## AWS `assume_role`
+## Direct S3 route credentials
 
-The broker needs an AWS credential chain identity allowed to call `sts:AssumeRole` on
-`services.s3.role_arn`. In Kubernetes/ECS, prefer workload identity/task roles over static keys.
-The target role needs S3 permissions broad enough for all prefixes the broker may grant; the inline
-session policy narrows each issued session.
+Each named route has one access-key pair stored only in the broker's secret-managed configuration.
+The principal behind that key must have only the object-store permissions needed by the route's
+bucket and `base_prefix`. The broker ACL narrows which logical operations it will sign, while the
+object-store policy remains an independent upper bound.
 
-Trust-policy sketch (replace account and principal):
+Example IAM policy for a route whose bucket is `graphit-artifacts` and base prefix is `graphit`:
 
 ```json
 {
   "Version":"2012-10-17",
-  "Statement":[{
-    "Effect":"Allow",
-    "Principal":{"AWS":"arn:aws:iam::123456789012:role/graphit-broker-runtime"},
-    "Action":"sts:AssumeRole"
-  }]
+  "Statement":[
+    {"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket"],
+     "Resource":"arn:aws:s3:::graphit-artifacts",
+     "Condition":{"StringLike":{"s3:prefix":["graphit","graphit/*"]}}},
+    {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload"],
+     "Resource":"arn:aws:s3:::graphit-artifacts/graphit/*"}
+  ]
 }
 ```
 
-## AWS `web_identity`
-
-Register the external OIDC issuer in IAM, configure the target role trust policy for the intended
-audience/subjects, and set `mode: web_identity`. The broker calls `AssumeRoleWithWebIdentity` with
-the same token it already validated and with its own tighter inline policy. API-key principals
-cannot use this mode because their bearer value is not an OIDC web-identity token.
+Reduce actions further for read-only routes. Use separate routes and keys for different tenants or
+security boundaries. Inject `access_key_id` and `secret_access_key` from Docker/Kubernetes secrets,
+Vault, or the deployment platform's equivalent. Never commit them or return them to Graphit.
 
 ## S3-compatible systems
 
-Set `services.s3.endpoint` to the object-store URL returned to clients and `sts_endpoint` to its
-STS-compatible endpoint. The system must implement the AWS STS calls and session-policy semantics
-used here. If it does not enforce inline policies, do not claim equivalent ACL isolation; use
-separate credentials/tenants or an adapter that does.
+Set each route's `endpoint` to its object-store URL and provide an access key and secret accepted by
+that service's S3-compatible SigV4 API. The service must support the signed operations Graphit uses:
+GET, HEAD, PUT, DELETE and ListObjectsV2. Validate region/path-style behavior in a staging route.
 
 ## Rollout order
 
@@ -59,3 +58,7 @@ separate credentials/tenants or an adapter that does.
    learns route revisions.
 4. Reindex Graphit vectors before serving queries after any embedding revision/width change.
 5. Roll back the broker only to a deployment whose discovery revision matches its actual model.
+
+Storage topology or credential changes need no Graphit provider update or login. Add the new route, update ACL rules
+to select it, verify positive and negative presign cases, then remove the old route only after its
+short-lived URLs have expired. Matching rules must never select two routes for the same request.

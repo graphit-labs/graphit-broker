@@ -7,14 +7,16 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       COHERE_API_KEY: ${COHERE_API_KEY:-}
       BROKER_LOCAL_TOKEN_SHA256: ${BROKER_LOCAL_TOKEN_SHA256:-}
-      AWS_REGION: ${AWS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      BROKER_ADMIN_TOKEN_SHA256: ${BROKER_ADMIN_TOKEN_SHA256:?set the administration token SHA-256}
+      PRIMARY_S3_ACCESS_KEY_ID: ${PRIMARY_S3_ACCESS_KEY_ID:?set the primary S3 access key}
+      PRIMARY_S3_SECRET_ACCESS_KEY: ${PRIMARY_S3_SECRET_ACCESS_KEY:?set the primary S3 secret key}
+      PUBLIC_S3_ACCESS_KEY_ID: ${PUBLIC_S3_ACCESS_KEY_ID:?set the public S3 access key}
+      PUBLIC_S3_SECRET_ACCESS_KEY: ${PUBLIC_S3_SECRET_ACCESS_KEY:?set the public S3 secret key}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./config.yaml:/etc/graphit-auth-broker/config.yaml:ro
+      - broker-state:/var/lib/graphit-auth-broker
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -22,3 +24,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  broker-state:

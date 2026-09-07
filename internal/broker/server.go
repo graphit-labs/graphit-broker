@@ -18,9 +18,11 @@ import (
 type Server struct {
 	config        Config
 	authenticator Authenticator
+	adminAuth     *AdminAuthenticator
+	policy        *PolicyStore
 	acl           *ACL
 	ai            *AIService
-	credentials   CredentialIssuer
+	presigner     PresignService
 	handler       http.Handler
 	ready         bool
 }
@@ -30,7 +32,6 @@ type contextKey string
 const (
 	requestIDKey contextKey = "request_id"
 	principalKey contextKey = "principal"
-	tokenKey     contextKey = "raw_token"
 )
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -38,25 +39,43 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	var credentials CredentialIssuer
-	if cfg.Services.S3.Enabled {
-		credentials, err = NewAWSCredentialIssuer(ctx, cfg.Services.S3)
-		if err != nil {
-			return nil, err
-		}
+	policy, err := NewPolicyStore(cfg.Administration, cfg.Authorization, cfg.Services.S3.AuthorizationRevision, cfg.Services.S3)
+	if err != nil {
+		return nil, err
 	}
-	return newServer(cfg, authenticator, NewAIService(cfg.Services), credentials), nil
+	var presigner PresignService
+	if cfg.Services.S3.Enabled {
+		presigner = NewAWSPresignService(cfg.Services.S3)
+	}
+	return newServerWithDependencies(cfg, authenticator, NewAdminAuthenticator(cfg.Administration), NewAIService(cfg.Services), presigner, policy), nil
 }
 
-func newServer(cfg Config, authenticator Authenticator, ai *AIService, credentials CredentialIssuer) *Server {
-	s := &Server{config: cfg, authenticator: authenticator, acl: NewACL(cfg.Authorization, cfg.Services.S3.AuthorizationRevision), ai: ai, credentials: credentials, ready: true}
+func newServer(cfg Config, authenticator Authenticator, ai *AIService) *Server {
+	policy, _ := NewPolicyStore(AdministrationConfig{}, cfg.Authorization, cfg.Services.S3.AuthorizationRevision, cfg.Services.S3)
+	var presigner PresignService
+	if cfg.Services.S3.Enabled {
+		presigner = NewAWSPresignService(cfg.Services.S3)
+	}
+	return newServerWithDependencies(cfg, authenticator, NewAdminAuthenticator(cfg.Administration), ai, presigner, policy)
+}
+
+func newServerWithDependencies(cfg Config, authenticator Authenticator, adminAuth *AdminAuthenticator, ai *AIService, presigner PresignService, policy *PolicyStore) *Server {
+	s := &Server{config: cfg, authenticator: authenticator, adminAuth: adminAuth, policy: policy, acl: NewACLWithPolicy(policy), ai: ai, presigner: presigner, ready: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
-	mux.Handle("POST /v1/embeddings", s.requireAuthentication(http.HandlerFunc(s.embeddings)))
-	mux.Handle("POST /v1/rerank", s.requireAuthentication(http.HandlerFunc(s.rerank)))
-	mux.Handle("POST /v1/s3/credentials", s.requireAuthentication(http.HandlerFunc(s.s3Credentials)))
+	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
+	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
+	mux.Handle("POST /v1/s3/presign", s.resolvePrincipal(http.HandlerFunc(s.s3Presign)))
+	if cfg.Administration.Enabled {
+		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
+		})
+		mux.HandleFunc("GET /admin/{$}", s.adminPage)
+		mux.Handle("/admin/api/v1/access", s.requireAdministration(http.HandlerFunc(s.adminAccess)))
+		mux.Handle("/admin/api/v1/principals", s.requireAdministration(http.HandlerFunc(s.adminPrincipals)))
+	}
 	s.handler = s.observability(mux)
 	return s
 }
@@ -91,15 +110,15 @@ func (s *Server) discovery(w http.ResponseWriter, _ *http.Request) {
 			"revision": cfg.Revision, "max_documents": cfg.MaxDocuments}
 	}
 	if cfg := s.config.Services.S3; cfg.Enabled {
-		services["s3_credentials"] = map[string]any{"protocol": "graphit-s3-credentials-v1", "path": "/v1/s3/credentials",
-			"authorization_revision": cfg.AuthorizationRevision}
+		services["s3_presign"] = map[string]any{"protocol": "graphit-s3-presign-v1", "path": "/v1/s3/presign",
+			"authorization_revision": s.acl.Revision(), "default_expires_in": int64(cfg.PresignExpiry / time.Second), "max_expires_in": int64(cfg.MaxPresignExpiry / time.Second)}
 	}
 	audiences := []string{}
 	for _, issuer := range s.config.Authentication.OIDC {
 		audiences = append(audiences, issuer.Audiences...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.config.Server.PublicURL,
-		"authentication": map[string]any{"schemes": []string{"bearer"}, "audiences": cleanStrings(audiences)}, "services": services})
+		"authentication": map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}, "services": services})
 }
 
 func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +173,23 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Graphit-Cache", "MISS")
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func validateRequestProjectKey(project, key string) error {
+	project = strings.TrimSpace(project)
+	parts := strings.Split(strings.Trim(strings.TrimSpace(key), "/"), "/")
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] == "v2" && parts[i+1] == "projects" {
+			if parts[i+2] != project {
+				return errors.New("project does not match the logical object key")
+			}
+			return nil
+		}
+	}
+	if project != "global" {
+		return errors.New("non-project logical keys must use project global")
+	}
+	return nil
 }
 
 func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
@@ -211,17 +247,21 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) s3Credentials(w http.ResponseWriter, r *http.Request) {
-	if !s.config.Services.S3.Enabled || s.credentials == nil {
-		writeError(w, http.StatusNotFound, "capability_disabled", "S3 credentials are disabled", requestID(r.Context()))
+func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
+	if !s.config.Services.S3.Enabled || s.presigner == nil {
+		writeError(w, http.StatusNotFound, "capability_disabled", "S3 presigned operations are disabled", requestID(r.Context()))
 		return
 	}
-	var request CredentialRequest
+	var request PresignRequest
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
 	}
+	if err := validateRequestProjectKey(request.Project, request.Key); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), requestID(r.Context()))
+		return
+	}
 	principal := principalFromContext(r.Context())
-	grant, err := s.acl.AuthorizeS3(principal, request.Project, request.Operation, s.config.Services.S3.BasePrefix)
+	grant, err := s.acl.AuthorizeS3Request(principal, request.Project, request.Operation, s.config.Services.S3.DefaultRoute)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
@@ -230,19 +270,35 @@ func (s *Server) s3Credentials(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	credentials, err := s.credentials.Issue(r.Context(), principal, rawTokenFromContext(r.Context()), grant)
+	response, err := s.presigner.Presign(r.Context(), grant, request)
 	if err != nil {
-		slog.Error("S3 credential issue failed", "request_id", requestID(r.Context()), "error", err)
-		writeError(w, http.StatusBadGateway, "credential_exchange_failed", "credential exchange failed", requestID(r.Context()))
+		if errors.Is(err, ErrForbidden) {
+			writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
+		} else {
+			slog.Error("S3 presign failed", "request_id", requestID(r.Context()), "error", err)
+			writeError(w, http.StatusBadGateway, "presign_failed", "S3 request signing failed", requestID(r.Context()))
+		}
 		return
 	}
+	response.AuthorizationRevision = s.acl.Revision()
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, credentials)
+	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) requireAuthentication(next http.Handler) http.Handler {
+func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+		if authorization == "" {
+			ctx := context.WithValue(r.Context(), principalKey, AnonymousPrincipal())
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 		raw := bearerToken(r)
+		if raw == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="graphit-auth-broker"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "authorization must use one bearer credential", requestID(r.Context()))
+			return
+		}
 		principal, err := s.authenticator.Authenticate(r.Context(), raw)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="graphit-auth-broker"`)
@@ -250,7 +306,6 @@ func (s *Server) requireAuthentication(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), principalKey, principal)
-		ctx = context.WithValue(ctx, tokenKey, raw)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -310,10 +365,6 @@ func decodeEmbeddingInput(raw json.RawMessage) ([]string, error) {
 func principalFromContext(ctx context.Context) Principal {
 	principal, _ := ctx.Value(principalKey).(Principal)
 	return principal
-}
-func rawTokenFromContext(ctx context.Context) string {
-	token, _ := ctx.Value(tokenKey).(string)
-	return token
 }
 func requestID(ctx context.Context) string { id, _ := ctx.Value(requestIDKey).(string); return id }
 

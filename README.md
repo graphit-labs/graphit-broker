@@ -6,11 +6,21 @@ exposes three independently deployable capabilities:
 
 - OpenAI-compatible embeddings at `POST /v1/embeddings`;
 - Graphit rerank v1 at `POST /v1/rerank`;
-- short-lived, prefix-scoped S3 credentials at `POST /v1/s3/credentials`.
+- per-operation S3 pre-signed requests at `POST /v1/s3/presign`, including anonymous grants.
 
-The broker owns upstream AI credentials, model selection, AWS access and cache policy. A Graphit
+It also includes a separately protected ACL console at `/admin/`. Administrators can publish
+global, anonymous, authenticated, user, team, organization and subject grants without restarting
+the process. Changes use revision-based compare-and-swap and an atomically persisted policy file.
+
+The broker exclusively owns upstream AI credentials, model selection, bucket/region/endpoint,
+storage prefixes, direct S3 signing credentials and cache policy. A Graphit
 user authenticates once with the named provider and sends only the resulting access token. The
-client cannot select or override the broker's upstream model.
+client cannot select or override the broker's upstream model or storage topology, and never
+receives cloud credentials.
+
+Storage can define multiple named routes. ACL rules select a route dynamically per trusted
+principal/project/operation, so one broker can isolate organizations across different accounts,
+buckets, regions or S3-compatible services without changing any Graphit provider or profile.
 
 ## Quick start
 
@@ -54,6 +64,7 @@ docker rm -f graphit-broker-smoke
 - [Deployment and AWS](docs/deployment.md)
 - [Security and ACL model](docs/security.md)
 - [Operations and troubleshooting](docs/operations.md)
+- [Administration UI and access policy](docs/administration.md)
 
 ## Development
 
@@ -64,4 +75,5 @@ make vet
 make build
 ```
 
-All unit tests are hermetic: OIDC, upstream AI and STS are represented by in-process fakes.
+All unit tests are hermetic: OIDC and upstream AI are represented by in-process fakes; S3 signing
+uses synthetic route credentials and performs no network request.

@@ -12,24 +12,29 @@ import (
 var ErrForbidden = errors.New("access denied")
 
 type ACL struct {
-	rules    []ACLRuleConfig
-	revision string
+	policy *PolicyStore
 }
 
 type S3Grant struct {
 	Project   string
 	Operation string
+	Route     string
 	Prefixes  []string
 }
 
 func NewACL(cfg AuthorizationConfig, revision string) *ACL {
-	return &ACL{rules: append([]ACLRuleConfig(nil), cfg.Rules...), revision: revision}
+	policy, _ := NewPolicyStore(AdministrationConfig{}, cfg, revision)
+	return &ACL{policy: policy}
 }
 
-func (a *ACL) Revision() string { return a.revision }
+func NewACLWithPolicy(policy *PolicyStore) *ACL { return &ACL{policy: policy} }
+
+func (a *ACL) Revision() string { return a.policy.Revision() }
+
+func (a *ACL) rules() []ACLRuleConfig { return a.policy.Snapshot().Rules }
 
 func (a *ACL) AuthorizeCapability(principal Principal, capability string) error {
-	for _, rule := range a.rules {
+	for _, rule := range a.rules() {
 		if matchesPrincipal(rule, principal) && matchesValue(rule.Capabilities, capability) {
 			return nil
 		}
@@ -37,7 +42,7 @@ func (a *ACL) AuthorizeCapability(principal Principal, capability string) error 
 	return ErrForbidden
 }
 
-func (a *ACL) AuthorizeS3(principal Principal, project, operation, basePrefix string) (S3Grant, error) {
+func (a *ACL) AuthorizeS3(principal Principal, project, operation, defaultRoute string) (S3Grant, error) {
 	project = strings.TrimSpace(project)
 	operation = strings.ToLower(strings.TrimSpace(operation))
 	if !safeSegment(project) {
@@ -47,7 +52,8 @@ func (a *ACL) AuthorizeS3(principal Principal, project, operation, basePrefix st
 		return S3Grant{}, errors.New("operation must be read, write, publish, or delete")
 	}
 	set := map[string]struct{}{}
-	for _, rule := range a.rules {
+	route := ""
+	for _, rule := range a.rules() {
 		if !matchesPrincipal(rule, principal) {
 			continue
 		}
@@ -60,9 +66,21 @@ func (a *ACL) AuthorizeS3(principal Principal, project, operation, basePrefix st
 		if len(rule.S3Operations) > 0 && !matchesValue(rule.S3Operations, operation) {
 			continue
 		}
+		candidateRoute := strings.TrimSpace(rule.S3Route)
+		if candidateRoute == "" {
+			candidateRoute = defaultRoute
+		}
+		if route != "" && route != candidateRoute {
+			return S3Grant{}, errors.New("matching S3 ACL rules select multiple storage routes")
+		}
+		route = candidateRoute
 		prefixes := rule.S3Prefixes
 		if len(prefixes) == 0 {
-			prefixes = []string{joinPrefix(basePrefix, project)}
+			if project == "global" {
+				prefixes = []string{"v2"}
+			} else {
+				prefixes = []string{"v2/projects/{project}"}
+			}
 		}
 		for _, prefix := range prefixes {
 			rendered, err := renderPrefix(prefix, principal, project)
@@ -82,10 +100,53 @@ func (a *ACL) AuthorizeS3(principal Principal, project, operation, basePrefix st
 		prefixes = append(prefixes, prefix)
 	}
 	sort.Strings(prefixes)
-	return S3Grant{Project: project, Operation: operation, Prefixes: prefixes}, nil
+	return S3Grant{Project: project, Operation: operation, Route: route, Prefixes: prefixes}, nil
+}
+
+func (a *ACL) AuthorizeS3Request(principal Principal, project, verb, defaultRoute string) (S3Grant, error) {
+	var operations []string
+	switch strings.ToLower(strings.TrimSpace(verb)) {
+	case "get", "head", "list":
+		operations = []string{"read", "write", "publish"}
+	case "put":
+		operations = []string{"write", "publish"}
+	case "delete":
+		operations = []string{"delete", "publish"}
+	default:
+		return S3Grant{}, errors.New("operation must be get, head, put, delete, or list")
+	}
+	var last error
+	for _, operation := range operations {
+		grant, err := a.AuthorizeS3(principal, project, operation, defaultRoute)
+		if err == nil {
+			return grant, nil
+		}
+		if !errors.Is(err, ErrForbidden) {
+			return S3Grant{}, err
+		}
+		last = err
+	}
+	return S3Grant{}, last
 }
 
 func matchesPrincipal(rule ACLRuleConfig, principal Principal) bool {
+	switch strings.ToLower(strings.TrimSpace(rule.Access)) {
+	case "global":
+		return true
+	case "anonymous":
+		return principal.IsAnonymous()
+	case "authenticated":
+		return !principal.IsAnonymous()
+	case "user":
+		return !principal.IsAnonymous() && principal.Username == strings.TrimSpace(rule.Principal)
+	case "team":
+		return !principal.IsAnonymous() && containsString(principal.Teams, strings.TrimSpace(rule.Principal))
+	case "organization":
+		return !principal.IsAnonymous() && principal.Organization == strings.TrimSpace(rule.Principal)
+	case "subject":
+		value := strings.TrimSpace(rule.Principal)
+		return !principal.IsAnonymous() && (principal.Subject == value || principal.CanonicalSubject() == value)
+	}
 	matchedSelector := false
 	if len(rule.Subjects) > 0 {
 		matchedSelector = true

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Graphit Access Manager</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b1020;--panel:#121a2e;--line:#29344f;--text:#eef2ff;--muted:#9aa7c2;--accent:#7c9cff;--danger:#ff7383;--ok:#6ee7a8}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#19244a 0,transparent 32%),var(--bg);color:var(--text);font:14px/1.5 ui-sans-serif,system-ui,sans-serif}main{width:min(1180px,calc(100% - 32px));margin:40px auto 80px}header{display:flex;justify-content:space-between;gap:24px;align-items:end;margin-bottom:24px}h1{font-size:30px;letter-spacing:-.04em;margin:0}h2{font-size:16px;margin:0 0 16px}.eyebrow{color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.12em;font-size:11px}.muted{color:var(--muted)}.panel{background:color-mix(in srgb,var(--panel) 94%,transparent);border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:0 24px 80px #0005;margin-bottom:18px}.toolbar,.form-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}.toolbar input{grid-column:span 8}.toolbar button{grid-column:span 2}.form-grid label{grid-column:span 4}.form-grid label.wide{grid-column:span 6}label span{display:block;color:var(--muted);font-size:12px;margin:0 0 6px}input,select,button{width:100%;border:1px solid var(--line);border-radius:9px;background:#0d1428;color:var(--text);padding:10px 12px;font:inherit}button{background:#1a2650;cursor:pointer;font-weight:650}button.primary{background:var(--accent);border-color:var(--accent);color:#071020}button.danger{color:var(--danger)}button:hover{filter:brightness(1.12)}button:disabled{opacity:.5;cursor:not-allowed}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}.tag{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin:2px 3px 2px 0;color:#cbd5f5}.actions{white-space:nowrap}.actions button{width:auto;padding:6px 9px;margin-right:5px}.status{min-height:22px;margin-top:10px}.status.ok{color:var(--ok)}.status.error{color:var(--danger)}.hidden{display:none}@media(max-width:800px){header{align-items:start;flex-direction:column}.toolbar input,.toolbar button,.form-grid label,.form-grid label.wide{grid-column:1/-1}.table-wrap{overflow:auto}}
+  </style>
+</head>
+<body>
+<main>
+  <header><div><div class="eyebrow">Graphit Auth Broker</div><h1>Access Manager</h1><div class="muted">Deny by default · policy changes use optimistic concurrency</div></div><div id="revision" class="muted">Disconnected</div></header>
+  <section class="panel">
+    <h2>Administrator session</h2>
+    <div class="toolbar"><input id="token" type="password" autocomplete="current-password" placeholder="Administrator bearer token"><button id="connect" class="primary">Connect</button><button id="forget">Forget token</button></div>
+    <div id="status" class="status muted">The token is kept only in this browser tab.</div>
+  </section>
+  <section id="editor" class="hidden">
+    <div class="panel">
+      <h2 id="form-title">Add access rule</h2>
+      <div class="form-grid">
+        <label><span>Name</span><input id="name" placeholder="Anonymous project reads"></label>
+        <label><span>Access level</span><select id="access"><option>global</option><option>anonymous</option><option>authenticated</option><option>user</option><option>team</option><option>organization</option><option>subject</option></select></label>
+        <label><span>Principal ID</span><input id="principal" placeholder="Required for user/team/org/subject"></label>
+        <label class="wide"><span>Capabilities, comma-separated</span><input id="capabilities" placeholder="embeddings, rerank, s3"></label>
+        <label class="wide"><span>Projects, comma-separated</span><input id="projects" placeholder="*, project ULID, payments-*"></label>
+        <label class="wide"><span>S3 operations</span><input id="operations" placeholder="read, write, publish, delete"></label>
+        <label><span>Storage route</span><input id="route" placeholder="Default when empty"></label>
+        <label class="wide"><span>Logical key prefix templates</span><input id="prefixes" placeholder="v2/projects/{project}"></label>
+        <label><span>&nbsp;</span><button id="apply" class="primary">Add rule</button></label>
+        <label><span>&nbsp;</span><button id="cancel">Clear form</button></label>
+      </div>
+    </div>
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h2>Effective policy</h2><button id="save" class="primary" style="width:auto">Save policy</button></div>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Access</th><th>Capabilities</th><th>Projects / S3</th><th></th></tr></thead><tbody id="rules"></tbody></table></div>
+    </div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let policy=null,etag='',editing=-1;
+const fields=['capabilities','projects','operations','prefixes','route'];
+const split=id=>$(id).value.split(',').map(x=>x.trim()).filter(Boolean);
+const tags=xs=>(xs||[]).map(x=>`<span class="tag">${escapeHTML(x)}</span>`).join('');
+const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function auth(){return sessionStorage.getItem('graphit-admin-token')||$('token').value.trim()}
+function message(text,type='muted'){$('status').textContent=text;$('status').className='status '+type}
+async function request(url,options={}){options.headers={...(options.headers||{}),Authorization:`Bearer ${auth()}`};const response=await fetch(url,options);let body={};try{body=await response.json()}catch{}if(!response.ok)throw new Error(body.error?.message||`HTTP ${response.status}`);return [response,body]}
+async function load(){try{const [response,body]=await request('/admin/api/v1/access');policy=body;etag=response.headers.get('ETag');sessionStorage.setItem('graphit-admin-token',auth());$('editor').classList.remove('hidden');$('revision').textContent=`Revision ${policy.revision}`;render();message('Policy loaded.','ok')}catch(error){message(error.message,'error')}}
+function render(){$('rules').innerHTML=policy.rules.map((r,i)=>`<tr><td>${escapeHTML(r.name)}</td><td><span class="tag">${escapeHTML(r.access)}</span>${r.principal?`<br>${escapeHTML(r.principal)}`:''}</td><td>${tags(r.capabilities)}</td><td>${tags(r.projects)}${tags(r.s3_operations)}${r.s3_route?`<span class="tag">route:${escapeHTML(r.s3_route)}</span>`:''}${tags(r.s3_prefixes)}</td><td class="actions"><button onclick="editRule(${i})">Edit</button><button class="danger" onclick="removeRule(${i})">Delete</button></td></tr>`).join('')||'<tr><td colspan="5" class="muted">No rules. Every request is denied.</td></tr>'}
+function clearForm(){editing=-1;$('form-title').textContent='Add access rule';$('apply').textContent='Add rule';['name','principal',...fields].forEach(id=>$(id).value='');$('access').value='global'}
+window.editRule=i=>{editing=i;const r=policy.rules[i];$('name').value=r.name;$('access').value=r.access;$('principal').value=r.principal||'';$('capabilities').value=(r.capabilities||[]).join(', ');$('projects').value=(r.projects||[]).join(', ');$('operations').value=(r.s3_operations||[]).join(', ');$('prefixes').value=(r.s3_prefixes||[]).join(', ');$('route').value=r.s3_route||'';$('form-title').textContent='Edit access rule';$('apply').textContent='Update rule';scrollTo({top:300,behavior:'smooth'})};
+window.removeRule=i=>{policy.rules.splice(i,1);render();clearForm()};
+$('apply').onclick=()=>{const rule={name:$('name').value.trim(),access:$('access').value,capabilities:split('capabilities')};const principal=$('principal').value.trim();if(principal)rule.principal=principal;const route=$('route').value.trim();if(route)rule.s3_route=route;const mapping={projects:'projects',operations:'s3_operations',prefixes:'s3_prefixes'};for(const [id,key] of Object.entries(mapping)){const value=split(id);if(value.length)rule[key]=value}if(!rule.name||!rule.capabilities.length){message('Name and at least one capability are required.','error');return}if(editing<0)policy.rules.push(rule);else policy.rules[editing]=rule;render();clearForm();message('Local changes are not saved yet.')};
+$('save').onclick=async()=>{try{const [response,body]=await request('/admin/api/v1/access',{method:'PUT',headers:{'Content-Type':'application/json','If-Match':etag},body:JSON.stringify({v:1,rules:policy.rules})});policy=body;etag=response.headers.get('ETag');$('revision').textContent=`Revision ${policy.revision}`;render();message('Policy saved atomically.','ok')}catch(error){message(error.message,'error')}};
+$('connect').onclick=load;$('forget').onclick=()=>{sessionStorage.removeItem('graphit-admin-token');$('token').value='';policy=null;$('editor').classList.add('hidden');$('revision').textContent='Disconnected';message('Token removed from this tab.')};$('cancel').onclick=clearForm;
+if(auth()){$('token').value=auth();load()}
+</script>
+</body>
+</html>

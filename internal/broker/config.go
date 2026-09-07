@@ -18,6 +18,7 @@ import (
 type Config struct {
 	Server         ServerConfig         `yaml:"server"`
 	Authentication AuthenticationConfig `yaml:"authentication"`
+	Administration AdministrationConfig `yaml:"administration"`
 	Authorization  AuthorizationConfig  `yaml:"authorization"`
 	Services       ServicesConfig       `yaml:"services"`
 }
@@ -56,20 +57,35 @@ type APIKeyConfig struct {
 	Teams        []string `yaml:"teams"`
 }
 
+type AdministrationConfig struct {
+	Enabled   bool             `yaml:"enabled"`
+	StateFile string           `yaml:"state_file"`
+	APIKeys   []AdminKeyConfig `yaml:"api_keys"`
+}
+
+type AdminKeyConfig struct {
+	Name        string `yaml:"name"`
+	Token       string `yaml:"token"`
+	TokenSHA256 string `yaml:"token_sha256"`
+}
+
 type AuthorizationConfig struct {
 	Rules []ACLRuleConfig `yaml:"rules"`
 }
 
 type ACLRuleConfig struct {
-	Name          string   `yaml:"name"`
-	Subjects      []string `yaml:"subjects"`
-	Users         []string `yaml:"users"`
-	Organizations []string `yaml:"organizations"`
-	Teams         []string `yaml:"teams"`
-	Capabilities  []string `yaml:"capabilities"`
-	Projects      []string `yaml:"projects"`
-	S3Operations  []string `yaml:"s3_operations"`
-	S3Prefixes    []string `yaml:"s3_prefixes"`
+	Name          string   `yaml:"name" json:"name"`
+	Access        string   `yaml:"access" json:"access"`
+	Principal     string   `yaml:"principal" json:"principal,omitempty"`
+	Subjects      []string `yaml:"subjects" json:"subjects,omitempty"`
+	Users         []string `yaml:"users" json:"users,omitempty"`
+	Organizations []string `yaml:"organizations" json:"organizations,omitempty"`
+	Teams         []string `yaml:"teams" json:"teams,omitempty"`
+	Capabilities  []string `yaml:"capabilities" json:"capabilities"`
+	Projects      []string `yaml:"projects" json:"projects,omitempty"`
+	S3Operations  []string `yaml:"s3_operations" json:"s3_operations,omitempty"`
+	S3Prefixes    []string `yaml:"s3_prefixes" json:"s3_prefixes,omitempty"`
+	S3Route       string   `yaml:"s3_route" json:"s3_route,omitempty"`
 }
 
 type ServicesConfig struct {
@@ -116,16 +132,21 @@ type RerankServiceConfig struct {
 }
 
 type S3ServiceConfig struct {
-	Enabled               bool          `yaml:"enabled"`
-	Mode                  string        `yaml:"mode"`
-	Region                string        `yaml:"region"`
-	Endpoint              string        `yaml:"endpoint"`
-	Bucket                string        `yaml:"bucket"`
-	BasePrefix            string        `yaml:"base_prefix"`
-	RoleARN               string        `yaml:"role_arn"`
-	STSEndpoint           string        `yaml:"sts_endpoint"`
-	Duration              time.Duration `yaml:"duration"`
-	AuthorizationRevision string        `yaml:"authorization_revision"`
+	Enabled               bool                     `yaml:"enabled"`
+	DefaultRoute          string                   `yaml:"default_route"`
+	Routes                map[string]S3RouteConfig `yaml:"routes"`
+	PresignExpiry         time.Duration            `yaml:"presign_expiry"`
+	MaxPresignExpiry      time.Duration            `yaml:"max_presign_expiry"`
+	AuthorizationRevision string                   `yaml:"authorization_revision"`
+}
+
+type S3RouteConfig struct {
+	Region          string `yaml:"region"`
+	Endpoint        string `yaml:"endpoint"`
+	Bucket          string `yaml:"bucket"`
+	BasePrefix      string `yaml:"base_prefix"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -224,14 +245,22 @@ func (c *Config) defaults() {
 	if c.Services.Rerank.Upstream.Timeout == 0 {
 		c.Services.Rerank.Upstream.Timeout = 45 * time.Second
 	}
-	if c.Services.S3.Mode == "" {
-		c.Services.S3.Mode = "assume_role"
+	if c.Services.S3.DefaultRoute == "" && len(c.Services.S3.Routes) == 1 {
+		for name := range c.Services.S3.Routes {
+			c.Services.S3.DefaultRoute = name
+		}
 	}
-	if c.Services.S3.Region == "" {
-		c.Services.S3.Region = "us-east-1"
+	for name, route := range c.Services.S3.Routes {
+		if route.Region == "" {
+			route.Region = "us-east-1"
+		}
+		c.Services.S3.Routes[name] = route
 	}
-	if c.Services.S3.Duration == 0 {
-		c.Services.S3.Duration = time.Hour
+	if c.Services.S3.PresignExpiry == 0 {
+		c.Services.S3.PresignExpiry = 5 * time.Minute
+	}
+	if c.Services.S3.MaxPresignExpiry == 0 {
+		c.Services.S3.MaxPresignExpiry = 15 * time.Minute
 	}
 	if c.Services.S3.AuthorizationRevision == "" {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%#v", c.Authorization.Rules)))
@@ -251,9 +280,6 @@ func (c *CacheConfig) setDefaults() {
 }
 
 func (c Config) Validate() error {
-	if len(c.Authentication.OIDC) == 0 && len(c.Authentication.APIKeys) == 0 {
-		return errors.New("configuration needs at least one OIDC issuer or API key")
-	}
 	for i, issuer := range c.Authentication.OIDC {
 		if err := validateHTTPSURL(issuer.Issuer, "OIDC issuer"); err != nil {
 			return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
@@ -282,15 +308,31 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	if c.Administration.Enabled {
+		if strings.TrimSpace(c.Administration.StateFile) == "" {
+			return errors.New("administration.state_file is required when administration is enabled")
+		}
+		if len(c.Administration.APIKeys) == 0 {
+			return errors.New("administration.api_keys needs at least one key when administration is enabled")
+		}
+	}
+	for i, key := range c.Administration.APIKeys {
+		if strings.TrimSpace(key.Name) == "" {
+			return fmt.Errorf("administration.api_keys[%d].name is required", i)
+		}
+		if (key.Token == "") == (key.TokenSHA256 == "") {
+			return fmt.Errorf("administration.api_keys[%d] must set exactly one of token or token_sha256", i)
+		}
+		if key.TokenSHA256 != "" {
+			decoded, err := hex.DecodeString(key.TokenSHA256)
+			if err != nil || len(decoded) != sha256.Size {
+				return fmt.Errorf("administration.api_keys[%d].token_sha256 must be a 64-character hexadecimal SHA-256", i)
+			}
+		}
+	}
 	for i, rule := range c.Authorization.Rules {
-		if rule.Name == "" {
-			return fmt.Errorf("authorization.rules[%d]: name is required", i)
-		}
-		if len(rule.Subjects)+len(rule.Users)+len(rule.Organizations)+len(rule.Teams) == 0 {
-			return fmt.Errorf("authorization.rules[%d]: at least one identity selector is required", i)
-		}
-		if len(rule.Capabilities) == 0 {
-			return fmt.Errorf("authorization.rules[%d]: at least one capability is required", i)
+		if err := validateACLRule(rule); err != nil {
+			return fmt.Errorf("authorization.rules[%d]: %w", i, err)
 		}
 	}
 	if c.Services.Embeddings.Enabled {
@@ -310,18 +352,39 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Services.S3.Enabled {
-		if c.Services.S3.Bucket == "" || c.Services.S3.RoleARN == "" {
-			return errors.New("services.s3 needs bucket and role_arn")
+		if len(c.Services.S3.Routes) == 0 || c.Services.S3.DefaultRoute == "" {
+			return errors.New("services.s3 needs routes and default_route")
 		}
-		if c.Services.S3.Mode != "assume_role" && c.Services.S3.Mode != "web_identity" {
-			return errors.New("services.s3.mode must be assume_role or web_identity")
+		if _, ok := c.Services.S3.Routes[c.Services.S3.DefaultRoute]; !ok {
+			return errors.New("services.s3.default_route must name a configured route")
 		}
-		if c.Services.S3.Duration < 15*time.Minute || c.Services.S3.Duration > 12*time.Hour {
-			return errors.New("services.s3.duration must be between 15m and 12h")
+		if c.Services.S3.PresignExpiry <= 0 || c.Services.S3.MaxPresignExpiry <= 0 || c.Services.S3.PresignExpiry > c.Services.S3.MaxPresignExpiry || c.Services.S3.MaxPresignExpiry > time.Hour {
+			return errors.New("services.s3 presign expiry must be positive, default <= max, and max <= 1h")
 		}
-		if c.Services.S3.Endpoint != "" {
-			if _, err := url.ParseRequestURI(c.Services.S3.Endpoint); err != nil {
-				return fmt.Errorf("services.s3.endpoint: %w", err)
+		for name, route := range c.Services.S3.Routes {
+			if !safeSegment(name) {
+				return fmt.Errorf("services.s3.routes contains unsafe route name %q", name)
+			}
+			if route.Bucket == "" || route.AccessKeyID == "" || route.SecretAccessKey == "" {
+				return fmt.Errorf("services.s3.routes.%s needs bucket, access_key_id, and secret_access_key", name)
+			}
+			if route.Endpoint != "" {
+				if _, err := url.ParseRequestURI(route.Endpoint); err != nil {
+					return fmt.Errorf("services.s3.routes.%s.endpoint: %w", name, err)
+				}
+			}
+		}
+		for i, rule := range c.Authorization.Rules {
+			if !ruleUsesS3(rule) {
+				continue
+			}
+			routeName := strings.TrimSpace(rule.S3Route)
+			if routeName == "" {
+				routeName = c.Services.S3.DefaultRoute
+			}
+			_, ok := c.Services.S3.Routes[routeName]
+			if !ok {
+				return fmt.Errorf("authorization.rules[%d].s3_route %q is not configured", i, routeName)
 			}
 		}
 	}
@@ -329,6 +392,42 @@ func (c Config) Validate() error {
 		if err := validateHTTPSURL(c.Server.PublicURL, "server public URL"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateACLRule(rule ACLRuleConfig) error {
+	if strings.TrimSpace(rule.Name) == "" {
+		return errors.New("name is required")
+	}
+	if len(rule.Capabilities) == 0 {
+		return errors.New("at least one capability is required")
+	}
+	if rule.S3Route != "" && !safeSegment(rule.S3Route) {
+		return errors.New("s3_route must be a safe route name")
+	}
+	access := strings.ToLower(strings.TrimSpace(rule.Access))
+	legacy := len(rule.Subjects)+len(rule.Users)+len(rule.Organizations)+len(rule.Teams) > 0
+	if access == "" {
+		if !legacy {
+			return errors.New("access is required (global, anonymous, authenticated, user, team, organization, or subject)")
+		}
+		return nil
+	}
+	if legacy {
+		return errors.New("access/principal cannot be combined with legacy identity selector fields")
+	}
+	switch access {
+	case "global", "anonymous", "authenticated":
+		if strings.TrimSpace(rule.Principal) != "" {
+			return fmt.Errorf("access %s does not accept principal", access)
+		}
+	case "user", "team", "organization", "subject":
+		if strings.TrimSpace(rule.Principal) == "" {
+			return fmt.Errorf("access %s requires principal", access)
+		}
+	default:
+		return fmt.Errorf("unsupported access %q", rule.Access)
 	}
 	return nil
 }

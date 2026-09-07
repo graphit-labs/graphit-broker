@@ -28,6 +28,12 @@ type Principal struct {
 
 func (p Principal) CanonicalSubject() string { return p.Issuer + "|" + p.Subject }
 
+func AnonymousPrincipal() Principal {
+	return Principal{Issuer: "anonymous", Subject: "anonymous", Username: "anonymous", AuthMethod: "anonymous"}
+}
+
+func (p Principal) IsAnonymous() bool { return p.AuthMethod == "anonymous" }
+
 type Authenticator interface {
 	Authenticate(context.Context, string) (Principal, error)
 }

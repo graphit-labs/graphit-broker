@@ -24,18 +24,48 @@ authentication:
   #     organization: "local"
   #     teams: ["automation"]
 
+# The management UI uses a separate credential namespace. Its token can never authorize an AI
+# or S3 request. The state file contains ACL policy, not credentials, and is written atomically.
+administration:
+  enabled: true
+  state_file: "/var/lib/graphit-auth-broker/access-policy.json"
+  api_keys:
+    - name: "platform-admin"
+      token_sha256: "${BROKER_ADMIN_TOKEN_SHA256:?set the SHA-256 of the administration token}"
+
 authorization:
   rules:
     - name: "organization AI"
-      organizations: ["acme"]
+      access: "organization"
+      principal: "acme"
       capabilities: ["embeddings", "rerank"]
     - name: "platform project storage"
-      organizations: ["acme"]
-      teams: ["platform"]
+      access: "team"
+      principal: "platform"
       capabilities: ["s3"]
       projects: ["platform-*"]
       s3_operations: ["read", "write", "publish"]
-      s3_prefixes: ["organizations/{organization}/projects/{project}"]
+      s3_route: "primary"
+      # Prefixes are logical; bucket/base_prefix are applied only after authorization.
+      s3_prefixes: ["v2/projects/{project}"]
+    # Graphit asks for project "global" when reading the Hub control plane. Grant only the
+    # logical prefixes that this principal must discover; the physical route stays private.
+    - name: "platform Hub control plane"
+      access: "team"
+      principal: "platform"
+      capabilities: ["s3"]
+      projects: ["global"]
+      s3_operations: ["read"]
+      s3_route: "primary"
+      s3_prefixes: ["v2/registry", "v2/global", "v2/authenticated", "v2/teams/platform"]
+    # Anonymous access is opt-in and should normally be read-only.
+    # - name: "public catalog"
+    #   access: "anonymous"
+    #   capabilities: ["s3"]
+    #   projects: ["public-catalog"]
+    #   s3_operations: ["read"]
+    #   s3_route: "public"
+    #   s3_prefixes: ["v2/projects/public-catalog"]
     # - name: "local automation"
     #   subjects: ["local-automation"]
     #   capabilities: ["embeddings", "rerank"]
@@ -82,13 +112,23 @@ services:
 
   s3:
     enabled: true
-    # assume_role uses the broker's AWS credential chain. web_identity forwards the caller token.
-    mode: "assume_role"
-    region: "us-east-1"
-    endpoint: ""
-    bucket: "graphit-artifacts"
-    base_prefix: "graphit"
-    role_arn: "arn:aws:iam::123456789012:role/graphit-broker-session"
-    sts_endpoint: ""
-    duration: 1h
+    default_route: "primary"
+    presign_expiry: 5m
+    max_presign_expiry: 15m
     authorization_revision: "acl-2026-09-07.1"
+    routes:
+      primary:
+        region: "us-east-1"
+        endpoint: ""
+        bucket: "graphit-artifacts"
+        base_prefix: "graphit"
+        access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID:?set the primary S3 access key}"
+        secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY:?set the primary S3 secret key}"
+      public:
+        # Each named route owns its complete topology and direct signing credential.
+        region: "us-east-1"
+        endpoint: "https://minio.example.com"
+        bucket: "graphit-public"
+        base_prefix: "catalog"
+        access_key_id: "${PUBLIC_S3_ACCESS_KEY_ID:?set the public S3 access key}"
+        secret_access_key: "${PUBLIC_S3_SECRET_ACCESS_KEY:?set the public S3 secret key}"

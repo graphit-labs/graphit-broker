@@ -65,3 +65,71 @@ func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
 		t.Fatalf("Validate error = %v", err)
 	}
 }
+
+func TestS3RoutesAreBrokerPrivateAndACLSelectable(t *testing.T) {
+	input := `
+authorization:
+  rules:
+    - name: tenant archive
+      access: authenticated
+      capabilities: [s3]
+      projects: [project-a]
+      s3_route: archive
+services:
+  s3:
+    enabled: true
+    default_route: primary
+    presign_expiry: 1m
+    max_presign_expiry: 5m
+    routes:
+      primary:
+        bucket: primary
+        access_key_id: primary-access
+        secret_access_key: primary-secret
+      archive:
+        region: us-west-2
+        endpoint: https://objects.example.com
+        bucket: archive
+        base_prefix: tenant-a
+        access_key_id: archive-access
+        secret_access_key: archive-secret
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services.S3.Routes["primary"].Region != "us-east-1" || cfg.Services.S3.Routes["archive"].Bucket != "archive" {
+		t.Fatalf("routes=%#v", cfg.Services.S3.Routes)
+	}
+	cfg.Authorization.Rules[0].S3Route = "missing"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("ACL accepted an unknown storage route")
+	}
+}
+
+func TestConfigAllowsAnonymousDirectStorageRouteAndRejectsLegacyFields(t *testing.T) {
+	input := `
+authorization:
+  rules:
+    - name: public
+      access: anonymous
+      capabilities: [s3]
+      s3_route: oidc
+services:
+  s3:
+    enabled: true
+    default_route: oidc
+    routes:
+      oidc:
+        bucket: private
+        access_key_id: public-access
+        secret_access_key: public-secret
+`
+	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
+		t.Fatalf("DecodeConfig error=%v", err)
+	}
+	legacy := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: legacy\n", 1)
+	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
+		t.Fatal("legacy storage field was accepted")
+	}
+}

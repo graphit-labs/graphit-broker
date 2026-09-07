@@ -63,10 +63,7 @@ graphit provider add company \
   --broker-endpoint https://broker.example.com \
   --broker-audience graphit-broker \
   --embedding-mode broker \
-  --rerank-mode broker \
-  --s3-credential-source broker \
-  --s3-broker-project platform-api \
-  --s3-broker-operation write
+  --rerank-mode broker
 
 graphit login --provider company --profile alice-acme
 ```

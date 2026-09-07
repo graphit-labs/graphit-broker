@@ -23,8 +23,9 @@ endpoints, allowing private/local services.
 
 ## Authentication
 
-At least one OIDC issuer or API key is required. Every protected endpoint uses
-`Authorization: Bearer <credential>`.
+OIDC issuers and API keys are optional when the deployment serves only explicitly anonymous
+grants. A missing `Authorization` header creates the built-in anonymous principal. A header that
+is present but malformed or invalid always returns 401 and is never downgraded to anonymous.
 
 ```yaml
 authentication:
@@ -62,32 +63,57 @@ API keys are for local/service profiles. Configure exactly one of `token` or `to
 printf '%s' 'a-long-random-value' | sha256sum
 ```
 
+## Administration
+
+```yaml
+administration:
+  enabled: true
+  state_file: /var/lib/graphit-auth-broker/access-policy.json
+  api_keys:
+    - name: platform-admin
+      token_sha256: ${BROKER_ADMIN_TOKEN_SHA256:?required}
+```
+
+Administration credentials are separate from consumer credentials. Configure exactly one of
+`token` or `token_sha256` per key; a digest is recommended. `state_file` must be on a writable,
+persistent filesystem. Disable this section to remove every `/admin` route.
+
 ## Authorization
 
-The default is deny. A rule grants access only if all non-empty identity selector categories match.
-Within one category, any value may match. `*`, `?` and character classes use Go path-style globbing.
+The default is deny. New rules use one framework access level: `global`, `anonymous`,
+`authenticated`, `user`, `team`, `organization`, or `subject`. The `principal` value is required
+for the last four and forbidden for the first three. `*`, `?` and character classes are supported
+for project and capability patterns; principal matching is exact.
 
 ```yaml
 authorization:
   rules:
-    - name: acme platform AI
-      organizations: [acme]
-      teams: [platform, ml-*]
+    - name: authenticated AI
+      access: authenticated
       capabilities: [embeddings, rerank]
     - name: project storage
-      organizations: [acme]
+      access: organization
+      principal: acme
       capabilities: [s3]
       projects: [customer-*]
       s3_operations: [read, write, publish]
+      s3_route: customer-data
       s3_prefixes:
-        - organizations/{organization}/users/{username}/projects/{project}
+        - v2/projects/{project}
 ```
 
-Identity selectors are `subjects`, `users`, `organizations`, and `teams`. Capabilities are
+The older selector arrays remain accepted only as an alternative representation and cannot be
+mixed with `access`/`principal`. Capabilities are
 `embeddings`, `rerank`, `s3`, or operation-specific values such as `s3:read`. S3 rules may also
-restrict `projects`, `s3_operations`, and `s3_prefixes`. Prefix placeholders are `{project}`,
+restrict `projects`, `s3_operations`, `s3_route`, and `s3_prefixes`. Prefixes are logical Graphit
+keys, not physical bucket paths. Prefix placeholders are `{project}`,
 `{username}`, `{organization}`, and `{subject}`. Every substituted value must be one safe path
 segment. An empty rule set grants nothing.
+
+Graphit uses an immutable project ULID for project objects and the literal project value
+`global` for Hub control-plane lookups. Add an explicit read-only `global` rule for the logical
+registry and grant-document prefixes the principal may discover. This does not reveal or grant a
+bucket: the selected route maps each already-authorized logical key to private storage topology.
 
 ## Embeddings
 
@@ -143,25 +169,47 @@ services:
 Supported upstream adapters are `cohere-v2`, `jina-v1`, `voyage-v1`, and
 `graphit-rerank-v1`. The external client always sees Graphit rerank v1 and cannot choose the model.
 
-## S3/STS
+## S3 signing
 
 ```yaml
 services:
   s3:
     enabled: true
-    mode: assume_role
-    region: us-east-1
-    endpoint: ""
-    bucket: graphit-artifacts
-    base_prefix: graphit
-    role_arn: arn:aws:iam::123456789012:role/graphit-broker-session
-    sts_endpoint: ""
-    duration: 1h
+    default_route: primary
+    presign_expiry: 5m
+    max_presign_expiry: 15m
     authorization_revision: acl-2026-09-07.1
+    routes:
+      primary:
+        region: us-east-1
+        endpoint: ""
+        bucket: graphit-artifacts
+        base_prefix: graphit
+        access_key_id: ${PRIMARY_S3_ACCESS_KEY_ID:?required}
+        secret_access_key: ${PRIMARY_S3_SECRET_ACCESS_KEY:?required}
+      eu:
+        region: eu-west-1
+        endpoint: https://objects.eu.example.com
+        bucket: graphit-eu
+        base_prefix: tenants/eu
+        access_key_id: ${EU_S3_ACCESS_KEY_ID:?required}
+        secret_access_key: ${EU_S3_SECRET_ACCESS_KEY:?required}
 ```
 
-`mode` is `assume_role` (broker uses its AWS credential chain) or `web_identity` (broker forwards
-the validated bearer token to AWS `AssumeRoleWithWebIdentity`). Duration must be 15 minutes through
-12 hours and is still capped by AWS/role policy. `endpoint` is returned to Graphit for S3-compatible
-stores; `sts_endpoint` changes only the exchange endpoint. If `authorization_revision` is omitted,
+`routes` is the broker-private dynamic topology table. Each ACL rule may set `s3_route`; otherwise
+`default_route` is used. If matching rules select different routes, the request fails closed as
+ambiguous. Every route contains its own `bucket`, `region`, optional compatible `endpoint`,
+`base_prefix`, `access_key_id`, and `secret_access_key`. These values are never copied into a
+Graphit provider or returned by discovery. Put credentials in environment-expanded secrets, never
+in version control. Changing a route needs no client provider update or new login. There is no
+credential exchange or temporary credential contract: the broker signs the requested operation
+directly with the selected route credential. If `authorization_revision` is omitted,
 a short hash of ACL configuration is generated.
+
+When S3 is enabled, presigning is the only public storage contract. Graphit requests one URL for
+one GET, HEAD, PUT, DELETE or ListObjectsV2 operation. `presign_expiry` is the default lifetime and `max_presign_expiry` is the hard client
+override ceiling (maximum one hour). The broker performs current ACL evaluation on every request
+and returns only the signed HTTP request—not the credentials. Anonymous and authenticated grants
+use the same signing path after ACL authorization. Keep `base_prefix` only inside a route. Explicit `s3_prefixes` are
+evaluated against the caller's logical key; the selected route's base prefix is prepended only
+after authorization and only inside the broker.
