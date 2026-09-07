@@ -1,6 +1,6 @@
 database:
   driver: sqlite
-  dsn: /tmp/graphit-broker-smoke.db
+  dsn: /var/lib/graphit-broker/graphit-broker-smoke.db
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m

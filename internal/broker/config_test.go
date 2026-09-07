@@ -152,3 +152,92 @@ services:
 		t.Fatal("legacy authorization configuration was accepted")
 	}
 }
+
+func TestConfigSupportsLocalBackendsDevicesAndLegacyUpstreams(t *testing.T) {
+	input := `
+services:
+  embeddings:
+    enabled: true
+    backend: local
+    revision: local-embedding-v1
+    dimensions: 768
+    local:
+      device: auto
+      cache_dir: /tmp/models/embedding
+  rerank:
+    enabled: true
+    backend: local
+    revision: local-rerank-v1
+    local:
+      device: cpu
+      cache_dir: /tmp/models/rerank
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Services.Embeddings.Backend != "local" || cfg.Services.Embeddings.Local.Device != "auto" || cfg.Services.Rerank.Local.Device != "cpu" {
+		t.Fatalf("local defaults=%#v", cfg.Services)
+	}
+
+	legacy := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+		Enabled: true, Revision: "legacy", Dimensions: 3,
+		Upstream: HTTPUpstreamConfig{Protocol: "openai-embeddings-v1", URL: "http://127.0.0.1/embeddings", Model: "legacy"},
+	}}}
+	legacy.defaults()
+	if legacy.Services.Embeddings.Backend != "upstream" {
+		t.Fatalf("legacy backend=%q", legacy.Services.Embeddings.Backend)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy upstream rejected: %v", err)
+	}
+}
+
+func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *testing.T) {
+	for _, protocol := range embeddingUpstreamProtocols {
+		cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+			Enabled: true, Backend: "upstream", Revision: "r", Dimensions: 3,
+			Upstream: HTTPUpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
+		}}}
+		cfg.defaults()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("protocol %q rejected: %v", protocol, err)
+		}
+	}
+	cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+		Enabled: true, Backend: "local", Revision: "r", Dimensions: localEmbeddingDimensions,
+		Local: LocalModelConfig{Device: "metal", CacheDir: "/tmp/models"},
+	}}}
+	cfg.defaults()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auto, cpu, or cuda") {
+		t.Fatalf("invalid local device error=%v", err)
+	}
+}
+
+func TestConfigAcceptsOperatorProvidedEmbeddingModelAndValidatesItsPaths(t *testing.T) {
+	input := `
+services:
+  embeddings:
+    enabled: true
+    backend: local
+    revision: custom-embedding-v1
+    dimensions: 1024
+    local:
+      device: cpu
+      cache_dir: /var/cache/graphit-broker/models/custom
+      model_path: /models/custom/model.onnx
+      tokenizer_path: /models/custom/tokenizer.json
+      model_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      tokenizer_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      output_name: sentence_embedding
+      query_prefix: "query: "
+      max_length: 1024
+`
+	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
+		t.Fatalf("custom local embedding rejected: %v", err)
+	}
+	missingTokenizer := strings.Replace(input, "      tokenizer_path: /models/custom/tokenizer.json\n", "", 1)
+	if _, err := DecodeConfig(strings.NewReader(missingTokenizer), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "must be set together") {
+		t.Fatalf("unpaired paths error=%v", err)
+	}
+}

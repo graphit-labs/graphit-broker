@@ -2,15 +2,27 @@
 
 ## Container
 
-The Dockerfile produces a static, non-root image with CA certificates, a health check, and a
-private SQLite directory. The example Compose service uses a read-only root filesystem, drops all
-capabilities, enables `no-new-privileges`, mounts configuration read-only, and persists the
-database directory.
+The Dockerfile produces one non-root image with CA certificates, a health check, ONNX Runtime, and
+CUDA libraries. Model weights are not included. The example Compose service uses a read-only root
+filesystem, drops all capabilities, enables `no-new-privileges`, and persists configuration,
+database state, and downloaded model files in separate named volumes.
+
+```bash
+cp .env.example .env
+docker compose -f docker-compose.yml up --build -d
+```
+
+Docker seeds the empty `broker-config` volume from `/etc/graphit-broker/config.yaml` in the image.
+The mounted YAML is deployment bootstrap configuration; after it initializes an empty SQL database,
+changes made through the administration UI are stored in `broker-state` (or the configured remote
+database). To initialize the volume from a customized file:
 
 ```bash
 cp config.example.yaml config.yaml
-cp .env.example .env
-docker compose -f docker-compose.yml up --build -d
+# Edit config.yaml, then:
+docker compose create broker
+docker compose cp config.yaml broker:/etc/graphit-broker/config.yaml
+docker compose up -d
 ```
 
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
@@ -52,11 +64,52 @@ credential exposure in staging must not be able to affect production. If one bro
 environments, make every environment grant name its route explicitly and test that staging
 principals and project IDs cannot match production grants.
 
-## AI upstreams
+## AI services
 
-The broker owns upstream endpoint, model, API key, timeouts, limits, and cache. Allow egress only to
-configured upstreams. Change the embedding revision whenever model, tokenizer, dimensions, or
-other vector-space semantics change; Graphit uses it to isolate incompatible indexes.
+The broker owns upstream endpoint, model, API key, timeouts, limits, and cache. It supports the
+Graphit Code provider set: OpenAI-compatible, Cohere, Voyage, and Google embeddings; Cohere,
+Voyage, and Jina rerank; plus local CodeRankEmbed and BGE rerank inference. Allow egress only to
+configured upstreams and, when local models are activated, to their pinned Hugging Face artifact
+URLs.
+
+At startup, each enabled `backend: local` service downloads only its own missing weights; an
+upstream or disabled service does not download anything. Cached weights survive restarts in
+`broker-models`. If `model_path` and `tokenizer_path` are configured, startup loads exactly those
+operator-provided files from the volume and performs no download. Seed custom model files under
+`/var/cache/graphit-broker/models` in the `broker-models` volume, including any ONNX external-data
+files, and point the YAML at their absolute container paths.
+
+One way to seed that named volume without another Compose file is to create the service, copy the
+artifacts, and then start it:
+
+```bash
+docker compose create broker
+docker compose cp ./models/custom-embedding broker:/var/cache/graphit-broker/models/custom-embedding
+docker compose up -d
+```
+
+The files must be readable by the image's non-root broker user. Optional configured SHA-256 values
+make startup reject a mismatched mount instead of loading it.
+
+Default Compose runs on CPU. On an NVIDIA host with the Container Toolkit installed, expose GPUs
+through the same file; `device: auto` prefers CUDA and falls back to CPU using the same image:
+
+```bash
+GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
+```
+
+Set `device: cpu` to force CPU or `device: cuda` to require CUDA. Change the embedding revision
+whenever model, tokenizer, dimensions, or other vector-space semantics change; Graphit uses it to
+isolate incompatible indexes.
+
+The Compose environment selects the container runtime, not the inference device policy. Keep
+`local.device: auto` to prefer an exposed GPU or use `cuda` when startup must fail unless it is
+usable. `GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia` requires the NVIDIA Container Toolkit to have
+registered the `nvidia` runtime with Docker. Confirm host visibility with `nvidia-smi`; the broker
+logs the chosen `cuda` or `cpu` device when each local model becomes ready.
+
+For installation without Docker, including the additional host CUDA/cuDNN requirements, see
+[running the native binary](binary.md).
 
 ## OIDC
 

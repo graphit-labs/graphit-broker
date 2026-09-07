@@ -6,8 +6,10 @@ evaluates deny-by-default resource grants from SQL, and exposes:
 
 - `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
 - `POST /v1/s3/presign` — one narrowly scoped pre-signed request for each S3 operation;
-- `POST /v1/embeddings` — the OpenAI embeddings contract backed by a broker-owned upstream;
-- `POST /v1/rerank` — the versioned Graphit rerank contract backed by a broker-owned adapter;
+- `POST /v1/embeddings` — an OpenAI-shaped contract backed by local inference or a broker-owned
+  OpenAI-compatible, Cohere, Voyage, or Google adapter;
+- `POST /v1/rerank` — the versioned Graphit contract backed by local inference or a broker-owned
+  Cohere, Voyage, Jina, or Graphit-compatible adapter;
 - `/admin/` — an OIDC-protected administration UI for configuration, resource grants, roles,
   and user-role assignments.
 
@@ -45,17 +47,43 @@ Administrative RBAC and resource authorization are separate:
 ## Quick start with Docker
 
 Requirements: Docker 24+, an OIDC web client for administration, an immutable `sub` for the first
-superadmin, and the credentials for enabled upstream services.
+superadmin, and the credentials for any enabled upstream services. Local AI does not need provider
+credentials.
 
 ```bash
-cp config.example.yaml config.yaml
 cp .env.example .env
-# Fill only your local, uncommitted copies.
+# Fill the local, uncommitted environment file.
 docker compose -f docker-compose.yml up --build -d
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 curl --fail http://127.0.0.1:8080/.well-known/graphit-broker
 ```
+
+Compose persists `/etc/graphit-broker`, `/var/lib/graphit-broker`, and the model cache in the
+  named volumes `broker-config`, `broker-state`, and `broker-models`. On the first run Docker seeds
+`broker-config` with the image's `config.yaml`. To start from a customized file, create the service,
+copy the file into its configuration volume, and then start it:
+
+```bash
+cp config.example.yaml config.yaml
+# Edit config.yaml first.
+docker compose create broker
+docker compose cp config.yaml broker:/etc/graphit-broker/config.yaml
+docker compose up -d
+```
+
+When an enabled service has `backend: local`, startup downloads and initializes only that service's
+model. On a host with the NVIDIA Container Toolkit, expose GPUs through the same Compose file. The
+same image is used in both modes; `device: auto` prefers CUDA when exposed and falls back to CPU:
+
+```bash
+GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
+```
+
+Local ONNX models can also be supplied explicitly with paired `model_path` and `tokenizer_path`
+values under the persistent `broker-models` volume. In this custom mode the broker downloads
+nothing: it validates and loads exactly the mounted artifacts. See
+[configuration](docs/configuration.md) for the compatible model contract and optional checksums.
 
 Open `https://YOUR-BROKER/admin/`, sign in, and create the first resource grants. Until then,
 consumer endpoints correctly return `403`.
@@ -84,6 +112,7 @@ docker rm -f graphit-broker-smoke
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
+- [Native binary installation and CPU/GPU operation](docs/binary.md)
 - [Database backends](docs/database.md)
 - [OIDC integration](docs/oidc.md)
 - [Resource authorization](docs/authorization.md)

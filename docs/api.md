@@ -82,12 +82,16 @@ a concurrent change fails the operation closed.
 `POST /v1/embeddings` follows the OpenAI embeddings input/result shape:
 
 ```json
-{"input":["first text","second text"]}
+{"input":["first text","second text"],"input_type":"document"}
 ```
 
 The broker ignores client model selection, invokes its configured model, validates dimensions and
 indexes, and returns `X-Graphit-Embedding-Revision`,
 `X-Graphit-Embedding-Dimensions`, and `X-Graphit-Cache: HIT|MISS`.
+
+`input_type` is an optional Graphit extension with values `query` and `document`; omitted means
+`document`. It lets the broker translate asymmetric retrieval semantics to Cohere, Voyage, Google,
+or the local model while leaving the response contract stable.
 
 ## Rerank
 

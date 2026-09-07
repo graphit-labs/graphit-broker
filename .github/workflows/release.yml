@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI gate
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          actionlint
+      - name: Test and vet
+        run: make check
+
+  build-linux:
+    name: Build Linux amd64
+    needs: ci
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/graphit-broker/native
+          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
+      - name: Build release archive
+        run: make release-linux VERSION="${{ github.ref_name }}"
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphit-broker-linux-amd64
+          path: |
+            .build/graphit-broker-linux-amd64.tar.gz
+            .build/graphit-broker-linux-amd64.sha256
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub release
+    needs: build-linux
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: graphit-broker-linux-amd64
+          path: release-assets
+      - name: Generate combined checksums
+        run: cp release-assets/graphit-broker-linux-amd64.sha256 release-assets/checksums.sha256
+      - name: Extract changelog
+        id: changelog
+        run: |
+          release_tag="${{ github.ref_name }}"
+          previous_tag=$(git tag --sort=-version:refname | grep -v "^${release_tag}$" | head -1 || true)
+          if [ -n "$previous_tag" ]; then
+            changes=$(git log --pretty=format:'- %s (%h)' "${previous_tag}..HEAD")
+          else
+            changes=$(git log --pretty=format:'- %s (%h)' | head -20)
+          fi
+          {
+            echo 'changes<<EOF'
+            echo "$changes"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Graphit Broker ${{ github.ref_name }}
+          body: |
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.changes }}
+
+            ## Linux amd64 binary
+
+            The archive contains `graphit-broker`, `config.example.yaml`, and the matching
+            CPU/CUDA-capable ONNX Runtime libraries. Model weights are downloaded only when an
+            enabled local backend starts and are not included in the release.
+
+            ```bash
+            sha256sum -c graphit-broker-linux-amd64.sha256
+            tar -xzf graphit-broker-linux-amd64.tar.gz
+            ./graphit-broker-linux-amd64/graphit-broker --version
+            ```
+          files: |
+            release-assets/graphit-broker-linux-amd64.tar.gz
+            release-assets/graphit-broker-linux-amd64.sha256
+            release-assets/checksums.sha256
+          fail_on_unmatched_files: true
+          make_latest: true
+          generate_release_notes: false

@@ -274,6 +274,38 @@ func TestServerDoesNotExposeUpstreamErrorBody(t *testing.T) {
 	}
 }
 
+func TestServerEmbeddingInputTypeDefaultsToDocumentAndRejectsUnknownValue(t *testing.T) {
+	seen := make(chan map[string]any, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		seen <- body
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float32{1, 2, 3}}}})
+	}))
+	defer upstream.Close()
+	cfg := testServerConfig(upstream.URL, upstream.URL)
+	authenticator := authFunc(func(context.Context, string) (Principal, error) {
+		return Principal{Issuer: "i", Subject: "s", Organization: "acme"}, nil
+	})
+	server := httptest.NewServer(newServer(cfg, authenticator, NewAIService(cfg.Services)))
+	defer server.Close()
+
+	response := post(t, server.URL+"/v1/embeddings", "valid", `{"input":"hello"}`)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("default input_type status=%d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	if body := <-seen; body["input_type"] != nil {
+		t.Fatalf("OpenAI upstream unexpectedly received broker extension: %#v", body)
+	}
+
+	response = post(t, server.URL+"/v1/embeddings", "valid", `{"input":"hello","input_type":"classification"}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid input_type status=%d", response.StatusCode)
+	}
+}
+
 func testServerConfig(embeddingURL, rerankURL string) Config {
 	return Config{
 		Database: DatabaseConfig{Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,11 +15,18 @@ import (
 	"github.com/graphit-labs/graphit-broker/internal/broker"
 )
 
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), "/etc/graphit-broker/config.yaml"), "configuration YAML file")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Fprintln(os.Stdout, version)
+		return
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
 	slog.SetDefault(logger)

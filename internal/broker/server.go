@@ -83,8 +83,13 @@ func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func
 			return nil, err
 		}
 	}
+	ai := NewAIService(cfg.Services)
+	if err := ai.InitializeLocal(ctx); err != nil {
+		_ = ai.Close()
+		return nil, err
+	}
 	return &runtimeState{config: cfg, configurationRevision: revision, authenticator: authenticator,
-		acl: NewACL(grants), ai: NewAIService(cfg.Services), presigner: presigner, adminOIDC: adminOIDC}, nil
+		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
 func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
@@ -134,10 +139,16 @@ func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *Cont
 func (s *Server) runtime() *runtimeState { return s.state.Load() }
 
 func (s *Server) Close() error {
-	if s.control != nil {
-		return s.control.Close()
+	var firstErr error
+	if state := s.runtime(); state != nil && state.ai != nil {
+		firstErr = state.ai.Close()
 	}
-	return nil
+	if s.control != nil {
+		if err := s.control.Close(); firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
@@ -242,8 +253,9 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Model string          `json:"model,omitempty"`
-		Input json.RawMessage `json:"input"`
+		Model     string          `json:"model,omitempty"`
+		Input     json.RawMessage `json:"input"`
+		InputType string          `json:"input_type,omitempty"`
 	}
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
@@ -254,6 +266,14 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := state.config.Services.Embeddings
+	request.InputType = strings.ToLower(strings.TrimSpace(request.InputType))
+	if request.InputType == "" {
+		request.InputType = "document"
+	}
+	if request.InputType != "document" && request.InputType != "query" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "input_type must be query or document", requestID(r.Context()))
+		return
+	}
 	if len(inputs) == 0 || len(inputs) > cfg.MaxBatch {
 		writeError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("input must contain between 1 and %d items", cfg.MaxBatch), requestID(r.Context()))
 		return
@@ -270,7 +290,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "embedding input exceeds configured limit", requestID(r.Context()))
 		return
 	}
-	response, cached, err := state.ai.Embed(r.Context(), principal, inputs)
+	response, cached, err := state.ai.Embed(r.Context(), principal, inputs, request.InputType)
 	if err != nil {
 		s.upstreamFailure(w, r, err)
 		return

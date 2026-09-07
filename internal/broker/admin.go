@@ -206,6 +206,9 @@ func (s *Server) replaceRuntimeConfig(ctx context.Context, expected uint64, next
 	}
 	stored, err := s.control.ReplaceConfig(ctx, expected, next)
 	if err != nil {
+		if prepared.ai != nil {
+			_ = prepared.ai.Close()
+		}
 		return StoredConfig{}, err
 	}
 	prepared.configurationRevision = stored.Revision

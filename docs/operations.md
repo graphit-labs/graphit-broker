@@ -26,6 +26,10 @@ or upstream secrets.
 | pre-sign gets 400 | unsafe key/project mismatch or ambiguous routes | logical key and matching grants |
 | token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
 | embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |
+| startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
+| local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker-models` volume and broker error response |
+| `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `local.device_id` |
+| `device: auto` uses CPU | no visible GPU or CUDA initialization failed | warning log and NVIDIA runtime selection |
 
 ## Backup
 

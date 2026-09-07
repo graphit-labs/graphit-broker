@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -110,6 +111,23 @@ type HTTPUpstreamConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 }
 
+// LocalModelConfig controls an in-process ONNX model. Built-in weights are
+// never part of the broker image and are fetched into CacheDir during startup
+// of an enabled local backend. Operator-provided paths are only loaded.
+type LocalModelConfig struct {
+	Device          string `yaml:"device" json:"device"`
+	DeviceID        int    `yaml:"device_id" json:"device_id"`
+	CacheDir        string `yaml:"cache_dir" json:"cache_dir"`
+	ModelPath       string `yaml:"model_path,omitempty" json:"model_path,omitempty"`
+	TokenizerPath   string `yaml:"tokenizer_path,omitempty" json:"tokenizer_path,omitempty"`
+	ModelSHA256     string `yaml:"model_sha256,omitempty" json:"model_sha256,omitempty"`
+	TokenizerSHA256 string `yaml:"tokenizer_sha256,omitempty" json:"tokenizer_sha256,omitempty"`
+	OutputName      string `yaml:"output_name,omitempty" json:"output_name,omitempty"`
+	QueryPrefix     string `yaml:"query_prefix,omitempty" json:"query_prefix,omitempty"`
+	MaxLength       int    `yaml:"max_length,omitempty" json:"max_length,omitempty"`
+	Dimensions      int    `yaml:"-" json:"-"`
+}
+
 type CacheConfig struct {
 	TTL        time.Duration `yaml:"ttl"`
 	MaxEntries int           `yaml:"max_entries"`
@@ -117,22 +135,26 @@ type CacheConfig struct {
 
 type EmbeddingServiceConfig struct {
 	Enabled       bool               `yaml:"enabled"`
+	Backend       string             `yaml:"backend"`
 	Route         string             `yaml:"route"`
 	Revision      string             `yaml:"revision"`
 	Dimensions    int                `yaml:"dimensions"`
 	MaxBatch      int                `yaml:"max_batch"`
 	MaxInputBytes int                `yaml:"max_input_bytes"`
 	Upstream      HTTPUpstreamConfig `yaml:"upstream"`
+	Local         LocalModelConfig   `yaml:"local"`
 	Cache         CacheConfig        `yaml:"cache"`
 }
 
 type RerankServiceConfig struct {
 	Enabled          bool               `yaml:"enabled"`
+	Backend          string             `yaml:"backend"`
 	Route            string             `yaml:"route"`
 	Revision         string             `yaml:"revision"`
 	MaxDocuments     int                `yaml:"max_documents"`
 	MaxDocumentBytes int                `yaml:"max_document_bytes"`
 	Upstream         HTTPUpstreamConfig `yaml:"upstream"`
+	Local            LocalModelConfig   `yaml:"local"`
 	Cache            CacheConfig        `yaml:"cache"`
 }
 
@@ -267,6 +289,7 @@ func (c *Config) defaults() {
 	if c.Services.Embeddings.Route == "" {
 		c.Services.Embeddings.Route = "graphit-default"
 	}
+	c.Services.Embeddings.setDefaults("coderankembed")
 	if c.Services.Embeddings.MaxBatch == 0 {
 		c.Services.Embeddings.MaxBatch = 256
 	}
@@ -279,6 +302,7 @@ func (c *Config) defaults() {
 	if c.Services.Rerank.Route == "" {
 		c.Services.Rerank.Route = "graphit-default"
 	}
+	c.Services.Rerank.setDefaults("bge-reranker-base")
 	if c.Services.Rerank.MaxDocuments == 0 {
 		c.Services.Rerank.MaxDocuments = 1000
 	}
@@ -307,6 +331,32 @@ func (c *Config) defaults() {
 	}
 	c.Services.Embeddings.Cache.setDefaults()
 	c.Services.Rerank.Cache.setDefaults()
+}
+
+func (c *EmbeddingServiceConfig) setDefaults(modelSubdir string) {
+	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
+	if c.Backend == "" {
+		c.Backend = "upstream"
+	}
+	c.Local.setDefaults(modelSubdir)
+}
+
+func (c *RerankServiceConfig) setDefaults(modelSubdir string) {
+	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
+	if c.Backend == "" {
+		c.Backend = "upstream"
+	}
+	c.Local.setDefaults(modelSubdir)
+}
+
+func (c *LocalModelConfig) setDefaults(modelSubdir string) {
+	c.Device = strings.ToLower(strings.TrimSpace(c.Device))
+	if c.Device == "" {
+		c.Device = "auto"
+	}
+	if strings.TrimSpace(c.CacheDir) == "" {
+		c.CacheDir = "/var/cache/graphit-broker/models/" + modelSubdir
+	}
 }
 
 func (c *CacheConfig) setDefaults() {
@@ -382,16 +432,37 @@ func (c Config) Validate() error {
 		if c.Services.Embeddings.Revision == "" || c.Services.Embeddings.Dimensions <= 0 {
 			return errors.New("services.embeddings needs revision and positive dimensions")
 		}
-		if err := c.Services.Embeddings.Upstream.validate("services.embeddings.upstream", "openai-embeddings-v1"); err != nil {
-			return err
+		switch c.Services.Embeddings.Backend {
+		case "local":
+			if !c.Services.Embeddings.Local.operatorProvided() && c.Services.Embeddings.Dimensions != 768 {
+				return errors.New("services.embeddings.dimensions must be 768 for the local CodeRankEmbed backend")
+			}
+			if err := c.Services.Embeddings.Local.validate("services.embeddings.local"); err != nil {
+				return err
+			}
+		case "upstream":
+			if err := c.Services.Embeddings.Upstream.validate("services.embeddings.upstream", embeddingUpstreamProtocols...); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("services.embeddings.backend %q is unsupported (use local or upstream)", c.Services.Embeddings.Backend)
 		}
 	}
 	if c.Services.Rerank.Enabled {
 		if c.Services.Rerank.Revision == "" {
 			return errors.New("services.rerank.revision is required")
 		}
-		if err := c.Services.Rerank.Upstream.validate("services.rerank.upstream", "cohere-v2", "jina-v1", "voyage-v1", "graphit-rerank-v1"); err != nil {
-			return err
+		switch c.Services.Rerank.Backend {
+		case "local":
+			if err := c.Services.Rerank.Local.validate("services.rerank.local"); err != nil {
+				return err
+			}
+		case "upstream":
+			if err := c.Services.Rerank.Upstream.validate("services.rerank.upstream", rerankUpstreamProtocols...); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("services.rerank.backend %q is unsupported (use local or upstream)", c.Services.Rerank.Backend)
 		}
 	}
 	if c.Services.S3.Enabled {
@@ -424,6 +495,57 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+var embeddingUpstreamProtocols = []string{
+	"openai", "openai-compatible", "openai-embeddings-v1",
+	"cohere", "cohere-embed-v2", "voyage", "voyage-embeddings-v1",
+	"google", "google-embed-content-v1beta",
+}
+
+var rerankUpstreamProtocols = []string{
+	"cohere", "cohere-v2", "jina", "jina-v1", "voyage", "voyage-v1", "graphit-rerank-v1",
+}
+
+func (c LocalModelConfig) validate(name string) error {
+	switch c.Device {
+	case "auto", "cpu", "cuda":
+	default:
+		return fmt.Errorf("%s.device %q is unsupported (use auto, cpu, or cuda)", name, c.Device)
+	}
+	if c.DeviceID < 0 {
+		return fmt.Errorf("%s.device_id must not be negative", name)
+	}
+	if strings.TrimSpace(c.CacheDir) == "" || !filepath.IsAbs(c.CacheDir) {
+		return fmt.Errorf("%s.cache_dir must be an absolute path", name)
+	}
+	if (c.ModelPath == "") != (c.TokenizerPath == "") {
+		return fmt.Errorf("%s.model_path and tokenizer_path must be set together", name)
+	}
+	if c.operatorProvided() {
+		if !filepath.IsAbs(c.ModelPath) || !filepath.IsAbs(c.TokenizerPath) {
+			return fmt.Errorf("%s.model_path and tokenizer_path must be absolute paths", name)
+		}
+	} else if c.ModelSHA256 != "" || c.TokenizerSHA256 != "" {
+		return fmt.Errorf("%s model digests require model_path and tokenizer_path", name)
+	}
+	for field, digest := range map[string]string{"model_sha256": c.ModelSHA256, "tokenizer_sha256": c.TokenizerSHA256} {
+		if digest == "" {
+			continue
+		}
+		decoded, err := hex.DecodeString(digest)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("%s.%s must be a 64-character hexadecimal SHA-256", name, field)
+		}
+	}
+	if c.MaxLength < 0 || c.MaxLength > 8192 {
+		return fmt.Errorf("%s.max_length must be between 1 and 8192 when set", name)
+	}
+	return nil
+}
+
+func (c LocalModelConfig) operatorProvided() bool {
+	return strings.TrimSpace(c.ModelPath) != "" || strings.TrimSpace(c.TokenizerPath) != ""
 }
 
 func validateACLRule(rule ACLRuleConfig) error {

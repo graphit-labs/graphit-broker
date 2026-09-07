@@ -51,6 +51,8 @@ administration:
 services:
   embeddings:
     enabled: true
+    # upstream: OpenAI-compatible, Cohere, Voyage, or Google; local: CodeRankEmbed ONNX.
+    backend: "upstream"
     route: "graphit-default"
     # Change this value whenever the effective vector space changes.
     revision: "embedding-route-2026-09-07.1"
@@ -66,12 +68,27 @@ services:
       api_key_scheme: "Bearer"
       send_dimensions: false
       timeout: 45s
+    # Used only when backend is local. Weights are downloaded and verified during broker startup.
+    local:
+      device: "auto" # auto prefers CUDA when Docker exposes a GPU, otherwise CPU
+      device_id: 0
+      cache_dir: "/var/cache/graphit-broker/models/coderankembed"
+      # To load a compatible custom model without downloading anything, mount both files and set:
+      # model_path: "/var/cache/graphit-broker/models/custom-embedding/model.onnx"
+      # tokenizer_path: "/var/cache/graphit-broker/models/custom-embedding/tokenizer.json"
+      # model_sha256: "optional 64-character hexadecimal digest"
+      # tokenizer_sha256: "optional 64-character hexadecimal digest"
+      # output_name: "sentence_embedding"
+      # query_prefix: "query: "
+      # max_length: 512
     cache:
       ttl: 10m
       max_entries: 10000
 
   rerank:
     enabled: true
+    # upstream: Cohere, Voyage, Jina, or Graphit-compatible; local: BGE reranker ONNX.
+    backend: "upstream"
     route: "graphit-default"
     revision: "rerank-route-2026-09-07.1"
     max_documents: 1000
@@ -84,6 +101,17 @@ services:
       api_key_header: "Authorization"
       api_key_scheme: "Bearer"
       timeout: 45s
+    # Used only when backend is local. Weights are downloaded and verified during broker startup.
+    local:
+      device: "auto" # auto prefers CUDA when Docker exposes a GPU, otherwise CPU
+      device_id: 0
+      cache_dir: "/var/cache/graphit-broker/models/bge-reranker-base"
+      # Custom compatible cross-encoder models are loaded only from mounted paths:
+      # model_path: "/var/cache/graphit-broker/models/custom-rerank/model.onnx"
+      # tokenizer_path: "/var/cache/graphit-broker/models/custom-rerank/tokenizer.json"
+      # model_sha256: "optional 64-character hexadecimal digest"
+      # tokenizer_sha256: "optional 64-character hexadecimal digest"
+      # max_length: 512
     cache:
       ttl: 5m
       max_entries: 10000

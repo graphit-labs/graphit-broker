@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type UpstreamError struct {
@@ -56,43 +58,97 @@ type RerankResponse struct {
 }
 
 type AIService struct {
-	embeddingCfg   EmbeddingServiceConfig
-	rerankCfg      RerankServiceConfig
-	embeddingHTTP  *http.Client
-	rerankHTTP     *http.Client
-	embeddingCache *responseCache
-	rerankCache    *responseCache
+	embeddingCfg      EmbeddingServiceConfig
+	rerankCfg         RerankServiceConfig
+	embeddingHTTP     *http.Client
+	rerankHTTP        *http.Client
+	embeddingCache    *responseCache
+	rerankCache       *responseCache
+	localMu           sync.Mutex
+	localEmbedding    localEmbeddingBackend
+	localRerank       localRerankBackend
+	newLocalEmbedding func(context.Context, LocalModelConfig) (localEmbeddingBackend, error)
+	newLocalRerank    func(context.Context, LocalModelConfig) (localRerankBackend, error)
 }
 
 func NewAIService(cfg ServicesConfig) *AIService {
+	cfg.Embeddings.Local.Dimensions = cfg.Embeddings.Dimensions
 	return &AIService{
 		embeddingCfg: cfg.Embeddings, rerankCfg: cfg.Rerank,
-		embeddingHTTP:  &http.Client{Timeout: cfg.Embeddings.Upstream.Timeout},
-		rerankHTTP:     &http.Client{Timeout: cfg.Rerank.Upstream.Timeout},
-		embeddingCache: newResponseCache(cfg.Embeddings.Cache),
-		rerankCache:    newResponseCache(cfg.Rerank.Cache),
+		embeddingHTTP:     &http.Client{Timeout: cfg.Embeddings.Upstream.Timeout},
+		rerankHTTP:        &http.Client{Timeout: cfg.Rerank.Upstream.Timeout},
+		embeddingCache:    newResponseCache(cfg.Embeddings.Cache),
+		rerankCache:       newResponseCache(cfg.Rerank.Cache),
+		newLocalEmbedding: newONNXEmbeddingBackend,
+		newLocalRerank:    newONNXRerankBackend,
 	}
 }
 
-func (s *AIService) Embed(ctx context.Context, principal Principal, input []string) (EmbeddingResponse, bool, error) {
+func (s *AIService) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	var firstErr error
+	if s.localEmbedding != nil {
+		firstErr = s.localEmbedding.Close()
+		s.localEmbedding = nil
+	}
+	if s.localRerank != nil {
+		if err := s.localRerank.Close(); firstErr == nil {
+			firstErr = err
+		}
+		s.localRerank = nil
+	}
+	return firstErr
+}
+
+// InitializeLocal loads only the enabled local backends. Constructors perform
+// verified on-demand acquisition, so upstream and disabled services never touch
+// the model cache while a local service is fully ready before the server listens.
+func (s *AIService) InitializeLocal(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if s.embeddingCfg.Enabled && s.embeddingCfg.Backend == "local" {
+		if _, err := s.ensureLocalEmbedding(ctx); err != nil {
+			return fmt.Errorf("initialize local embeddings: %w", err)
+		}
+	}
+	if s.rerankCfg.Enabled && s.rerankCfg.Backend == "local" {
+		if _, err := s.ensureLocalRerank(ctx); err != nil {
+			_ = s.Close()
+			return fmt.Errorf("initialize local rerank: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *AIService) Embed(ctx context.Context, principal Principal, input []string, requestedType ...string) (EmbeddingResponse, bool, error) {
 	cfg := s.embeddingCfg
-	key := scopedCacheKey(principal, cfg.Revision, input)
+	inputType := "document"
+	if len(requestedType) > 0 && requestedType[0] != "" {
+		inputType = requestedType[0]
+	}
+	key := scopedCacheKey(principal, cfg.Revision, struct {
+		InputType string
+		Input     []string
+	}{inputType, input})
 	if cached, ok := s.embeddingCache.Get(key); ok {
 		var response EmbeddingResponse
 		if json.Unmarshal(cached, &response) == nil {
 			return response, true, nil
 		}
 	}
-	body := map[string]any{"model": cfg.Upstream.Model, "input": input}
-	if cfg.Upstream.SendDimensions {
-		body["dimensions"] = cfg.Dimensions
+	var upstream embeddingBackendResponse
+	var err error
+	if cfg.Backend == "local" {
+		upstream, err = s.embedLocal(ctx, input, inputType)
+	} else {
+		upstream, err = embedUpstream(ctx, s.embeddingHTTP, cfg, input, inputType)
 	}
-	var upstream struct {
-		Object string          `json:"object"`
-		Data   []EmbeddingData `json:"data"`
-		Usage  json.RawMessage `json:"usage"`
-	}
-	if err := doUpstreamJSON(ctx, s.embeddingHTTP, "embeddings", cfg.Upstream, body, &upstream); err != nil {
+	if err != nil {
 		return EmbeddingResponse{}, false, err
 	}
 	if len(upstream.Data) != len(input) {
@@ -117,6 +173,171 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 	return response, false, nil
 }
 
+type embeddingBackendResponse struct {
+	Object string
+	Data   []EmbeddingData
+	Usage  json.RawMessage
+}
+
+const (
+	cohereEmbeddingBatchLimit = 96
+	voyageEmbeddingBatchLimit = 128
+	googleEmbeddingBatchLimit = 100
+	cohereRerankBatchLimit    = 200
+)
+
+func (s *AIService) embedLocal(ctx context.Context, input []string, inputType string) (embeddingBackendResponse, error) {
+	backend, err := s.ensureLocalEmbedding(ctx)
+	if err != nil {
+		return embeddingBackendResponse{}, err
+	}
+	vectors, err := backend.Embed(ctx, input, inputType)
+	if err != nil {
+		return embeddingBackendResponse{}, err
+	}
+	data := make([]EmbeddingData, len(vectors))
+	for i, vector := range vectors {
+		data[i] = EmbeddingData{Object: "embedding", Embedding: vector, Index: i}
+	}
+	return embeddingBackendResponse{Object: "list", Data: data}, nil
+}
+
+func (s *AIService) ensureLocalEmbedding(ctx context.Context) (localEmbeddingBackend, error) {
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	backend := s.localEmbedding
+	if backend == nil {
+		var err error
+		backend, err = s.newLocalEmbedding(ctx, s.embeddingCfg.Local)
+		if err != nil {
+			return nil, err
+		}
+		s.localEmbedding = backend
+	}
+	return backend, nil
+}
+
+func embedUpstream(ctx context.Context, client *http.Client, cfg EmbeddingServiceConfig, input []string, inputType string) (embeddingBackendResponse, error) {
+	protocol := strings.ToLower(strings.TrimSpace(cfg.Upstream.Protocol))
+	switch protocol {
+	case "openai", "openai-compatible", "openai-embeddings-v1":
+		body := map[string]any{"model": cfg.Upstream.Model, "input": input}
+		if cfg.Upstream.SendDimensions {
+			body["dimensions"] = cfg.Dimensions
+		}
+		var response struct {
+			Object string          `json:"object"`
+			Data   []EmbeddingData `json:"data"`
+			Usage  json.RawMessage `json:"usage"`
+		}
+		if err := doUpstreamJSON(ctx, client, "embeddings", cfg.Upstream, body, &response); err != nil {
+			return embeddingBackendResponse{}, err
+		}
+		return embeddingBackendResponse{Object: response.Object, Data: response.Data, Usage: response.Usage}, nil
+	case "cohere", "cohere-embed-v2":
+		providerType := "search_document"
+		if inputType == "query" {
+			providerType = "search_query"
+		}
+		data := make([]EmbeddingData, 0, len(input))
+		for start := 0; start < len(input); start += cohereEmbeddingBatchLimit {
+			end := min(start+cohereEmbeddingBatchLimit, len(input))
+			body := map[string]any{"model": cfg.Upstream.Model, "texts": input[start:end], "input_type": providerType, "embedding_types": []string{"float"}}
+			var response struct {
+				Embeddings struct {
+					Float [][]float32 `json:"float"`
+				} `json:"embeddings"`
+			}
+			if err := doUpstreamJSON(ctx, client, "embeddings", cfg.Upstream, body, &response); err != nil {
+				return embeddingBackendResponse{}, err
+			}
+			for i, vector := range response.Embeddings.Float {
+				data = append(data, EmbeddingData{Object: "embedding", Embedding: vector, Index: start + i})
+			}
+		}
+		return embeddingBackendResponse{Object: "list", Data: data}, nil
+	case "voyage", "voyage-embeddings-v1":
+		providerType := "document"
+		if inputType == "query" {
+			providerType = "query"
+		}
+		result := embeddingBackendResponse{Object: "list", Data: make([]EmbeddingData, 0, len(input))}
+		for start := 0; start < len(input); start += voyageEmbeddingBatchLimit {
+			end := min(start+voyageEmbeddingBatchLimit, len(input))
+			body := map[string]any{"model": cfg.Upstream.Model, "input": input[start:end], "input_type": providerType}
+			var response struct {
+				Object string          `json:"object"`
+				Data   []EmbeddingData `json:"data"`
+				Usage  json.RawMessage `json:"usage"`
+			}
+			if err := doUpstreamJSON(ctx, client, "embeddings", cfg.Upstream, body, &response); err != nil {
+				return embeddingBackendResponse{}, err
+			}
+			result.Object = firstNonEmpty(response.Object, result.Object)
+			result.Usage = response.Usage
+			for _, item := range response.Data {
+				item.Index += start
+				result.Data = append(result.Data, item)
+			}
+		}
+		return result, nil
+	case "google", "google-embed-content-v1beta":
+		taskType := "RETRIEVAL_DOCUMENT"
+		if inputType == "query" {
+			taskType = "RETRIEVAL_QUERY"
+		}
+		modelPath := "models/" + strings.TrimPrefix(cfg.Upstream.Model, "models/")
+		googleCfg := cfg.Upstream
+		googleCfg.URL = googleEmbeddingURL(googleCfg.URL, cfg.Upstream.Model)
+		data := make([]EmbeddingData, 0, len(input))
+		for start := 0; start < len(input); start += googleEmbeddingBatchLimit {
+			end := min(start+googleEmbeddingBatchLimit, len(input))
+			requests := make([]map[string]any, end-start)
+			for i, text := range input[start:end] {
+				item := map[string]any{
+					"model":              modelPath,
+					"content":            map[string]any{"parts": []map[string]string{{"text": text}}},
+					"embedContentConfig": map[string]any{"taskType": taskType},
+				}
+				if cfg.Upstream.SendDimensions {
+					item["embedContentConfig"].(map[string]any)["outputDimensionality"] = cfg.Dimensions
+				}
+				requests[i] = item
+			}
+			var response struct {
+				Embeddings []struct {
+					Values []float32 `json:"values"`
+				} `json:"embeddings"`
+			}
+			if err := doUpstreamJSON(ctx, client, "embeddings", googleCfg, map[string]any{"requests": requests}, &response); err != nil {
+				return embeddingBackendResponse{}, err
+			}
+			for i := range response.Embeddings {
+				data = append(data, EmbeddingData{Object: "embedding", Embedding: response.Embeddings[i].Values, Index: start + i})
+			}
+		}
+		return embeddingBackendResponse{Object: "list", Data: data}, nil
+	default:
+		return embeddingBackendResponse{}, fmt.Errorf("unsupported embedding protocol %q", cfg.Upstream.Protocol)
+	}
+}
+
+func indexedEmbeddings(vectors [][]float32) embeddingBackendResponse {
+	data := make([]EmbeddingData, len(vectors))
+	for i, vector := range vectors {
+		data[i] = EmbeddingData{Object: "embedding", Embedding: vector, Index: i}
+	}
+	return embeddingBackendResponse{Object: "list", Data: data}
+}
+
+func googleEmbeddingURL(base, model string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if strings.Contains(base, ":batchEmbedContents") {
+		return base
+	}
+	return base + "/models/" + url.PathEscape(strings.TrimPrefix(model, "models/")) + ":batchEmbedContents"
+}
+
 func (s *AIService) Rerank(ctx context.Context, principal Principal, query string, documents []string, topN int) (RerankResponse, bool, error) {
 	cfg := s.rerankCfg
 	key := scopedCacheKey(principal, cfg.Revision, struct {
@@ -130,32 +351,28 @@ func (s *AIService) Rerank(ctx context.Context, principal Principal, query strin
 			return response, true, nil
 		}
 	}
-	request := map[string]any{"model": cfg.Upstream.Model, "query": query, "documents": documents}
-	if cfg.Upstream.Protocol == "voyage-v1" {
-		request["top_k"] = topN
-	} else {
-		request["top_n"] = topN
-	}
 	var results []RerankResult
-	switch cfg.Upstream.Protocol {
-	case "cohere-v2", "jina-v1", "graphit-rerank-v1":
-		var response struct {
-			Results []RerankResult `json:"results"`
-		}
-		if err := doUpstreamJSON(ctx, s.rerankHTTP, "rerank", cfg.Upstream, request, &response); err != nil {
+	if cfg.Backend == "local" {
+		var err error
+		results, err = s.rerankLocal(ctx, query, documents)
+		if err != nil {
 			return RerankResponse{}, false, err
 		}
-		results = response.Results
-	case "voyage-v1":
-		var response struct {
-			Data []RerankResult `json:"data"`
+		sort.SliceStable(results, func(i, j int) bool {
+			if results[i].RelevanceScore == results[j].RelevanceScore {
+				return results[i].Index < results[j].Index
+			}
+			return results[i].RelevanceScore > results[j].RelevanceScore
+		})
+		if len(results) > topN {
+			results = results[:topN]
 		}
-		if err := doUpstreamJSON(ctx, s.rerankHTTP, "rerank", cfg.Upstream, request, &response); err != nil {
+	} else {
+		var err error
+		results, err = rerankUpstream(ctx, s.rerankHTTP, cfg, query, documents, topN)
+		if err != nil {
 			return RerankResponse{}, false, err
 		}
-		results = response.Data
-	default:
-		return RerankResponse{}, false, fmt.Errorf("unsupported rerank protocol %q", cfg.Upstream.Protocol)
 	}
 	if len(results) > topN {
 		return RerankResponse{}, false, errors.New("rerank upstream returned more results than requested")
@@ -178,6 +395,99 @@ func (s *AIService) Rerank(ctx context.Context, principal Principal, query strin
 	return response, false, nil
 }
 
+func (s *AIService) rerankLocal(ctx context.Context, query string, documents []string) ([]RerankResult, error) {
+	backend, err := s.ensureLocalRerank(ctx)
+	if err != nil {
+		return nil, err
+	}
+	scores, err := backend.Score(ctx, query, documents)
+	if err != nil {
+		return nil, err
+	}
+	if len(scores) != len(documents) {
+		return nil, fmt.Errorf("local reranker returned %d scores for %d documents", len(scores), len(documents))
+	}
+	results := make([]RerankResult, len(scores))
+	for i, score := range scores {
+		results[i] = RerankResult{Index: i, RelevanceScore: score}
+	}
+	return results, nil
+}
+
+func (s *AIService) ensureLocalRerank(ctx context.Context) (localRerankBackend, error) {
+	s.localMu.Lock()
+	defer s.localMu.Unlock()
+	backend := s.localRerank
+	if backend == nil {
+		var err error
+		backend, err = s.newLocalRerank(ctx, s.rerankCfg.Local)
+		if err != nil {
+			return nil, err
+		}
+		s.localRerank = backend
+	}
+	return backend, nil
+}
+
+func rerankUpstream(ctx context.Context, client *http.Client, cfg RerankServiceConfig, query string, documents []string, topN int) ([]RerankResult, error) {
+	request := map[string]any{"model": cfg.Upstream.Model, "query": query, "documents": documents}
+	protocol := strings.ToLower(strings.TrimSpace(cfg.Upstream.Protocol))
+	if protocol == "voyage" || protocol == "voyage-v1" {
+		request["top_k"] = topN
+	} else {
+		request["top_n"] = topN
+	}
+	var results []RerankResult
+	switch protocol {
+	case "cohere", "cohere-v2":
+		results = make([]RerankResult, 0, len(documents))
+		for start := 0; start < len(documents); start += cohereRerankBatchLimit {
+			end := min(start+cohereRerankBatchLimit, len(documents))
+			chunkRequest := map[string]any{
+				"model": cfg.Upstream.Model, "query": query, "documents": documents[start:end], "top_n": end - start,
+			}
+			var response struct {
+				Results []RerankResult `json:"results"`
+			}
+			if err := doUpstreamJSON(ctx, client, "rerank", cfg.Upstream, chunkRequest, &response); err != nil {
+				return nil, err
+			}
+			for _, result := range response.Results {
+				result.Index += start
+				results = append(results, result)
+			}
+		}
+		sort.SliceStable(results, func(i, j int) bool {
+			if results[i].RelevanceScore == results[j].RelevanceScore {
+				return results[i].Index < results[j].Index
+			}
+			return results[i].RelevanceScore > results[j].RelevanceScore
+		})
+		if len(results) > topN {
+			results = results[:topN]
+		}
+	case "jina", "jina-v1", "graphit-rerank-v1":
+		var response struct {
+			Results []RerankResult `json:"results"`
+		}
+		if err := doUpstreamJSON(ctx, client, "rerank", cfg.Upstream, request, &response); err != nil {
+			return nil, err
+		}
+		results = response.Results
+	case "voyage", "voyage-v1":
+		var response struct {
+			Data []RerankResult `json:"data"`
+		}
+		if err := doUpstreamJSON(ctx, client, "rerank", cfg.Upstream, request, &response); err != nil {
+			return nil, err
+		}
+		results = response.Data
+	default:
+		return nil, fmt.Errorf("unsupported rerank protocol %q", cfg.Upstream.Protocol)
+	}
+	return results, nil
+}
+
 func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cfg HTTPUpstreamConfig, input, output any) error {
 	encoded, err := json.Marshal(input)
 	if err != nil {
@@ -190,9 +500,22 @@ func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cf
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if cfg.APIKey != "" {
-		header := firstNonEmpty(cfg.APIKeyHeader, "Authorization")
+		header := cfg.APIKeyHeader
+		scheme := cfg.APIKeyScheme
+		protocol := strings.ToLower(strings.TrimSpace(cfg.Protocol))
+		google := protocol == "google" || protocol == "google-embed-content-v1beta"
+		if header == "" {
+			if google {
+				header = "x-goog-api-key"
+			} else {
+				header = "Authorization"
+			}
+		}
+		if scheme == "" && !google {
+			scheme = "Bearer"
+		}
 		value := cfg.APIKey
-		if scheme := firstNonEmpty(cfg.APIKeyScheme, "Bearer"); scheme != "" {
+		if scheme = strings.TrimSpace(scheme); scheme != "" {
 			value = scheme + " " + value
 		}
 		req.Header.Set(header, value)
