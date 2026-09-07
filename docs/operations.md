@@ -29,7 +29,8 @@ or upstream secrets.
 | startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
 | local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker-models` volume and broker error response |
 | `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `local.device_id` |
-| `device: auto` uses CPU | no visible GPU or CUDA initialization failed | warning log and NVIDIA runtime selection |
+| `device: coreml` fails | non-macOS host, unsupported model graph, or CoreML initialization failure | macOS version, broker platform, startup provider error |
+| `device: auto` uses CPU | CoreML/CUDA unavailable or provider initialization failed | provider warning, macOS support, NVIDIA runtime selection |
 
 ## Backup
 

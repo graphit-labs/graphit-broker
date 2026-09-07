@@ -60,6 +60,7 @@ type RerankResponse struct {
 type AIService struct {
 	embeddingCfg      EmbeddingServiceConfig
 	rerankCfg         RerankServiceConfig
+	s3Cfg             S3ServiceConfig
 	embeddingHTTP     *http.Client
 	rerankHTTP        *http.Client
 	embeddingCache    *responseCache
@@ -69,18 +70,24 @@ type AIService struct {
 	localRerank       localRerankBackend
 	newLocalEmbedding func(context.Context, LocalModelConfig) (localEmbeddingBackend, error)
 	newLocalRerank    func(context.Context, LocalModelConfig) (localRerankBackend, error)
+	modelCatalog      *ModelCatalog
+	prepareModel      func(context.Context, string, LocalModelConfig) (*ResolvedModel, error)
 }
 
-func NewAIService(cfg ServicesConfig) *AIService {
-	cfg.Embeddings.Local.Dimensions = cfg.Embeddings.Dimensions
+func NewAIService(cfg ServicesConfig, models ...ModelsConfig) *AIService {
+	modelConfig := ModelsConfig{Directory: "/var/cache/graphit-broker/models", Embedding: "coderankembed", Rerank: "bge-reranker-base"}
+	if len(models) > 0 {
+		modelConfig = models[0]
+	}
 	return &AIService{
-		embeddingCfg: cfg.Embeddings, rerankCfg: cfg.Rerank,
+		embeddingCfg: cfg.Embeddings, rerankCfg: cfg.Rerank, s3Cfg: cfg.S3,
 		embeddingHTTP:     &http.Client{Timeout: cfg.Embeddings.Upstream.Timeout},
 		rerankHTTP:        &http.Client{Timeout: cfg.Rerank.Upstream.Timeout},
 		embeddingCache:    newResponseCache(cfg.Embeddings.Cache),
 		rerankCache:       newResponseCache(cfg.Rerank.Cache),
 		newLocalEmbedding: newONNXEmbeddingBackend,
 		newLocalRerank:    newONNXRerankBackend,
+		modelCatalog:      NewModelCatalog(modelConfig),
 	}
 }
 
@@ -112,17 +119,67 @@ func (s *AIService) InitializeLocal(ctx context.Context) error {
 		return nil
 	}
 	if s.embeddingCfg.Enabled && s.embeddingCfg.Backend == "local" {
+		model, err := s.prepareLocalModel(ctx, "embedding", s.embeddingCfg.Local)
+		if err != nil {
+			return fmt.Errorf("prepare local embeddings: %w", err)
+		}
+		if s.embeddingCfg.Dimensions > 0 && s.embeddingCfg.Dimensions != model.Dimensions {
+			return fmt.Errorf("services.embeddings.dimensions %d conflicts with model %q dimensions %d", s.embeddingCfg.Dimensions, model.Manifest.ID, model.Dimensions)
+		}
+		s.embeddingCfg.Dimensions = model.Dimensions
+		s.embeddingCfg.Revision = effectiveModelRevision(s.embeddingCfg.Revision, model)
+		s.embeddingCfg.Local.resolvedModel = model
 		if _, err := s.ensureLocalEmbedding(ctx); err != nil {
 			return fmt.Errorf("initialize local embeddings: %w", err)
 		}
 	}
 	if s.rerankCfg.Enabled && s.rerankCfg.Backend == "local" {
+		model, err := s.prepareLocalModel(ctx, "rerank", s.rerankCfg.Local)
+		if err != nil {
+			_ = s.Close()
+			return fmt.Errorf("prepare local rerank: %w", err)
+		}
+		s.rerankCfg.Revision = effectiveModelRevision(s.rerankCfg.Revision, model)
+		s.rerankCfg.Local.resolvedModel = model
 		if _, err := s.ensureLocalRerank(ctx); err != nil {
 			_ = s.Close()
 			return fmt.Errorf("initialize local rerank: %w", err)
 		}
 	}
 	return nil
+}
+
+func (s *AIService) prepareLocalModel(ctx context.Context, task string, local LocalModelConfig) (*ResolvedModel, error) {
+	if s.prepareModel != nil {
+		return s.prepareModel(ctx, task, local)
+	}
+	model, err := s.modelCatalog.Resolve(ctx, task, local, resolveForRuntime)
+	if err != nil {
+		return nil, err
+	}
+	model.Inspection, err = inspectONNX(model.ModelPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect model %q: %w", model.Manifest.ID, err)
+	}
+	if err := resolveModelSemantics(model); err != nil {
+		return nil, fmt.Errorf("resolve model %q semantics: %w", model.Manifest.ID, err)
+	}
+	return model, nil
+}
+
+func effectiveModelRevision(configured string, model *ResolvedModel) string {
+	prefix := strings.TrimSpace(configured)
+	if prefix == "" {
+		prefix = model.Manifest.ID
+	}
+	return prefix + "@sha256:" + model.Identity
+}
+
+func (s *AIService) EffectiveServices() ServicesConfig {
+	if s == nil {
+		return ServicesConfig{}
+	}
+	return ServicesConfig{Embeddings: s.embeddingCfg, Rerank: s.rerankCfg, S3: s.s3Cfg}
 }
 
 func (s *AIService) Embed(ctx context.Context, principal Principal, input []string, requestedType ...string) (EmbeddingResponse, bool, error) {

@@ -1,0 +1,56 @@
+database:
+  driver: sqlite
+  dsn: /var/lib/graphit-broker/local-models.db
+  max_open_conns: 1
+  max_idle_conns: 1
+  conn_max_lifetime: 3m
+
+server:
+  address: ":8080"
+
+authentication:
+  api_keys:
+    # SHA-256 of the deliberately synthetic value "graphit-example-only".
+    - name: local-example
+      token_sha256: 7d1587faea36cfc02707965ca9f2f56d59bdf16519ea0ff4b62ab9c8e45c4421
+      subject: local-example
+      username: local-example
+
+models:
+  directory: /var/cache/graphit-broker/models
+  embedding: coderankembed
+  rerank: bge-reranker-base
+  generate: ""
+
+services:
+  embeddings:
+    enabled: true
+    backend: local
+    route: graphit-default
+    revision: coderankembed
+    dimensions: 768
+    max_batch: 256
+    max_input_bytes: 1048576
+    local:
+      device: auto
+      device_id: 0
+    cache:
+      ttl: 10m
+      max_entries: 10000
+
+  rerank:
+    enabled: true
+    backend: local
+    route: graphit-default
+    revision: bge-reranker-base
+    max_documents: 1000
+    max_document_bytes: 1048576
+    local:
+      device: auto
+      device_id: 0
+    cache:
+      ttl: 5m
+      max_entries: 10000
+
+  s3:
+    enabled: false

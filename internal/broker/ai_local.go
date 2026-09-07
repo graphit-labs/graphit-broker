@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -23,25 +24,6 @@ const (
 	localRerankMaxLength     = 512
 	localRerankBatchSize     = 16
 	localQueryPrefix         = "Represent this query for searching relevant code: "
-)
-
-var (
-	embeddingModelArtifact = modelArtifact{
-		Name: "model.onnx", URL: "https://huggingface.co/mrsladoje/CodeRankEmbed-onnx-int8/resolve/main/onnx/model.onnx",
-		SHA256: "4eae31d09b1843103a1ebd5e2b2e24b5a5cad441a33906b35b12b1e2ed91d1db", Size: 138619279,
-	}
-	embeddingTokenizerArtifact = modelArtifact{
-		Name: "tokenizer.json", URL: "https://huggingface.co/mrsladoje/CodeRankEmbed-onnx-int8/resolve/main/tokenizer.json",
-		SHA256: "91f1def9b9391fdabe028cd3f3fcc4efd34e5d1f08c3bf2de513ebb5911a1854", Size: 711649,
-	}
-	rerankModelArtifact = modelArtifact{
-		Name: "model.onnx", URL: "https://huggingface.co/BAAI/bge-reranker-base/resolve/main/onnx/model.onnx",
-		SHA256: "15b9a8c3da82eddf263df571281166e00e9308fe19d077084b642ebfcaf06d2b", Size: 1112459588,
-	}
-	rerankTokenizerArtifact = modelArtifact{
-		Name: "tokenizer.json", URL: "https://huggingface.co/BAAI/bge-reranker-base/resolve/main/tokenizer.json",
-		SHA256: "9eb652ac4e40cc093272bbbe0f55d521cf67570060227109b5cdc20945a4489e", Size: 17098107,
-	}
 )
 
 type localEmbeddingBackend interface {
@@ -63,23 +45,32 @@ type pairEncoder interface {
 }
 
 type onnxEmbeddingBackend struct {
-	tokenizer   textEncoder
-	session     *ort.DynamicAdvancedSession
-	inputNames  []string
-	device      string
-	dimensions  int
-	maxLength   int
-	queryPrefix string
-	mu          sync.Mutex
+	tokenizer      textEncoder
+	session        *ort.DynamicAdvancedSession
+	inputNames     []string
+	inputSemantic  map[string]string
+	device         string
+	dimensions     int
+	maxLength      int
+	queryPrefix    string
+	documentPrefix string
+	pooling        string
+	normalize      bool
+	mu             sync.Mutex
 }
 
 type onnxRerankBackend struct {
-	tokenizer  pairEncoder
-	session    *ort.DynamicAdvancedSession
-	inputNames []string
-	device     string
-	maxLength  int
-	mu         sync.Mutex
+	tokenizer      pairEncoder
+	session        *ort.DynamicAdvancedSession
+	inputNames     []string
+	inputSemantic  map[string]string
+	device         string
+	maxLength      int
+	queryPrefix    string
+	documentPrefix string
+	scoreTransform string
+	scoreColumn    *int
+	mu             sync.Mutex
 }
 
 var (
@@ -89,17 +80,9 @@ var (
 
 func initializeONNXRuntime() error {
 	onnxInitOnce.Do(func() {
-		path := strings.TrimSpace(os.Getenv("ONNXRUNTIME_SHARED_LIBRARY_PATH"))
-		if path == "" {
-			for _, candidate := range onnxRuntimeCandidates() {
-				if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-					path = candidate
-					break
-				}
-			}
-		}
-		if path == "" {
-			onnxInitErr = fmt.Errorf("ONNX Runtime shared library is unavailable; set ONNXRUNTIME_SHARED_LIBRARY_PATH")
+		path, err := resolveONNXRuntimeLibraryPath()
+		if err != nil {
+			onnxInitErr = err
 			return
 		}
 		ort.SetSharedLibraryPath(path)
@@ -137,106 +120,58 @@ func onnxRuntimeCandidates() []string {
 }
 
 func newONNXEmbeddingBackend(ctx context.Context, cfg LocalModelConfig) (localEmbeddingBackend, error) {
-	paths, operatorProvided, err := resolveLocalModelBundle(ctx, cfg, embeddingModelArtifact, embeddingTokenizerArtifact)
-	if err != nil {
-		return nil, fmt.Errorf("prepare local embedding model: %w", err)
+	_ = ctx
+	model := cfg.resolvedModel
+	if model == nil || model.Manifest.Task != "embedding" {
+		return nil, fmt.Errorf("local embedding model was not resolved through the model catalog")
 	}
 	if err := initializeONNXRuntime(); err != nil {
 		return nil, err
 	}
-	tk, err := pretrained.FromFile(paths[1])
+	tk, err := pretrained.FromFile(model.TokenizerPath)
 	if err != nil {
 		return nil, fmt.Errorf("load local embedding tokenizer: %w", err)
 	}
-	inputs, outputs, err := ort.GetInputOutputInfo(paths[0])
-	if err != nil {
-		return nil, fmt.Errorf("read local embedding model signature: %w", err)
-	}
-	if len(outputs) == 0 {
-		return nil, fmt.Errorf("local embedding model declares no output")
-	}
-	inputNames := make([]string, len(inputs))
-	for i := range inputs {
-		switch inputs[i].Name {
-		case "input_ids", "attention_mask", "token_type_ids":
-			inputNames[i] = inputs[i].Name
-		default:
-			return nil, fmt.Errorf("local embedding model requires unsupported input %q", inputs[i].Name)
-		}
-	}
-	outputName := strings.TrimSpace(cfg.OutputName)
-	if outputName == "" {
-		if operatorProvided {
-			outputName = outputs[0].Name
-		} else {
-			outputName = "sentence_embedding"
-		}
-	}
-	session, device, err := newLocalONNXSession(paths[0], inputNames, []string{outputName}, cfg)
+	session, device, err := newLocalONNXSession(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create local embedding session: %w", err)
 	}
-	maxLength := cfg.MaxLength
-	if maxLength == 0 {
-		maxLength = localEmbeddingMaxLength
-	}
-	queryPrefix := cfg.QueryPrefix
-	dimensions := cfg.Dimensions
-	if dimensions == 0 {
-		dimensions = localEmbeddingDimensions
-	}
-	modelName := paths[0]
-	if !operatorProvided {
-		modelName = "CodeRankEmbed-137M-INT8"
-		if queryPrefix == "" {
-			queryPrefix = localQueryPrefix
-		}
-	}
-	slog.Info("local embedding model ready", "model", modelName, "device", device)
-	return &onnxEmbeddingBackend{tokenizer: tk, session: session, inputNames: inputNames, device: device, dimensions: dimensions, maxLength: maxLength, queryPrefix: queryPrefix}, nil
+	slog.Info("local embedding model ready", "model", model.Manifest.ID, "identity", model.Identity, "device", device)
+	return &onnxEmbeddingBackend{tokenizer: tk, session: session, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
+		device: device, dimensions: model.Dimensions, maxLength: model.Manifest.Text.MaxTokens,
+		queryPrefix: model.Manifest.Text.QueryPrefix, documentPrefix: model.Manifest.Text.DocumentPrefix,
+		pooling: model.Manifest.Inference.Pooling, normalize: model.Manifest.Inference.Normalize}, nil
 }
 
 func newONNXRerankBackend(ctx context.Context, cfg LocalModelConfig) (localRerankBackend, error) {
-	paths, operatorProvided, err := resolveLocalModelBundle(ctx, cfg, rerankModelArtifact, rerankTokenizerArtifact)
-	if err != nil {
-		return nil, fmt.Errorf("prepare local rerank model: %w", err)
+	_ = ctx
+	model := cfg.resolvedModel
+	if model == nil || model.Manifest.Task != "rerank" {
+		return nil, fmt.Errorf("local rerank model was not resolved through the model catalog")
 	}
 	if err := initializeONNXRuntime(); err != nil {
 		return nil, err
 	}
-	tk, err := pretrained.FromFile(paths[1])
+	tk, err := pretrained.FromFile(model.TokenizerPath)
 	if err != nil {
 		return nil, fmt.Errorf("load local rerank tokenizer: %w", err)
 	}
-	inputs, outputs, err := ort.GetInputOutputInfo(paths[0])
-	if err != nil {
-		return nil, fmt.Errorf("read local rerank model signature: %w", err)
-	}
-	if len(outputs) == 0 {
-		return nil, fmt.Errorf("local rerank model declares no output")
-	}
-	inputNames := make([]string, len(inputs))
-	for i := range inputs {
-		inputNames[i] = inputs[i].Name
-	}
-	session, device, err := newLocalONNXSession(paths[0], inputNames, []string{outputs[0].Name}, cfg)
+	session, device, err := newLocalONNXSession(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create local rerank session: %w", err)
 	}
-	maxLength := cfg.MaxLength
-	if maxLength == 0 {
-		maxLength = localRerankMaxLength
-	}
-	modelName := paths[0]
-	if !operatorProvided {
-		modelName = "bge-reranker-base"
-	}
-	slog.Info("local rerank model ready", "model", modelName, "device", device)
-	return &onnxRerankBackend{tokenizer: tk, session: session, inputNames: inputNames, device: device, maxLength: maxLength}, nil
+	slog.Info("local rerank model ready", "model", model.Manifest.ID, "identity", model.Identity, "device", device)
+	return &onnxRerankBackend{tokenizer: tk, session: session, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
+		device: device, maxLength: model.Manifest.Text.MaxTokens, queryPrefix: model.Manifest.Text.QueryPrefix,
+		documentPrefix: model.Manifest.Text.DocumentPrefix, scoreTransform: model.Manifest.Inference.ScoreTransform,
+		scoreColumn: model.Manifest.Inference.ScoreColumn}, nil
 }
 
 func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg LocalModelConfig) (*ort.DynamicAdvancedSession, string, error) {
-	devices := localDeviceCandidates(cfg.Device, cudaDeviceAvailable())
+	if err := validateLocalDevicePlatform(cfg.Device, runtime.GOOS); err != nil {
+		return nil, "", err
+	}
+	devices := localDeviceCandidates(cfg.Device, cudaDeviceAvailable(), runtime.GOOS == "darwin")
 	var firstErr error
 	for _, device := range devices {
 		opts, err := ort.NewSessionOptions()
@@ -245,8 +180,11 @@ func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg
 		}
 		_ = opts.SetInterOpNumThreads(1)
 		_ = opts.SetIntraOpNumThreads(max(1, runtime.GOMAXPROCS(0)))
-		if device == "cuda" {
+		switch device {
+		case "cuda":
 			err = appendCUDAProvider(opts, cfg.DeviceID)
+		case "coreml":
+			err = appendCoreMLProvider(opts)
 		}
 		if err == nil {
 			var session *ort.DynamicAdvancedSession
@@ -261,24 +199,38 @@ func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg
 		if firstErr == nil {
 			firstErr = err
 		}
-		if cfg.Device == "auto" && device == "cuda" {
-			slog.Warn("CUDA local inference unavailable; falling back to CPU", "error", err)
+		if cfg.Device == "auto" && device != "cpu" {
+			slog.Warn("accelerated local inference provider unavailable; trying next provider", "provider", device, "error", err)
 		}
 	}
-	if cfg.Device == "cuda" {
-		return nil, "", fmt.Errorf("CUDA device %d was required but could not initialize: %w", cfg.DeviceID, firstErr)
+	if cfg.Device != "auto" && cfg.Device != "cpu" {
+		return nil, "", fmt.Errorf("local device %s was required but could not initialize: %w", cfg.Device, firstErr)
 	}
 	return nil, "", firstErr
 }
 
-func localDeviceCandidates(device string, cudaAvailable bool) []string {
+func validateLocalDevicePlatform(device, goos string) error {
+	if device == "coreml" && goos != "darwin" {
+		return fmt.Errorf("local device coreml is supported only on macOS, running on %s", goos)
+	}
+	return nil
+}
+
+func localDeviceCandidates(device string, cudaAvailable, coreMLAvailable bool) []string {
 	switch device {
 	case "cuda":
 		return []string{"cuda"}
+	case "coreml":
+		return []string{"coreml"}
 	case "auto":
-		if cudaAvailable {
-			return []string{"cuda", "cpu"}
+		devices := make([]string, 0, 3)
+		if coreMLAvailable {
+			devices = append(devices, "coreml")
 		}
+		if cudaAvailable {
+			devices = append(devices, "cuda")
+		}
+		return append(devices, "cpu")
 	}
 	return []string{"cpu"}
 }
@@ -295,6 +247,16 @@ func appendCUDAProvider(opts *ort.SessionOptions, deviceID int) error {
 	return opts.AppendExecutionProviderCUDA(cuda)
 }
 
+func appendCoreMLProvider(opts *ort.SessionOptions) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("CoreML execution provider is supported only on macOS, running on %s", runtime.GOOS)
+	}
+	return opts.AppendExecutionProviderCoreMLV2(map[string]string{
+		"MLComputeUnits":           "ALL",
+		"RequireStaticInputShapes": "0",
+	})
+}
+
 func cudaDeviceAvailable() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GRAPHIT_BROKER_CUDA_AVAILABLE"))) {
 	case "1", "true", "yes":
@@ -306,6 +268,9 @@ func cudaDeviceAvailable() bool {
 		if _, err := os.Stat(path); err == nil {
 			return true
 		}
+	}
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		return true
 	}
 	return false
 }
@@ -321,6 +286,8 @@ func (b *onnxEmbeddingBackend) Embed(ctx context.Context, texts []string, inputT
 	for i, text := range texts {
 		if inputType == "query" {
 			text = b.queryPrefix + text
+		} else {
+			text = b.documentPrefix + text
 		}
 		encoding, err := safeEncodeSingle(b.tokenizer, text)
 		if err != nil {
@@ -365,7 +332,7 @@ func (b *onnxEmbeddingBackend) Embed(ctx context.Context, texts []string, inputT
 	}()
 	for _, name := range b.inputNames {
 		var data []int64
-		switch name {
+		switch b.inputSemantic[name] {
 		case "input_ids":
 			data = flatIDs
 		case "attention_mask":
@@ -373,7 +340,7 @@ func (b *onnxEmbeddingBackend) Embed(ctx context.Context, texts []string, inputT
 		case "token_type_ids":
 			data = flatTypes
 		default:
-			return nil, fmt.Errorf("local embedding model requires unsupported input %q", name)
+			return nil, fmt.Errorf("local embedding model input %q has no runtime semantic", name)
 		}
 		tensor, err := ort.NewTensor(shape, data)
 		if err != nil {
@@ -401,23 +368,70 @@ func (b *onnxEmbeddingBackend) Embed(ctx context.Context, texts []string, inputT
 		return nil, fmt.Errorf("local embedding output is %T, want float32", outputs[0])
 	}
 	data := tensor.GetData()
-	if len(data) != len(texts)*b.dimensions {
-		return nil, fmt.Errorf("local embedding output has %d values, want %d", len(data), len(texts)*b.dimensions)
-	}
-	vectors := make([][]float32, len(texts))
-	for i := range texts {
-		vector := append([]float32(nil), data[i*b.dimensions:(i+1)*b.dimensions]...)
-		var norm float64
-		for _, value := range vector {
-			norm += float64(value) * float64(value)
+	outputShape := tensor.GetShape()
+	return poolEmbeddingOutput(data, outputShape, b.pooling, b.normalize, len(texts), maxLen, b.dimensions, flatMasks)
+}
+
+func poolEmbeddingOutput(data []float32, outputShape ort.Shape, pooling string, normalize bool, batch, inputSequence, dimensions int, attentionMask []int64) ([][]float32, error) {
+	vectors := make([][]float32, batch)
+	switch pooling {
+	case "none":
+		if len(outputShape) != 2 || len(data) != batch*dimensions {
+			return nil, fmt.Errorf("local embedding output shape %v is incompatible with batch=%d dimensions=%d and pooling=none", outputShape, batch, dimensions)
 		}
-		norm = math.Sqrt(norm)
-		if norm > 0 {
-			for j := range vector {
-				vector[j] = float32(float64(vector[j]) / norm)
+		for i := range batch {
+			vectors[i] = append([]float32(nil), data[i*dimensions:(i+1)*dimensions]...)
+		}
+	case "cls", "mean":
+		if len(outputShape) != 3 || int(outputShape[0]) != batch || int(outputShape[2]) != dimensions {
+			return nil, fmt.Errorf("local embedding output shape %v is incompatible with pooling=%s", outputShape, pooling)
+		}
+		sequence := int(outputShape[1])
+		if len(data) != batch*sequence*dimensions {
+			return nil, fmt.Errorf("local embedding output has %d values, expected %d", len(data), batch*sequence*dimensions)
+		}
+		for i := range batch {
+			vector := make([]float32, dimensions)
+			if pooling == "cls" {
+				copy(vector, data[(i*sequence)*dimensions:(i*sequence+1)*dimensions])
+			} else {
+				count := 0
+				for token := 0; token < sequence && token < inputSequence; token++ {
+					if attentionMask[i*inputSequence+token] == 0 {
+						continue
+					}
+					count++
+					base := (i*sequence + token) * dimensions
+					for j := range vector {
+						vector[j] += data[base+j]
+					}
+				}
+				if count == 0 {
+					return nil, fmt.Errorf("local embedding attention mask contains no tokens for input %d", i)
+				}
+				for j := range vector {
+					vector[j] /= float32(count)
+				}
 			}
+			vectors[i] = vector
 		}
-		vectors[i] = vector
+	default:
+		return nil, fmt.Errorf("unsupported embedding pooling %q", pooling)
+	}
+	if normalize {
+		for i, vector := range vectors {
+			var norm float64
+			for _, value := range vector {
+				norm += float64(value) * float64(value)
+			}
+			norm = math.Sqrt(norm)
+			if norm > 0 {
+				for j := range vector {
+					vector[j] = float32(float64(vector[j]) / norm)
+				}
+			}
+			vectors[i] = vector
+		}
 	}
 	return vectors, nil
 }
@@ -462,7 +476,7 @@ func (b *onnxRerankBackend) scoreBatch(query string, documents []string) ([]floa
 	types := make([][]int, len(documents))
 	maxLen := 1
 	for i, document := range documents {
-		encoding, err := safeEncodePair(b.tokenizer, query, document)
+		encoding, err := safeEncodePair(b.tokenizer, b.queryPrefix+query, b.documentPrefix+document)
 		if err != nil {
 			return nil, fmt.Errorf("tokenize rerank document %d: %w", i, err)
 		}
@@ -497,7 +511,7 @@ func (b *onnxRerankBackend) scoreBatch(query string, documents []string) ([]floa
 	}()
 	for _, name := range b.inputNames {
 		var data []int64
-		switch name {
+		switch b.inputSemantic[name] {
 		case "input_ids":
 			data = flatIDs
 		case "attention_mask":
@@ -505,7 +519,7 @@ func (b *onnxRerankBackend) scoreBatch(query string, documents []string) ([]floa
 		case "token_type_ids":
 			data = flatTypes
 		default:
-			return nil, fmt.Errorf("local rerank model requires unsupported input %q", name)
+			return nil, fmt.Errorf("local rerank model input %q has no runtime semantic", name)
 		}
 		tensor, err := ort.NewTensor(shape, data)
 		if err != nil {
@@ -533,17 +547,45 @@ func (b *onnxRerankBackend) scoreBatch(query string, documents []string) ([]floa
 		return nil, fmt.Errorf("local rerank output is %T, want float32", outputs[0])
 	}
 	data := tensor.GetData()
-	if len(data) < len(documents) || len(data)%len(documents) != 0 {
-		return nil, fmt.Errorf("local rerank returned %d logits for %d documents", len(data), len(documents))
+	return transformRerankOutput(data, len(documents), b.scoreTransform, b.scoreColumn)
+}
+
+func transformRerankOutput(data []float32, batch int, transform string, configuredColumn *int) ([]float64, error) {
+	if batch <= 0 || len(data) < batch || len(data)%batch != 0 {
+		return nil, fmt.Errorf("local rerank returned %d logits for %d documents", len(data), batch)
 	}
-	stride := len(data) / len(documents)
-	scores := make([]float64, len(documents))
-	for i := range documents {
+	stride := len(data) / batch
+	scores := make([]float64, batch)
+	for i := range batch {
 		column := 0
 		if stride == 2 {
 			column = 1
 		}
-		scores[i] = float64(data[i*stride+column])
+		if configuredColumn != nil {
+			column = *configuredColumn
+		}
+		if column < 0 || column >= stride {
+			return nil, fmt.Errorf("rerank score_column %d is outside output width %d", column, stride)
+		}
+		score := float64(data[i*stride+column])
+		switch transform {
+		case "identity":
+		case "sigmoid":
+			score = 1 / (1 + math.Exp(-score))
+		case "softmax":
+			maxLogit := float64(data[i*stride])
+			for j := 1; j < stride; j++ {
+				maxLogit = math.Max(maxLogit, float64(data[i*stride+j]))
+			}
+			var denominator float64
+			for j := 0; j < stride; j++ {
+				denominator += math.Exp(float64(data[i*stride+j]) - maxLogit)
+			}
+			score = math.Exp(score-maxLogit) / denominator
+		default:
+			return nil, fmt.Errorf("unsupported rerank score transform %q", transform)
+		}
+		scores[i] = score
 	}
 	return scores, nil
 }

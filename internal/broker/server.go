@@ -83,11 +83,12 @@ func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func
 			return nil, err
 		}
 	}
-	ai := NewAIService(cfg.Services)
+	ai := NewAIService(cfg.Services, cfg.Models)
 	if err := ai.InitializeLocal(ctx); err != nil {
 		_ = ai.Close()
 		return nil, err
 	}
+	cfg.Services = ai.EffectiveServices()
 	return &runtimeState{config: cfg, configurationRevision: revision, authenticator: authenticator,
 		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }

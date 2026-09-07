@@ -46,6 +46,13 @@ jobs:
           key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
       - name: Build release archive
         run: make release-linux VERSION="${{ github.ref_name }}"
+      - name: Smoke-test embedded runtime extraction
+        run: |
+          runtime_root=$(mktemp -d)
+          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-linux-amd64/graphit-broker --version
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -55,9 +62,99 @@ jobs:
             .build/graphit-broker-linux-amd64.sha256
           retention-days: 1
 
+  build-darwin:
+    name: Build macOS arm64
+    needs: ci
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/graphit-broker/native
+          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
+      - name: Build release archive
+        run: make release-darwin VERSION="${{ github.ref_name }}"
+      - name: Smoke-test embedded runtime extraction
+        run: |
+          runtime_root=$(mktemp -d)
+          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-darwin-arm64/graphit-broker --version
+          runtime_library=$(find "$runtime_root/runtime/onnxruntime/1.29.0/darwin-arm64" -type f -name 'libonnxruntime.1.29.0.dylib' -print -quit)
+          test -s "$runtime_library"
+          ort_go_dir=$(go list -m -f '{{.Dir}}' github.com/yalue/onnxruntime_go)
+          cp "$ort_go_dir/test_data/example ż 大 김.onnx" .build/coreml-smoke.onnx
+          ONNXRUNTIME_SHARED_LIBRARY_PATH="$runtime_library" \
+            GRAPHIT_BROKER_COREML_INTEGRATION=1 \
+            GRAPHIT_BROKER_COREML_SMOKE_MODEL="$PWD/.build/coreml-smoke.onnx" \
+            go test ./internal/broker -run '^TestLocalCoreMLRuntimeIntegration$' -v
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphit-broker-darwin-arm64
+          path: |
+            .build/graphit-broker-darwin-arm64.tar.gz
+            .build/graphit-broker-darwin-arm64.sha256
+          retention-days: 1
+
+  build-windows:
+    name: Build Windows amd64
+    needs: ci
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            make
+            curl
+            unzip
+            tar
+            gzip
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cache ONNX Runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/graphit-broker/native
+          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
+      - name: Build release archive
+        run: make release-windows VERSION="${{ github.ref_name }}"
+      - name: Smoke-test embedded runtime extraction
+        run: |
+          runtime_root=$(mktemp -d)
+          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-windows-amd64/graphit-broker.exe --version
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime.dll
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_shared.dll
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_cuda.dll
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphit-broker-windows-amd64
+          path: |
+            .build/graphit-broker-windows-amd64.tar.gz
+            .build/graphit-broker-windows-amd64.sha256
+          retention-days: 1
+
   publish:
     name: Publish GitHub release
-    needs: build-linux
+    needs: [build-linux, build-darwin, build-windows]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -69,10 +166,13 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: graphit-broker-linux-amd64
-          path: release-assets
+          path: downloaded-assets
+      - name: Flatten release artifacts
+        run: |
+          mkdir -p release-assets
+          find downloaded-assets -type f -exec cp {} release-assets/ \;
       - name: Generate combined checksums
-        run: cp release-assets/graphit-broker-linux-amd64.sha256 release-assets/checksums.sha256
+        run: cat release-assets/graphit-broker-*.sha256 > release-assets/checksums.sha256
       - name: Extract changelog
         id: changelog
         run: |
@@ -97,11 +197,12 @@ jobs:
 
             ${{ steps.changelog.outputs.changes }}
 
-            ## Linux amd64 binary
+            ## Self-contained binaries
 
-            The archive contains `graphit-broker`, `config.example.yaml`, and the matching
-            CPU/CUDA-capable ONNX Runtime libraries. Model weights are downloaded only when an
-            enabled local backend starts and are not included in the release.
+            Linux amd64 and Windows amd64 archives embed the ONNX Runtime core, shared provider,
+            and CUDA provider. macOS arm64 embeds the ONNX Runtime core with integrated CoreML.
+            Every archive also contains `config.example.yaml`; no adjacent ONNX library is
+            required. Model weights remain separate and download only for enabled local backends.
 
             ```bash
             sha256sum -c graphit-broker-linux-amd64.sha256
@@ -109,8 +210,8 @@ jobs:
             ./graphit-broker-linux-amd64/graphit-broker --version
             ```
           files: |
-            release-assets/graphit-broker-linux-amd64.tar.gz
-            release-assets/graphit-broker-linux-amd64.sha256
+            release-assets/graphit-broker-*.tar.gz
+            release-assets/graphit-broker-*.sha256
             release-assets/checksums.sha256
           fail_on_unmatched_files: true
           make_latest: true

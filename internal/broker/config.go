@@ -22,7 +22,17 @@ type Config struct {
 	Server         ServerConfig         `yaml:"server" json:"server"`
 	Authentication AuthenticationConfig `yaml:"authentication" json:"authentication"`
 	Administration AdministrationConfig `yaml:"administration" json:"administration"`
+	Models         ModelsConfig         `yaml:"models" json:"models"`
 	Services       ServicesConfig       `yaml:"services" json:"services"`
+}
+
+// ModelsConfig selects task models from the persistent global model catalog.
+// Each selected ID resolves below Directory as <id>/manifest.json.
+type ModelsConfig struct {
+	Directory string `yaml:"directory" json:"directory"`
+	Embedding string `yaml:"embedding" json:"embedding"`
+	Rerank    string `yaml:"rerank" json:"rerank"`
+	Generate  string `yaml:"generate" json:"generate"`
 }
 
 type DatabaseConfig struct {
@@ -111,21 +121,12 @@ type HTTPUpstreamConfig struct {
 	Timeout        time.Duration `yaml:"timeout"`
 }
 
-// LocalModelConfig controls an in-process ONNX model. Built-in weights are
-// never part of the broker image and are fetched into CacheDir during startup
-// of an enabled local backend. Operator-provided paths are only loaded.
+// LocalModelConfig controls only execution placement. Model selection and all
+// model semantics live in the global models catalog and its manifests.
 type LocalModelConfig struct {
-	Device          string `yaml:"device" json:"device"`
-	DeviceID        int    `yaml:"device_id" json:"device_id"`
-	CacheDir        string `yaml:"cache_dir" json:"cache_dir"`
-	ModelPath       string `yaml:"model_path,omitempty" json:"model_path,omitempty"`
-	TokenizerPath   string `yaml:"tokenizer_path,omitempty" json:"tokenizer_path,omitempty"`
-	ModelSHA256     string `yaml:"model_sha256,omitempty" json:"model_sha256,omitempty"`
-	TokenizerSHA256 string `yaml:"tokenizer_sha256,omitempty" json:"tokenizer_sha256,omitempty"`
-	OutputName      string `yaml:"output_name,omitempty" json:"output_name,omitempty"`
-	QueryPrefix     string `yaml:"query_prefix,omitempty" json:"query_prefix,omitempty"`
-	MaxLength       int    `yaml:"max_length,omitempty" json:"max_length,omitempty"`
-	Dimensions      int    `yaml:"-" json:"-"`
+	Device        string `yaml:"device" json:"device"`
+	DeviceID      int    `yaml:"device_id" json:"device_id"`
+	resolvedModel *ResolvedModel
 }
 
 type CacheConfig struct {
@@ -286,10 +287,19 @@ func (c *Config) defaults() {
 	if len(c.Administration.OIDC.Scopes) == 0 {
 		c.Administration.OIDC.Scopes = []string{"openid", "profile", "email"}
 	}
+	if strings.TrimSpace(c.Models.Directory) == "" {
+		c.Models.Directory = "/var/cache/graphit-broker/models"
+	}
+	if strings.TrimSpace(c.Models.Embedding) == "" {
+		c.Models.Embedding = "coderankembed"
+	}
+	if strings.TrimSpace(c.Models.Rerank) == "" {
+		c.Models.Rerank = "bge-reranker-base"
+	}
 	if c.Services.Embeddings.Route == "" {
 		c.Services.Embeddings.Route = "graphit-default"
 	}
-	c.Services.Embeddings.setDefaults("coderankembed")
+	c.Services.Embeddings.setDefaults()
 	if c.Services.Embeddings.MaxBatch == 0 {
 		c.Services.Embeddings.MaxBatch = 256
 	}
@@ -302,7 +312,7 @@ func (c *Config) defaults() {
 	if c.Services.Rerank.Route == "" {
 		c.Services.Rerank.Route = "graphit-default"
 	}
-	c.Services.Rerank.setDefaults("bge-reranker-base")
+	c.Services.Rerank.setDefaults()
 	if c.Services.Rerank.MaxDocuments == 0 {
 		c.Services.Rerank.MaxDocuments = 1000
 	}
@@ -333,29 +343,26 @@ func (c *Config) defaults() {
 	c.Services.Rerank.Cache.setDefaults()
 }
 
-func (c *EmbeddingServiceConfig) setDefaults(modelSubdir string) {
+func (c *EmbeddingServiceConfig) setDefaults() {
 	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
 	if c.Backend == "" {
 		c.Backend = "upstream"
 	}
-	c.Local.setDefaults(modelSubdir)
+	c.Local.setDefaults()
 }
 
-func (c *RerankServiceConfig) setDefaults(modelSubdir string) {
+func (c *RerankServiceConfig) setDefaults() {
 	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
 	if c.Backend == "" {
 		c.Backend = "upstream"
 	}
-	c.Local.setDefaults(modelSubdir)
+	c.Local.setDefaults()
 }
 
-func (c *LocalModelConfig) setDefaults(modelSubdir string) {
+func (c *LocalModelConfig) setDefaults() {
 	c.Device = strings.ToLower(strings.TrimSpace(c.Device))
 	if c.Device == "" {
 		c.Device = "auto"
-	}
-	if strings.TrimSpace(c.CacheDir) == "" {
-		c.CacheDir = "/var/cache/graphit-broker/models/" + modelSubdir
 	}
 }
 
@@ -428,19 +435,27 @@ func (c Config) Validate() error {
 			return errors.New("administration.session_ttl must be between 5m and 168h")
 		}
 	}
-	if c.Services.Embeddings.Enabled {
-		if c.Services.Embeddings.Revision == "" || c.Services.Embeddings.Dimensions <= 0 {
-			return errors.New("services.embeddings needs revision and positive dimensions")
+	if !filepath.IsAbs(c.Models.Directory) {
+		return errors.New("models.directory must be an absolute path")
+	}
+	for task, id := range map[string]string{"embedding": c.Models.Embedding, "rerank": c.Models.Rerank, "generate": c.Models.Generate} {
+		if strings.TrimSpace(id) != "" && !safeSegment(id) {
+			return fmt.Errorf("models.%s must be a safe model ID", task)
 		}
+	}
+	if c.Services.Embeddings.Enabled {
 		switch c.Services.Embeddings.Backend {
 		case "local":
-			if !c.Services.Embeddings.Local.operatorProvided() && c.Services.Embeddings.Dimensions != 768 {
-				return errors.New("services.embeddings.dimensions must be 768 for the local CodeRankEmbed backend")
+			if c.Services.Embeddings.Dimensions < 0 {
+				return errors.New("services.embeddings.dimensions must not be negative")
 			}
 			if err := c.Services.Embeddings.Local.validate("services.embeddings.local"); err != nil {
 				return err
 			}
 		case "upstream":
+			if c.Services.Embeddings.Revision == "" || c.Services.Embeddings.Dimensions <= 0 {
+				return errors.New("upstream services.embeddings needs revision and positive dimensions")
+			}
 			if err := c.Services.Embeddings.Upstream.validate("services.embeddings.upstream", embeddingUpstreamProtocols...); err != nil {
 				return err
 			}
@@ -449,15 +464,15 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Services.Rerank.Enabled {
-		if c.Services.Rerank.Revision == "" {
-			return errors.New("services.rerank.revision is required")
-		}
 		switch c.Services.Rerank.Backend {
 		case "local":
 			if err := c.Services.Rerank.Local.validate("services.rerank.local"); err != nil {
 				return err
 			}
 		case "upstream":
+			if c.Services.Rerank.Revision == "" {
+				return errors.New("upstream services.rerank.revision is required")
+			}
 			if err := c.Services.Rerank.Upstream.validate("services.rerank.upstream", rerankUpstreamProtocols...); err != nil {
 				return err
 			}
@@ -509,43 +524,17 @@ var rerankUpstreamProtocols = []string{
 
 func (c LocalModelConfig) validate(name string) error {
 	switch c.Device {
-	case "auto", "cpu", "cuda":
+	case "auto", "cpu", "cuda", "coreml":
 	default:
-		return fmt.Errorf("%s.device %q is unsupported (use auto, cpu, or cuda)", name, c.Device)
+		return fmt.Errorf("%s.device %q is unsupported (use auto, cpu, cuda, or coreml)", name, c.Device)
 	}
 	if c.DeviceID < 0 {
 		return fmt.Errorf("%s.device_id must not be negative", name)
 	}
-	if strings.TrimSpace(c.CacheDir) == "" || !filepath.IsAbs(c.CacheDir) {
-		return fmt.Errorf("%s.cache_dir must be an absolute path", name)
-	}
-	if (c.ModelPath == "") != (c.TokenizerPath == "") {
-		return fmt.Errorf("%s.model_path and tokenizer_path must be set together", name)
-	}
-	if c.operatorProvided() {
-		if !filepath.IsAbs(c.ModelPath) || !filepath.IsAbs(c.TokenizerPath) {
-			return fmt.Errorf("%s.model_path and tokenizer_path must be absolute paths", name)
-		}
-	} else if c.ModelSHA256 != "" || c.TokenizerSHA256 != "" {
-		return fmt.Errorf("%s model digests require model_path and tokenizer_path", name)
-	}
-	for field, digest := range map[string]string{"model_sha256": c.ModelSHA256, "tokenizer_sha256": c.TokenizerSHA256} {
-		if digest == "" {
-			continue
-		}
-		decoded, err := hex.DecodeString(digest)
-		if err != nil || len(decoded) != sha256.Size {
-			return fmt.Errorf("%s.%s must be a 64-character hexadecimal SHA-256", name, field)
-		}
-	}
-	if c.MaxLength < 0 || c.MaxLength > 8192 {
-		return fmt.Errorf("%s.max_length must be between 1 and 8192 when set", name)
+	if c.Device == "coreml" && c.DeviceID != 0 {
+		return fmt.Errorf("%s.device_id must be 0 for coreml", name)
 	}
 	return nil
-}
-
-func (c LocalModelConfig) operatorProvided() bool {
-	return strings.TrimSpace(c.ModelPath) != "" || strings.TrimSpace(c.TokenizerPath) != ""
 }
 
 func validateACLRule(rule ACLRuleConfig) error {

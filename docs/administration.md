@@ -85,7 +85,8 @@ normalized child-row changes, and revision increment commit together. A stale ET
 committing SQL, then atomically switches new requests to it. Database bootstrap fields are ignored
 from submitted YAML and restored from deployment configuration.
 
-Changing an AI effective model requires a new immutable revision. Changing OIDC issuer/audience
+Changing an upstream AI effective model requires a new immutable revision; local catalog models
+append their computed effective identity automatically. Changing OIDC issuer/audience
 affects subsequent consumer validation. S3 route changes must remain compatible with existing
 resource grants.
 

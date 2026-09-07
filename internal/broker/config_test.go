@@ -163,14 +163,12 @@ services:
     dimensions: 768
     local:
       device: auto
-      cache_dir: /tmp/models/embedding
   rerank:
     enabled: true
     backend: local
     revision: local-rerank-v1
     local:
       device: cpu
-      cache_dir: /tmp/models/rerank
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
@@ -178,6 +176,9 @@ services:
 	}
 	if cfg.Services.Embeddings.Backend != "local" || cfg.Services.Embeddings.Local.Device != "auto" || cfg.Services.Rerank.Local.Device != "cpu" {
 		t.Fatalf("local defaults=%#v", cfg.Services)
+	}
+	if cfg.Models.Directory != "/var/cache/graphit-broker/models" || cfg.Models.Embedding != "coderankembed" || cfg.Models.Rerank != "bge-reranker-base" {
+		t.Fatalf("catalog defaults=%#v", cfg.Models)
 	}
 
 	legacy := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
@@ -204,40 +205,46 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 			t.Errorf("protocol %q rejected: %v", protocol, err)
 		}
 	}
+	coreML := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+		Enabled: true, Backend: "local", Revision: "r", Dimensions: localEmbeddingDimensions,
+		Local: LocalModelConfig{Device: "coreml"},
+	}}}
+	coreML.defaults()
+	if err := coreML.Validate(); err != nil {
+		t.Fatalf("CoreML local device rejected: %v", err)
+	}
 	cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 		Enabled: true, Backend: "local", Revision: "r", Dimensions: localEmbeddingDimensions,
-		Local: LocalModelConfig{Device: "metal", CacheDir: "/tmp/models"},
+		Local: LocalModelConfig{Device: "metal"},
 	}}}
 	cfg.defaults()
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auto, cpu, or cuda") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auto, cpu, cuda, or coreml") {
 		t.Fatalf("invalid local device error=%v", err)
 	}
 }
 
-func TestConfigAcceptsOperatorProvidedEmbeddingModelAndValidatesItsPaths(t *testing.T) {
+func TestConfigSelectsCatalogModelsAndRejectsRemovedLegacyLocalFields(t *testing.T) {
 	input := `
+models:
+  directory: /models
+  embedding: custom-embedding
+  rerank: custom-rerank
 services:
   embeddings:
     enabled: true
     backend: local
-    revision: custom-embedding-v1
-    dimensions: 1024
     local:
       device: cpu
-      cache_dir: /var/cache/graphit-broker/models/custom
-      model_path: /models/custom/model.onnx
-      tokenizer_path: /models/custom/tokenizer.json
-      model_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      tokenizer_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      output_name: sentence_embedding
-      query_prefix: "query: "
-      max_length: 1024
 `
-	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
-		t.Fatalf("custom local embedding rejected: %v", err)
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("catalog selection rejected: %v", err)
 	}
-	missingTokenizer := strings.Replace(input, "      tokenizer_path: /models/custom/tokenizer.json\n", "", 1)
-	if _, err := DecodeConfig(strings.NewReader(missingTokenizer), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "must be set together") {
-		t.Fatalf("unpaired paths error=%v", err)
+	if cfg.Models.Directory != "/models" || cfg.Models.Embedding != "custom-embedding" {
+		t.Fatalf("models=%#v", cfg.Models)
+	}
+	legacy := strings.Replace(input, "      device: cpu\n", "      device: cpu\n      model_path: /models/model.onnx\n", 1)
+	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "field model_path not found") {
+		t.Fatalf("removed legacy field error=%v", err)
 	}
 }

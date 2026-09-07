@@ -72,12 +72,12 @@ Voyage, and Jina rerank; plus local CodeRankEmbed and BGE rerank inference. Allo
 configured upstreams and, when local models are activated, to their pinned Hugging Face artifact
 URLs.
 
-At startup, each enabled `backend: local` service downloads only its own missing weights; an
-upstream or disabled service does not download anything. Cached weights survive restarts in
-`broker-models`. If `model_path` and `tokenizer_path` are configured, startup loads exactly those
-operator-provided files from the volume and performs no download. Seed custom model files under
-`/var/cache/graphit-broker/models` in the `broker-models` volume, including any ONNX external-data
-files, and point the YAML at their absolute container paths.
+At startup, each enabled `backend: local` service resolves only the ID selected by
+`models.embedding` or `models.rerank`; an upstream or disabled service does not touch the catalog.
+`on_demand` manifests download missing verified artifacts before the listener starts. `setup`
+manifests use `--setup-models`, while `never` manifests require a fully populated bundle and perform
+no network access. Cached bundles survive restarts in `broker-models`. See the
+[local model catalog](models.md) for every manifest field and complete examples.
 
 One way to seed that named volume without another Compose file is to create the service, copy the
 artifacts, and then start it:
@@ -88,8 +88,9 @@ docker compose cp ./models/custom-embedding broker:/var/cache/graphit-broker/mod
 docker compose up -d
 ```
 
-The files must be readable by the image's non-root broker user. Optional configured SHA-256 values
-make startup reject a mismatched mount instead of loading it.
+The copied directory must include `manifest.json` and every required artifact, and be readable by
+the image's non-root broker user. Run a controlled prefetch without another Compose file via
+`docker compose run --rm broker --config /etc/graphit-broker/config.yaml --setup-models`.
 
 Default Compose runs on CPU. On an NVIDIA host with the Container Toolkit installed, expose GPUs
 through the same file; `device: auto` prefers CUDA and falls back to CPU using the same image:
@@ -98,9 +99,9 @@ through the same file; `device: auto` prefers CUDA and falls back to CPU using t
 GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
 ```
 
-Set `device: cpu` to force CPU or `device: cuda` to require CUDA. Change the embedding revision
-whenever model, tokenizer, dimensions, or other vector-space semantics change; Graphit uses it to
-isolate incompatible indexes.
+Set `device: cpu` to force CPU or `device: cuda` to require CUDA. The resolved manifest and artifact
+identity is appended to each local revision automatically; an embedding identity change requires
+reindexing because Graphit isolates incompatible vector spaces.
 
 The Compose environment selects the container runtime, not the inference device policy. Keep
 `local.device: auto` to prefer an exposed GPU or use `cuda` when startup must fail unless it is
@@ -108,8 +109,13 @@ usable. `GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia` requires the NVIDIA Container 
 registered the `nvidia` runtime with Docker. Confirm host visibility with `nvidia-smi`; the broker
 logs the chosen `cuda` or `cpu` device when each local model becomes ready.
 
-For installation without Docker, including the additional host CUDA/cuDNN requirements, see
-[running the native binary](binary.md).
+For native installation, see [running the native binary](binary.md). CPU and macOS CoreML do not
+require CUDA or cuDNN; native CUDA selection does.
+
+The image's self-contained broker extracts its embedded GPU-capable ONNX payload into
+`/var/lib/graphit-broker/.graphit`, which is already covered by the persistent `broker-state`
+volume. Native Linux and Windows releases embed the same ONNX shared/CUDA provider libraries but
+load them only when CUDA is selected. macOS embeds CoreML in its main ONNX dylib.
 
 ## OIDC
 

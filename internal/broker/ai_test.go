@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -331,6 +332,13 @@ func TestAIServiceInitializesEnabledLocalBackendsAtStartupAndCachesByInputType(t
 		rerankInitializations.Add(1)
 		return &fakeLocalRerankBackend{}, nil
 	}
+	service.prepareModel = func(_ context.Context, task string, _ LocalModelConfig) (*ResolvedModel, error) {
+		model := &ResolvedModel{Manifest: ModelManifest{ID: "fake-" + task, Task: task}, Identity: task + "-identity"}
+		if task == "embedding" {
+			model.Dimensions = localEmbeddingDimensions
+		}
+		return model, nil
+	}
 	if embeddingInitializations.Load() != 0 || rerankInitializations.Load() != 0 {
 		t.Fatal("local backend initialized during service construction")
 	}
@@ -339,6 +347,10 @@ func TestAIServiceInitializesEnabledLocalBackendsAtStartupAndCachesByInputType(t
 	}
 	if embeddingInitializations.Load() != 1 || rerankInitializations.Load() != 1 {
 		t.Fatalf("startup initializations: embedding=%d rerank=%d", embeddingInitializations.Load(), rerankInitializations.Load())
+	}
+	effective := service.EffectiveServices()
+	if !strings.Contains(effective.Embeddings.Revision, "embedding-identity") || !strings.Contains(effective.Rerank.Revision, "rerank-identity") || effective.Embeddings.Dimensions != localEmbeddingDimensions {
+		t.Fatalf("effective local service configuration=%#v", effective)
 	}
 	principal := Principal{Issuer: "i", Subject: "s"}
 	if _, cached, err := service.Embed(context.Background(), principal, []string{"text"}, "document"); err != nil || cached {

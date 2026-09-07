@@ -31,8 +31,19 @@ jobs:
           actionlint
       - name: Test and vet
         run: make check
-      - name: Build broker binary
-        run: make build VERSION="ci-${{ github.sha }}"
+      - name: Cache verified ONNX Runtime archive
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/graphit-broker/native
+          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
+      - name: Build and smoke-test self-contained broker binary
+        run: |
+          make build VERSION="ci-${{ github.sha }}"
+          runtime_root=$(mktemp -d)
+          GRAPHIT_GLOBAL_DIR="$runtime_root" ./graphit-broker --version
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
+          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
 
   container:
     name: Build container

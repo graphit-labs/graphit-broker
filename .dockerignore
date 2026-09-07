@@ -5,3 +5,4 @@ coverage.out
 *.log
 .env
 .build
+internal/broker/onnxruntime_payload.tar.gz

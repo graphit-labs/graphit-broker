@@ -80,10 +80,17 @@ same image is used in both modes; `device: auto` prefers CUDA when exposed and f
 GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
 ```
 
-Local ONNX models can also be supplied explicitly with paired `model_path` and `tokenizer_path`
-values under the persistent `broker-models` volume. In this custom mode the broker downloads
-nothing: it validates and loads exactly the mounted artifacts. See
-[configuration](docs/configuration.md) for the compatible model contract and optional checksums.
+Local ONNX models use manifest bundles under the persistent `broker-models` volume. Top-level
+`models.embedding` and `models.rerank` select presets or custom IDs; each manifest controls verified
+`on_demand`, explicit `setup`, or installed-only `never` acquisition and the complete inference
+semantics. See the [local model catalog](docs/models.md) for all fields and examples.
+
+Native releases for Linux amd64, macOS arm64, and Windows amd64 are single self-contained
+executables. Linux and Windows embed the ONNX core plus shared/CUDA providers; macOS embeds the
+CoreML-capable ONNX dylib. They extract atomically under
+`${GRAPHIT_GLOBAL_DIR:-~/.graphit}/runtime/onnxruntime` on first execution; subsequent starts use a
+small completion marker and file metadata only. `device: auto` prefers CoreML on macOS, CUDA on
+Linux/Windows when visible, and otherwise CPU.
 
 Open `https://YOUR-BROKER/admin/`, sign in, and create the first resource grants. Until then,
 consumer endpoints correctly return `403`.
@@ -112,6 +119,7 @@ docker rm -f graphit-broker-smoke
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
+- [Local ONNX model catalog and examples](docs/models.md)
 - [Native binary installation and CPU/GPU operation](docs/binary.md)
 - [Database backends](docs/database.md)
 - [OIDC integration](docs/oidc.md)

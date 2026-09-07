@@ -20,16 +20,21 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), "/etc/graphit-broker/config.yaml"), "configuration YAML file")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
+	setupModels := flag.Bool("setup-models", false, "download and verify selected local model artifacts, then exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
+	slog.SetDefault(logger)
+	if err := broker.PrepareEmbeddedONNXRuntime(); err != nil {
+		logger.Error("embedded ONNX Runtime preparation failed", "error", err)
+		os.Exit(1)
+	}
 	if *showVersion {
 		fmt.Fprintln(os.Stdout, version)
 		return
 	}
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
-	slog.SetDefault(logger)
 	if *healthcheck != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -62,6 +67,14 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if *setupModels {
+		if err := broker.SetupModels(ctx, cfg); err != nil {
+			logger.Error("model setup failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("selected local models are installed", "directory", cfg.Models.Directory)
+		return
+	}
 	service, err := broker.NewServer(ctx, cfg)
 	if err != nil {
 		logger.Error("broker initialization failed", "error", err)

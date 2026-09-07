@@ -48,13 +48,22 @@ administration:
 # Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
 # /admin/, then create grants in Resource grants or through /admin/api/v1/grants.
 
+# Global ONNX model catalog. Each selected ID resolves as <directory>/<id>/manifest.json.
+# The two preset manifests are materialized automatically and fetch their pinned artifacts only
+# when their corresponding local service is enabled. Custom IDs require a manifest in the volume.
+models:
+  directory: "/var/cache/graphit-broker/models"
+  embedding: "coderankembed"
+  rerank: "bge-reranker-base"
+  generate: "" # schema reservation; local generation is not served yet
+
 services:
   embeddings:
     enabled: true
     # upstream: OpenAI-compatible, Cohere, Voyage, or Google; local: CodeRankEmbed ONNX.
     backend: "upstream"
     route: "graphit-default"
-    # Change this value whenever the effective vector space changes.
+    # For local models this is an optional readable prefix; the catalog identity is appended.
     revision: "embedding-route-2026-09-07.1"
     dimensions: 1536
     max_batch: 256
@@ -68,19 +77,10 @@ services:
       api_key_scheme: "Bearer"
       send_dimensions: false
       timeout: 45s
-    # Used only when backend is local. Weights are downloaded and verified during broker startup.
+    # Used only when backend is local. Model paths and inference semantics live in its manifest.
     local:
-      device: "auto" # auto prefers CUDA when Docker exposes a GPU, otherwise CPU
+      device: "auto" # macOS: CoreML -> CPU; Linux/Windows: visible CUDA -> CPU
       device_id: 0
-      cache_dir: "/var/cache/graphit-broker/models/coderankembed"
-      # To load a compatible custom model without downloading anything, mount both files and set:
-      # model_path: "/var/cache/graphit-broker/models/custom-embedding/model.onnx"
-      # tokenizer_path: "/var/cache/graphit-broker/models/custom-embedding/tokenizer.json"
-      # model_sha256: "optional 64-character hexadecimal digest"
-      # tokenizer_sha256: "optional 64-character hexadecimal digest"
-      # output_name: "sentence_embedding"
-      # query_prefix: "query: "
-      # max_length: 512
     cache:
       ttl: 10m
       max_entries: 10000
@@ -101,17 +101,10 @@ services:
       api_key_header: "Authorization"
       api_key_scheme: "Bearer"
       timeout: 45s
-    # Used only when backend is local. Weights are downloaded and verified during broker startup.
+    # Used only when backend is local. The selected catalog manifest owns model semantics.
     local:
-      device: "auto" # auto prefers CUDA when Docker exposes a GPU, otherwise CPU
+      device: "auto" # macOS: CoreML -> CPU; Linux/Windows: visible CUDA -> CPU
       device_id: 0
-      cache_dir: "/var/cache/graphit-broker/models/bge-reranker-base"
-      # Custom compatible cross-encoder models are loaded only from mounted paths:
-      # model_path: "/var/cache/graphit-broker/models/custom-rerank/model.onnx"
-      # tokenizer_path: "/var/cache/graphit-broker/models/custom-rerank/tokenizer.json"
-      # model_sha256: "optional 64-character hexadecimal digest"
-      # tokenizer_sha256: "optional 64-character hexadecimal digest"
-      # max_length: 512
     cache:
       ttl: 5m
       max_entries: 10000

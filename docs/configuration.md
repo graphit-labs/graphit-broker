@@ -93,6 +93,22 @@ enabled, the administration UI and API require the configured administration OID
 is no local username/password administration login. A self-hosted issuer such as Keycloak or Dex
 can provide OIDC for an otherwise local deployment.
 
+## Model catalog
+
+```yaml
+models:
+  directory: /var/cache/graphit-broker/models
+  embedding: coderankembed
+  rerank: bge-reranker-base
+  generate: ""
+```
+
+`models` is the global selector for local ONNX bundles. `directory` is the persistent catalog root;
+each task value names `<directory>/<model-id>/manifest.json`. The embedding and rerank values above
+are the defaults and select the built-in presets. Custom models, acquisition policies, supported
+manifest fields, tensor semantics, identities, and complete examples are documented in the
+[local model catalog](models.md).
+
 ## Embeddings
 
 ```yaml
@@ -117,28 +133,18 @@ services:
     local:
       device: auto
       device_id: 0
-      cache_dir: /var/cache/graphit-broker/models/coderankembed
     cache:
       ttl: 10m
       max_entries: 10000
 ```
 
-`backend` is `upstream` by default for compatibility with existing configuration, or `local` for
-in-process ONNX inference. With no `model_path`, the preset is the same
-CodeRankEmbed-137M-INT8 model used by Graphit Code and requires `dimensions: 768`. Its model and
-tokenizer are absent from the image and are downloaded into `local.cache_dir` during startup only
-when this service is both enabled and local. Each file is checked against its pinned size and
-SHA-256 before an atomic cache commit.
-
-To use an operator-provided embedding model, set both absolute `local.model_path` and
-`local.tokenizer_path` to files already present in the mounted model volume. In that mode the
-broker never downloads or replaces model files. It verifies the optional `model_sha256` and
-`tokenizer_sha256`, then loads the files during startup. `dimensions` is the expected output width;
-`output_name`, `query_prefix`, and `max_length` adapt compatible encoder exports. The ONNX graph
-must accept BERT-style `input_ids`, `attention_mask`, and, if declared, `token_type_ids`, and expose
-a two-dimensional embedding output. If the ONNX export uses external-data files, place those files
-beside the model with the exact names referenced by the graph. Change `revision` whenever any of
-these artifacts or vector-space settings changes.
+`backend` is `upstream` by default or `local` for in-process ONNX inference. A local backend uses
+`models.embedding`; the preset is CodeRankEmbed-137M-INT8. Model files, tokenizer behavior,
+prefixes, pooling, normalization, and dimensions belong to the selected manifest, not this service
+block. `dimensions` may be omitted/zero for a local model and is inferred from its resolved
+manifest and ONNX signature; a positive value is an assertion and startup rejects a mismatch.
+`revision` is optional for local inference and becomes a readable prefix for the automatically
+computed effective model identity.
 
 For an upstream backend, set `upstream.protocol` to one of the following. The public broker API
 stays OpenAI-shaped while its adapter translates request and response fields:
@@ -150,10 +156,11 @@ stays OpenAI-shaped while its adapter translates request and response fields:
 | Voyage | `voyage` or `voyage-embeddings-v1` | complete `/v1/embeddings` URL |
 | Google | `google` or `google-embed-content-v1beta` | API base such as `/v1beta`, or complete `:batchEmbedContents` URL |
 
-The broker always selects the configured model; a client-supplied model is ignored. Change
-`revision` whenever the effective vector space changes. The response revision and dimensions are
+The broker always selects the configured model; a client-supplied model is ignored. For upstream
+models the operator must change `revision` whenever the effective vector space changes. Local model
+revisions include the catalog identity automatically. The response revision and dimensions are
 part of Graphit's index-compatibility fingerprint. `input_type: query|document` selects the proper
-asymmetric embedding mode; omission remains compatible and means `document`.
+asymmetric embedding mode; omission means `document`.
 
 ## Rerank
 
@@ -177,25 +184,24 @@ services:
     local:
       device: auto
       device_id: 0
-      cache_dir: /var/cache/graphit-broker/models/bge-reranker-base
     cache:
       ttl: 5m
       max_entries: 10000
 ```
 
-With no `model_path`, `backend: local` selects the same `bge-reranker-base` ONNX model as Graphit
-Code. Its model and tokenizer are downloaded, verified, and committed to the cache during startup
-only when this service is both enabled and local. A compatible custom cross-encoder uses the same
-paired `model_path`/`tokenizer_path`, optional SHA-256 fields, and `max_length` controls. Custom
-paths are loaded as-is and never trigger a download; external ONNX data must be mounted beside the
-model. Upstream protocols are `cohere`/`cohere-v2`, `voyage`/`voyage-v1`, `jina`/`jina-v1`, and
-`graphit-rerank-v1`; configure each with its complete rerank endpoint. Unlike embeddings, OpenAI
-has no rerank API contract, so arbitrary rerank endpoints must not be labeled OpenAI-compatible.
+`backend: local` uses `models.rerank`; its default is the `bge-reranker-base` preset. Custom
+cross-encoder inputs, output selection, prefixing, and score transformations are declared in the
+bundle manifest. Upstream protocols are `cohere`/`cohere-v2`, `voyage`/`voyage-v1`,
+`jina`/`jina-v1`, and `graphit-rerank-v1`; configure each with its complete rerank endpoint. Unlike
+embeddings, OpenAI has no rerank API contract, so arbitrary rerank endpoints must not be labeled
+OpenAI-compatible.
 
-For either local service, `local.device` accepts `auto`, `cpu`, or `cuda`. `auto` is the default:
-it attempts the configured CUDA `device_id` when a GPU is visible and logs a warning before falling
-back to CPU if CUDA initialization fails. `cuda` is strict and fails broker startup with an
-actionable error when it cannot initialize. The standard and GPU Compose modes use one image.
+For either local service, `local.device` accepts `auto`, `cpu`, `cuda`, or `coreml`. `auto` is the
+default: on macOS it tries CoreML and then CPU; on Linux and Windows it tries the configured CUDA
+`device_id` when an NVIDIA GPU is visible and then CPU. An accelerated-provider failure is logged
+before fallback. Explicit `cuda` or `coreml` is strict and fails broker startup when the requested
+provider cannot initialize; CoreML is valid only on macOS and uses `device_id: 0`. The model
+manifest remains hardware-neutral.
 
 ## S3 pre-signing
 

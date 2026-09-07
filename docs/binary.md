@@ -1,23 +1,27 @@
 # Running the native binary
 
-GitHub releases publish `graphit-broker-linux-amd64.tar.gz`, following the gated build, checksum,
-and release pattern used by Graphit Code. The archive contains:
+GitHub releases publish the same native platform matrix as Graphit Code:
+
+| Archive | Host | Embedded inference runtime |
+|---|---|---|
+| `graphit-broker-linux-amd64.tar.gz` | Linux x86-64 | ONNX Runtime CPU + CUDA provider |
+| `graphit-broker-darwin-arm64.tar.gz` | macOS Apple Silicon | ONNX Runtime CPU + integrated CoreML |
+| `graphit-broker-windows-amd64.tar.gz` | Windows x86-64 | ONNX Runtime CPU + CUDA provider |
+
+Each archive contains one self-contained broker executable and the example configuration. There is
+no adjacent native-library directory:
 
 ```text
 graphit-broker-linux-amd64/
 ├── graphit-broker
-├── config.example.yaml
-└── lib/
-    ├── libonnxruntime.so.1.29.0
-    ├── libonnxruntime.so -> libonnxruntime.so.1.29.0
-    ├── libonnxruntime_providers_shared.so
-    └── libonnxruntime_providers_cuda.so
+└── config.example.yaml
 ```
 
 Model weights are deliberately absent. Startup downloads CodeRankEmbed only when embeddings are
 enabled with `backend: local`, and downloads BGE only when rerank is enabled with `backend: local`.
-When paired custom `model_path` and `tokenizer_path` values are set, the binary performs no model
-download and requires those compatible artifacts (plus any ONNX external data) to exist already.
+Custom models are selected under top-level `models` and loaded from manifest bundles in the
+persistent model directory. See the [model catalog](models.md) for `on_demand`, `setup`, and `never`
+installation modes.
 
 ## Download and verify
 
@@ -32,9 +36,32 @@ tar -xzf graphit-broker-linux-amd64.tar.gz
 ./graphit-broker-linux-amd64/graphit-broker --version
 ```
 
-Keep the `lib` directory beside the executable. The broker discovers that ONNX Runtime location
-automatically. `ONNXRUNTIME_SHARED_LIBRARY_PATH` may override it when an operator manages the
-runtime elsewhere.
+Use `shasum -a 256 -c` on macOS. Windows users can verify the archive with
+`Get-FileHash -Algorithm SHA256` and compare it with the published `.sha256` file.
+
+## Embedded runtime extraction
+
+The matching ONNX Runtime files are compressed inside the executable. Every invocation performs
+a cheap completion-marker read plus a `stat` of each required file. On first execution, or when the
+embedded build changes, the broker verifies the embedded payload and installs it atomically at:
+
+```text
+~/.graphit/runtime/onnxruntime/<ort-version>/<os>-<arch>/<bundle-sha256>/
+```
+
+It extracts into a private sibling directory and renames only a complete, fsynced installation;
+concurrent broker processes converge on the same immutable directory. Later starts do not hash the
+native library and do not read or decompress the embedded payload.
+
+Set `GRAPHIT_GLOBAL_DIR` to move the entire Graphit global directory. An absolute value is used as
+given; a relative value is resolved from the broker's startup directory:
+
+```bash
+GRAPHIT_GLOBAL_DIR=/var/lib/graphit ./graphit-broker --version
+```
+
+`ONNXRUNTIME_SHARED_LIBRARY_PATH` remains an expert override. When set, it selects that exact
+operator-managed library and suppresses extraction of the embedded runtime.
 
 ## Install and configure
 
@@ -43,7 +70,8 @@ This example creates a dedicated service identity and persistent directories:
 ```bash
 sudo useradd --system --home /var/lib/graphit-broker --shell /usr/sbin/nologin graphit-broker
 sudo install -d -o graphit-broker -g graphit-broker -m 0700 \
-  /etc/graphit-broker /var/lib/graphit-broker /var/cache/graphit-broker/models
+  /etc/graphit-broker /var/lib/graphit-broker /var/lib/graphit-broker/.graphit \
+  /var/cache/graphit-broker/models
 sudo install -d -o root -g root -m 0755 /opt/graphit-broker
 sudo cp -a graphit-broker-linux-amd64/. /opt/graphit-broker/
 sudo install -o graphit-broker -g graphit-broker -m 0600 \
@@ -51,7 +79,7 @@ sudo install -o graphit-broker -g graphit-broker -m 0600 \
 ```
 
 Edit `/etc/graphit-broker/config.yaml`. Keep the SQLite DSN under
-`/var/lib/graphit-broker`, local model cache paths under `/var/cache/graphit-broker/models`, and
+`/var/lib/graphit-broker`, the model catalog under `/var/cache/graphit-broker/models`, and
 provider secrets in a root-readable environment file rather than command-line arguments.
 
 Validate without starting or downloading local models:
@@ -61,6 +89,13 @@ sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
   --config /etc/graphit-broker/config.yaml --check-config
 ```
 
+Optionally acquire all selected `setup` and `on_demand` bundles without listening:
+
+```bash
+sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
+  --config /etc/graphit-broker/config.yaml --setup-models
+```
+
 Run in the foreground:
 
 ```bash
@@ -68,10 +103,10 @@ sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
   --config /etc/graphit-broker/config.yaml
 ```
 
-The broker does not listen until every enabled local backend has acquired or validated and then
-initialized its respective model. Custom model paths are never acquired: place them in a persistent
-directory readable by `graphit-broker` before startup. Stop the process with `SIGTERM` or `SIGINT`
-for graceful shutdown.
+The broker does not listen until every enabled local backend has resolved, validated, inspected,
+and initialized its selected model. A `never` bundle must already exist in the persistent catalog;
+a `setup` bundle must be installed with `--setup-models`; and an `on_demand` bundle may download at
+startup. Stop the process with `SIGTERM` or `SIGINT` for graceful shutdown.
 
 ## systemd example
 
@@ -88,6 +123,7 @@ Type=simple
 User=graphit-broker
 Group=graphit-broker
 EnvironmentFile=/etc/graphit-broker/broker.env
+Environment=GRAPHIT_GLOBAL_DIR=/var/lib/graphit-broker/.graphit
 ExecStart=/opt/graphit-broker/graphit-broker --config /etc/graphit-broker/config.yaml
 Restart=on-failure
 NoNewPrivileges=true
@@ -107,20 +143,27 @@ sudo systemctl enable --now graphit-broker
 sudo systemctl status graphit-broker
 ```
 
-## CPU and GPU
+## CPU and accelerated providers
 
 `local.device` controls both embedding and rerank independently:
 
-- `auto` (default) selects CUDA when an NVIDIA device is visible and initialization succeeds;
-  otherwise it logs the CUDA failure and uses CPU.
+- `auto` (default) tries CoreML then CPU on macOS; on Linux and Windows it tries CUDA when an
+  NVIDIA device is visible and then CPU.
 - `cpu` always uses CPU, even on a GPU host.
 - `cuda` requires the configured `local.device_id`; startup fails instead of silently falling back.
+- `coreml` requires macOS and CoreML; it uses `device_id: 0` and fails instead of silently falling
+  back.
 
-CPU needs no additional model runtime because the release bundle includes ONNX Runtime. For GPU,
-the release contains the ONNX CUDA provider but not the NVIDIA driver, CUDA, or cuDNN. Install a
-driver compatible with CUDA 12 plus CUDA 12 and cuDNN 9, ensure their shared libraries are visible
-to the service loader, and verify the selected device with `nvidia-smi`. The container image is the
-recommended GPU deployment because it already carries the CUDA 12.8 and cuDNN 9 user-space runtime.
+Linux and Windows release binaries embed the ONNX Runtime main library,
+`onnxruntime_providers_shared`, and `onnxruntime_providers_cuda`. These are ONNX components, not the
+NVIDIA runtime. CPU operation needs no NVIDIA installation; selecting CUDA additionally requires a
+compatible NVIDIA driver, CUDA, cuBLAS, and cuDNN in the host environment. The macOS release embeds
+only the main ONNX dylib because CoreML is compiled into it and the remaining frameworks come from
+macOS; there is no separate `onnxruntime_providers_coreml` library.
+
+Use the broker container for GPU inference. Its broker executable embeds the ONNX CUDA provider,
+while the image supplies CUDA 12.8 and cuDNN 9; the host only needs a compatible NVIDIA driver and
+NVIDIA Container Toolkit. The same image supports `auto`, `cpu`, and strict `cuda` policies.
 
 Example strict GPU configuration:
 
@@ -134,7 +177,32 @@ services:
     local:
       device: cuda
       device_id: 0
-      cache_dir: /var/cache/graphit-broker/models/coderankembed
 ```
 
-Use `device: auto` when the same installation must remain portable between GPU and CPU hosts.
+Use `device: auto` when the same deployment must remain portable: CoreML falls back to CPU on
+macOS, and CUDA falls back to CPU on Linux and Windows.
+
+## Building the self-contained binaries
+
+The Makefile owns dependency preparation, as in Graphit Code. Each target downloads the official
+platform archive into the build cache, verifies its pinned SHA-256, selects the required runtime
+library, embeds it, and removes the temporary source payload:
+
+```bash
+make build VERSION=dev                  # current supported host
+make release-linux VERSION=v1.0.0       # Linux amd64 runner
+make release-darwin VERSION=v1.0.0      # macOS arm64 runner
+make release-windows VERSION=v1.0.0     # Windows amd64/MSYS2 runner
+```
+
+[`native-deps.env`](../native-deps.env) is only the build-time lockfile: it pins the ONNX Runtime
+version, official archive names, and SHA-256 values used by the Makefile, Docker build, and release
+workflow. The published broker does not read that file and it contains no runtime configuration.
+
+Tagged releases run those targets independently on native Ubuntu, macOS ARM64, and Windows
+GitHub-hosted runners. There is intentionally no single-host `release-all` cross-build: the broker
+uses CGO, so the macOS artifact must be linked against the Apple SDK on macOS.
+
+`GRAPHIT_BROKER_NATIVE_CACHE` may move the build-time download cache. This cache is not consulted
+by the resulting executable. Model weights are never embedded; their manifest policy still governs
+`on_demand`, `setup`, or pre-installed acquisition.
