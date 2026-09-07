@@ -1,0 +1,94 @@
+server:
+  address: ":8080"
+  public_url: "https://broker.example.com"
+  read_timeout: 15s
+  write_timeout: 60s
+  idle_timeout: 120s
+  shutdown_timeout: 15s
+  max_request_bytes: 4194304
+
+authentication:
+  oidc:
+    - issuer: "https://identity.example.com"
+      audiences: ["graphit-broker"]
+      required_scopes: ["graphit.use"]
+      username_claim: "preferred_username"
+      organization_claim: "organization.id"
+      teams_claim: "groups"
+  # API keys are useful for trusted local/service profiles. Prefer token_sha256.
+  # api_keys:
+  #   - name: "local-automation"
+  #     token_sha256: "<64-character SHA-256 of the local broker token>"
+  #     subject: "local-automation"
+  #     username: "automation"
+  #     organization: "local"
+  #     teams: ["automation"]
+
+authorization:
+  rules:
+    - name: "organization AI"
+      organizations: ["acme"]
+      capabilities: ["embeddings", "rerank"]
+    - name: "platform project storage"
+      organizations: ["acme"]
+      teams: ["platform"]
+      capabilities: ["s3"]
+      projects: ["platform-*"]
+      s3_operations: ["read", "write", "publish"]
+      s3_prefixes: ["organizations/{organization}/projects/{project}"]
+    # - name: "local automation"
+    #   subjects: ["local-automation"]
+    #   capabilities: ["embeddings", "rerank"]
+
+services:
+  embeddings:
+    enabled: true
+    route: "graphit-default"
+    # Change this value whenever the effective vector space changes.
+    revision: "embedding-route-2026-09-07.1"
+    dimensions: 1536
+    max_batch: 256
+    max_input_bytes: 1048576
+    upstream:
+      protocol: "openai-embeddings-v1"
+      url: "https://api.openai.com/v1/embeddings"
+      model: "text-embedding-3-small"
+      api_key: "${OPENAI_API_KEY:?set the broker-owned OpenAI API key}"
+      api_key_header: "Authorization"
+      api_key_scheme: "Bearer"
+      send_dimensions: false
+      timeout: 45s
+    cache:
+      ttl: 10m
+      max_entries: 10000
+
+  rerank:
+    enabled: true
+    route: "graphit-default"
+    revision: "rerank-route-2026-09-07.1"
+    max_documents: 1000
+    max_document_bytes: 1048576
+    upstream:
+      protocol: "cohere-v2"
+      url: "https://api.cohere.com/v2/rerank"
+      model: "rerank-v4.0-fast"
+      api_key: "${COHERE_API_KEY:?set the broker-owned Cohere API key}"
+      api_key_header: "Authorization"
+      api_key_scheme: "Bearer"
+      timeout: 45s
+    cache:
+      ttl: 5m
+      max_entries: 10000
+
+  s3:
+    enabled: true
+    # assume_role uses the broker's AWS credential chain. web_identity forwards the caller token.
+    mode: "assume_role"
+    region: "us-east-1"
+    endpoint: ""
+    bucket: "graphit-artifacts"
+    base_prefix: "graphit"
+    role_arn: "arn:aws:iam::123456789012:role/graphit-broker-session"
+    sts_endpoint: ""
+    duration: 1h
+    authorization_revision: "acl-2026-09-07.1"
