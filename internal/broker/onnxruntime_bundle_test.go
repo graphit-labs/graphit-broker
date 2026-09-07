@@ -22,6 +22,13 @@ func TestEmbeddedONNXRuntimeInstallAndCheapFastPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantPath := filepath.Join(globalDir, "broker", "runtime", "onnxruntime", bundle.version, bundle.platform, bundle.sha256, bundle.library)
+	if path != wantPath {
+		t.Fatalf("installed runtime path=%q, want %q", path, wantPath)
+	}
+	if _, err := os.Stat(filepath.Join(globalDir, "runtime", "onnxruntime")); !os.IsNotExist(err) {
+		t.Fatalf("legacy unnamespaced runtime path exists or cannot be checked: %v", err)
+	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "runtime" {
 		t.Fatalf("installed main library data=%q err=%v", data, err)
 	}

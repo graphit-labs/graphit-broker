@@ -50,9 +50,10 @@ jobs:
         run: |
           runtime_root=$(mktemp -d)
           GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-linux-amd64/graphit-broker --version
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
+          test ! -e "$runtime_root/runtime/onnxruntime"
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -85,8 +86,9 @@ jobs:
         run: |
           runtime_root=$(mktemp -d)
           GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-darwin-arm64/graphit-broker --version
-          runtime_library=$(find "$runtime_root/runtime/onnxruntime/1.29.0/darwin-arm64" -type f -name 'libonnxruntime.1.29.0.dylib' -print -quit)
+          runtime_library=$(find "$runtime_root/broker/runtime/onnxruntime/1.29.0/darwin-arm64" -type f -name 'libonnxruntime.1.29.0.dylib' -print -quit)
           test -s "$runtime_library"
+          test ! -e "$runtime_root/runtime/onnxruntime"
           ort_go_dir=$(go list -m -f '{{.Dir}}' github.com/yalue/onnxruntime_go)
           cp "$ort_go_dir/test_data/example ż 大 김.onnx" .build/coreml-smoke.onnx
           ONNXRUNTIME_SHARED_LIBRARY_PATH="$runtime_library" \
@@ -140,9 +142,10 @@ jobs:
         run: |
           runtime_root=$(mktemp -d)
           GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-windows-amd64/graphit-broker.exe --version
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime.dll
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_shared.dll
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_cuda.dll
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime.dll
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_shared.dll
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_cuda.dll
+          test ! -e "$runtime_root/runtime/onnxruntime"
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -102,7 +102,7 @@ func installONNXRuntimeBundle(globalDir string, bundle onnxRuntimeBundle) (strin
 	if strings.TrimSpace(globalDir) == "" {
 		return "", errors.New("Graphit global directory is empty")
 	}
-	runtimeDir := filepath.Join(globalDir, "runtime", "onnxruntime", bundle.version, bundle.platform, bundle.sha256)
+	runtimeDir := filepath.Join(globalDir, "broker", "runtime", "onnxruntime", bundle.version, bundle.platform, bundle.sha256)
 	if runtimeInstallComplete(runtimeDir, bundle) {
 		return filepath.Join(runtimeDir, bundle.library), nil
 	}

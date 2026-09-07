@@ -46,12 +46,13 @@ a cheap completion-marker read plus a `stat` of each required file. On first exe
 embedded build changes, the broker verifies the embedded payload and installs it atomically at:
 
 ```text
-~/.graphit/runtime/onnxruntime/<ort-version>/<os>-<arch>/<bundle-sha256>/
+~/.graphit/broker/runtime/onnxruntime/<ort-version>/<os>-<arch>/<bundle-sha256>/
 ```
 
 It extracts into a private sibling directory and renames only a complete, fsynced installation;
 concurrent broker processes converge on the same immutable directory. Later starts do not hash the
-native library and do not read or decompress the embedded payload.
+native library and do not read or decompress the embedded payload. The `broker` namespace keeps
+these files outside Graphit Code's independently managed `~/.graphit/runtime` directory.
 
 Set `GRAPHIT_GLOBAL_DIR` to move the entire Graphit global directory. An absolute value is used as
 given; a relative value is resolved from the broker's startup directory:

@@ -88,7 +88,7 @@ semantics. See the [local model catalog](docs/models.md) for all fields and exam
 Native releases for Linux amd64, macOS arm64, and Windows amd64 are single self-contained
 executables. Linux and Windows embed the ONNX core plus shared/CUDA providers; macOS embeds the
 CoreML-capable ONNX dylib. They extract atomically under
-`${GRAPHIT_GLOBAL_DIR:-~/.graphit}/runtime/onnxruntime` on first execution; subsequent starts use a
+`${GRAPHIT_GLOBAL_DIR:-~/.graphit}/broker/runtime/onnxruntime` on first execution; subsequent starts use a
 small completion marker and file metadata only. `device: auto` prefers CoreML on macOS, CUDA on
 Linux/Windows when visible, and otherwise CPU.
 

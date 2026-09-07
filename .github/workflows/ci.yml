@@ -41,9 +41,10 @@ jobs:
           make build VERSION="ci-${{ github.sha }}"
           runtime_root=$(mktemp -d)
           GRAPHIT_GLOBAL_DIR="$runtime_root" ./graphit-broker --version
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
-          test -s "$runtime_root/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
+          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
+          test ! -e "$runtime_root/runtime/onnxruntime"
 
   container:
     name: Build container
