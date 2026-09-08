@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tokenizer "github.com/sugarme/tokenizer"
 	"github.com/sugarme/tokenizer/pretrained"
@@ -25,6 +27,14 @@ const (
 	localRerankBatchSize     = 16
 	localQueryPrefix         = "Represent this query for searching relevant code: "
 )
+
+var autoDeviceRecoveryBackoff = [...]time.Duration{
+	time.Minute,
+	2 * time.Minute,
+	4 * time.Minute,
+	8 * time.Minute,
+	10 * time.Minute,
+}
 
 type localEmbeddingBackend interface {
 	Embed(context.Context, []string, string) ([][]float32, error)
@@ -44,9 +54,34 @@ type pairEncoder interface {
 	EncodePair(string, string, ...bool) (*tokenizer.Encoding, error)
 }
 
+type localONNXSession interface {
+	Run([]ort.Value, []ort.Value) error
+	Destroy() error
+}
+
+type localONNXSessionFactory func() (localONNXSession, error)
+
+// localONNXSessionRouter keeps explicit device modes strict and owns the
+// inference-time recovery state used only by auto. Holding mu for the complete
+// inference also preserves DynamicAdvancedSession's existing serialization.
+type localONNXSessionRouter struct {
+	mu sync.Mutex
+
+	mode              string
+	acceleratedDevice string
+	accelerated       localONNXSession
+	cpu               localONNXSession
+	cpuFactory        localONNXSessionFactory
+	now               func() time.Time
+
+	usingCPU               bool
+	nextAcceleratedAttempt time.Time
+	backoffStep            int
+}
+
 type onnxEmbeddingBackend struct {
 	tokenizer      textEncoder
-	session        *ort.DynamicAdvancedSession
+	sessions       *localONNXSessionRouter
 	inputNames     []string
 	inputSemantic  map[string]string
 	device         string
@@ -56,12 +91,11 @@ type onnxEmbeddingBackend struct {
 	documentPrefix string
 	pooling        string
 	normalize      bool
-	mu             sync.Mutex
 }
 
 type onnxRerankBackend struct {
 	tokenizer      pairEncoder
-	session        *ort.DynamicAdvancedSession
+	sessions       *localONNXSessionRouter
 	inputNames     []string
 	inputSemantic  map[string]string
 	device         string
@@ -70,7 +104,6 @@ type onnxRerankBackend struct {
 	documentPrefix string
 	scoreTransform string
 	scoreColumn    *int
-	mu             sync.Mutex
 }
 
 var (
@@ -132,12 +165,12 @@ func newONNXEmbeddingBackend(ctx context.Context, cfg LocalModelConfig) (localEm
 	if err != nil {
 		return nil, fmt.Errorf("load local embedding tokenizer: %w", err)
 	}
-	session, device, err := newLocalONNXSession(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
+	sessions, device, err := newLocalONNXSessionRouter(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create local embedding session: %w", err)
 	}
 	slog.Info("local embedding model ready", "model", model.Manifest.ID, "identity", model.Identity, "device", device)
-	return &onnxEmbeddingBackend{tokenizer: tk, session: session, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
+	return &onnxEmbeddingBackend{tokenizer: tk, sessions: sessions, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
 		device: device, dimensions: model.Dimensions, maxLength: model.Manifest.Text.MaxTokens,
 		queryPrefix: model.Manifest.Text.QueryPrefix, documentPrefix: model.Manifest.Text.DocumentPrefix,
 		pooling: model.Manifest.Inference.Pooling, normalize: model.Manifest.Inference.Normalize}, nil
@@ -156,15 +189,162 @@ func newONNXRerankBackend(ctx context.Context, cfg LocalModelConfig) (localReran
 	if err != nil {
 		return nil, fmt.Errorf("load local rerank tokenizer: %w", err)
 	}
-	session, device, err := newLocalONNXSession(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
+	sessions, device, err := newLocalONNXSessionRouter(model.ModelPath, model.InputNames, []string{model.OutputName}, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create local rerank session: %w", err)
 	}
 	slog.Info("local rerank model ready", "model", model.Manifest.ID, "identity", model.Identity, "device", device)
-	return &onnxRerankBackend{tokenizer: tk, session: session, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
+	return &onnxRerankBackend{tokenizer: tk, sessions: sessions, inputNames: model.InputNames, inputSemantic: model.InputSemantic,
 		device: device, maxLength: model.Manifest.Text.MaxTokens, queryPrefix: model.Manifest.Text.QueryPrefix,
 		documentPrefix: model.Manifest.Text.DocumentPrefix, scoreTransform: model.Manifest.Inference.ScoreTransform,
 		scoreColumn: model.Manifest.Inference.ScoreColumn}, nil
+}
+
+func newLocalONNXSessionRouter(modelPath string, inputNames, outputNames []string, cfg LocalModelConfig) (*localONNXSessionRouter, string, error) {
+	session, device, err := newLocalONNXSession(modelPath, inputNames, outputNames, cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	var cpuFactory localONNXSessionFactory
+	if cfg.Device == "auto" && device != "cpu" {
+		cpuCfg := cfg
+		cpuCfg.Device = "cpu"
+		cpuCfg.DeviceID = 0
+		cpuFactory = func() (localONNXSession, error) {
+			cpu, actualDevice, err := newLocalONNXSession(modelPath, inputNames, outputNames, cpuCfg)
+			if err != nil {
+				return nil, err
+			}
+			if actualDevice != "cpu" {
+				_ = cpu.Destroy()
+				return nil, fmt.Errorf("CPU fallback initialized unexpected device %s", actualDevice)
+			}
+			return cpu, nil
+		}
+	}
+	return newLocalONNXSessionRouterForDevice(cfg.Device, device, session, cpuFactory, time.Now), device, nil
+}
+
+func newLocalONNXSessionRouterForDevice(mode, device string, session localONNXSession, cpuFactory localONNXSessionFactory, now func() time.Time) *localONNXSessionRouter {
+	if now == nil {
+		now = time.Now
+	}
+	return &localONNXSessionRouter{
+		mode:              mode,
+		acceleratedDevice: device,
+		accelerated:       session,
+		cpuFactory:        cpuFactory,
+		now:               now,
+	}
+}
+
+func (r *localONNXSessionRouter) execute(run func(localONNXSession) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Explicit modes, plus auto configurations that started on CPU because no
+	// accelerator was available, never participate in inference-time switching.
+	if r.mode != "auto" || r.acceleratedDevice == "cpu" {
+		return run(r.accelerated)
+	}
+
+	if !r.usingCPU {
+		err := run(r.accelerated)
+		if err == nil || !isAcceleratorOutOfMemory(err) {
+			return err
+		}
+		r.usingCPU = true
+		r.backoffStep = 0
+		r.scheduleAcceleratedAttempt(r.now())
+		slog.Warn("accelerated local inference exhausted device memory; retrying on CPU",
+			"provider", r.acceleratedDevice, "error", err, "retry_at", r.nextAcceleratedAttempt)
+		return r.executeCPUFallback(run, err)
+	}
+
+	if r.now().Before(r.nextAcceleratedAttempt) {
+		return r.runCPU(run)
+	}
+
+	// The recovery probe is a real inference. State remains on CPU until the
+	// entire callback (Run plus output validation/post-processing) succeeds.
+	err := run(r.accelerated)
+	if err == nil {
+		r.usingCPU = false
+		r.nextAcceleratedAttempt = time.Time{}
+		r.backoffStep = 0
+		slog.Info("accelerated local inference recovered", "provider", r.acceleratedDevice)
+		return nil
+	}
+	r.scheduleAcceleratedAttempt(r.now())
+	slog.Warn("accelerated local inference recovery failed; remaining on CPU",
+		"provider", r.acceleratedDevice, "error", err, "retry_at", r.nextAcceleratedAttempt)
+	if !isAcceleratorOutOfMemory(err) {
+		return err
+	}
+	return r.executeCPUFallback(run, err)
+}
+
+func (r *localONNXSessionRouter) executeCPUFallback(run func(localONNXSession) error, acceleratedErr error) error {
+	if err := r.runCPU(run); err != nil {
+		return fmt.Errorf("CPU fallback after accelerator out of memory failed: %w", errors.Join(acceleratedErr, err))
+	}
+	return nil
+}
+
+func (r *localONNXSessionRouter) runCPU(run func(localONNXSession) error) error {
+	if r.cpu == nil {
+		if r.cpuFactory == nil {
+			return fmt.Errorf("CPU fallback is unavailable")
+		}
+		cpu, err := r.cpuFactory()
+		if err != nil {
+			return fmt.Errorf("initialize CPU fallback session: %w", err)
+		}
+		if cpu == nil {
+			return fmt.Errorf("initialize CPU fallback session: factory returned nil session")
+		}
+		r.cpu = cpu
+	}
+	return run(r.cpu)
+}
+
+func (r *localONNXSessionRouter) scheduleAcceleratedAttempt(now time.Time) {
+	step := min(r.backoffStep, len(autoDeviceRecoveryBackoff)-1)
+	r.nextAcceleratedAttempt = now.Add(autoDeviceRecoveryBackoff[step])
+	if r.backoffStep < len(autoDeviceRecoveryBackoff)-1 {
+		r.backoffStep++
+	}
+}
+
+func (r *localONNXSessionRouter) close() error {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var acceleratedErr, cpuErr error
+	if r.accelerated != nil {
+		acceleratedErr = r.accelerated.Destroy()
+		r.accelerated = nil
+	}
+	if r.cpu != nil {
+		cpuErr = r.cpu.Destroy()
+		r.cpu = nil
+	}
+	return errors.Join(acceleratedErr, cpuErr)
+}
+
+func isAcceleratorOutOfMemory(err error) bool {
+	if err == nil {
+		return false
+	}
+	// onnxruntime_go flattens OrtStatus into an ordinary text error, so match
+	// the stable CUDA/allocator spellings emitted by ONNX Runtime and CUDA.
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "out of memory") ||
+		strings.Contains(message, "cuda_error_out_of_memory") ||
+		strings.Contains(message, "cudaerrormemoryallocation") ||
+		strings.Contains(message, "cublas_status_alloc_failed")
 }
 
 func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg LocalModelConfig) (*ort.DynamicAdvancedSession, string, error) {
@@ -352,24 +532,28 @@ func (b *onnxEmbeddingBackend) Embed(ctx context.Context, texts []string, inputT
 	for i, name := range b.inputNames {
 		inputs[i] = values[name]
 	}
-	outputs := []ort.Value{nil}
-	b.mu.Lock()
-	err := b.session.Run(inputs, outputs)
-	b.mu.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("local embedding inference: %w", err)
-	}
-	if outputs[0] == nil {
-		return nil, fmt.Errorf("local embedding model produced no output")
-	}
-	defer outputs[0].Destroy()
-	tensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return nil, fmt.Errorf("local embedding output is %T, want float32", outputs[0])
-	}
-	data := tensor.GetData()
-	outputShape := tensor.GetShape()
-	return poolEmbeddingOutput(data, outputShape, b.pooling, b.normalize, len(texts), maxLen, b.dimensions, flatMasks)
+	var vectors [][]float32
+	err := b.sessions.execute(func(session localONNXSession) error {
+		outputs := []ort.Value{nil}
+		if err := session.Run(inputs, outputs); err != nil {
+			if outputs[0] != nil {
+				_ = outputs[0].Destroy()
+			}
+			return fmt.Errorf("local embedding inference: %w", err)
+		}
+		if outputs[0] == nil {
+			return fmt.Errorf("local embedding model produced no output")
+		}
+		defer outputs[0].Destroy()
+		tensor, ok := outputs[0].(*ort.Tensor[float32])
+		if !ok {
+			return fmt.Errorf("local embedding output is %T, want float32", outputs[0])
+		}
+		var err error
+		vectors, err = poolEmbeddingOutput(tensor.GetData(), tensor.GetShape(), b.pooling, b.normalize, len(texts), maxLen, b.dimensions, flatMasks)
+		return err
+	})
+	return vectors, err
 }
 
 func poolEmbeddingOutput(data []float32, outputShape ort.Shape, pooling string, normalize bool, batch, inputSequence, dimensions int, attentionMask []int64) ([][]float32, error) {
@@ -446,12 +630,10 @@ func safeEncodeSingle(encoder textEncoder, text string) (encoding *tokenizer.Enc
 }
 
 func (b *onnxEmbeddingBackend) Close() error {
-	if b == nil || b.session == nil {
+	if b == nil || b.sessions == nil {
 		return nil
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.session.Destroy()
+	return b.sessions.close()
 }
 
 func (b *onnxRerankBackend) Score(ctx context.Context, query string, documents []string) ([]float64, error) {
@@ -531,23 +713,28 @@ func (b *onnxRerankBackend) scoreBatch(query string, documents []string) ([]floa
 	for i, name := range b.inputNames {
 		inputs[i] = values[name]
 	}
-	outputs := []ort.Value{nil}
-	b.mu.Lock()
-	err := b.session.Run(inputs, outputs)
-	b.mu.Unlock()
-	if err != nil {
-		return nil, fmt.Errorf("local rerank inference: %w", err)
-	}
-	if outputs[0] == nil {
-		return nil, fmt.Errorf("local rerank model produced no output")
-	}
-	defer outputs[0].Destroy()
-	tensor, ok := outputs[0].(*ort.Tensor[float32])
-	if !ok {
-		return nil, fmt.Errorf("local rerank output is %T, want float32", outputs[0])
-	}
-	data := tensor.GetData()
-	return transformRerankOutput(data, len(documents), b.scoreTransform, b.scoreColumn)
+	var scores []float64
+	err := b.sessions.execute(func(session localONNXSession) error {
+		outputs := []ort.Value{nil}
+		if err := session.Run(inputs, outputs); err != nil {
+			if outputs[0] != nil {
+				_ = outputs[0].Destroy()
+			}
+			return fmt.Errorf("local rerank inference: %w", err)
+		}
+		if outputs[0] == nil {
+			return fmt.Errorf("local rerank model produced no output")
+		}
+		defer outputs[0].Destroy()
+		tensor, ok := outputs[0].(*ort.Tensor[float32])
+		if !ok {
+			return fmt.Errorf("local rerank output is %T, want float32", outputs[0])
+		}
+		var err error
+		scores, err = transformRerankOutput(tensor.GetData(), len(documents), b.scoreTransform, b.scoreColumn)
+		return err
+	})
+	return scores, err
 }
 
 func transformRerankOutput(data []float32, batch int, transform string, configuredColumn *int) ([]float64, error) {
@@ -600,10 +787,8 @@ func safeEncodePair(encoder pairEncoder, query, document string) (encoding *toke
 }
 
 func (b *onnxRerankBackend) Close() error {
-	if b == nil || b.session == nil {
+	if b == nil || b.sessions == nil {
 		return nil
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.session.Destroy()
+	return b.sessions.close()
 }

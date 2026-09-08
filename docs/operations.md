@@ -30,7 +30,7 @@ or upstream secrets.
 | local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker-models` volume and broker error response |
 | `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `local.device_id` |
 | `device: coreml` fails | non-macOS host, unsupported model graph, or CoreML initialization failure | macOS version, broker platform, startup provider error |
-| `device: auto` uses CPU | CoreML/CUDA unavailable or provider initialization failed | provider warning, macOS support, NVIDIA runtime selection |
+| `device: auto` uses CPU | CoreML/CUDA unavailable, provider initialization failed, or an inference exhausted accelerator memory | provider/recovery warning, macOS support, NVIDIA runtime selection, GPU memory pressure |
 
 ## Backup
 

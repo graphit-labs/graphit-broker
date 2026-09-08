@@ -400,6 +400,12 @@ services:
 - `cuda` requires the selected GPU and fails startup if it cannot initialize.
 - `coreml` requires macOS CoreML and fails startup if it cannot initialize.
 
+If an accelerator runs out of memory during an `auto` inference, the same inference is retried on
+CPU immediately. CPU use remains temporary: the broker probes the accelerator after 1 minute and
+backs off subsequent failed probes to 2, 4, 8, and at most 10 minutes. A probe switches normal
+traffic back only after its complete inference succeeds. Explicit `cpu`, `cuda`, and `coreml`
+policies never use this fallback or switch providers at runtime.
+
 Native Linux and Windows binaries embed the ONNX core, shared-provider, and CUDA-provider
 libraries. CPU therefore works without NVIDIA dependencies, while CUDA additionally requires a
 compatible driver plus CUDA/cuDNN on the host. The macOS dylib has CoreML compiled into the main

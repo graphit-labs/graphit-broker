@@ -248,6 +248,12 @@ before fallback. Explicit `cuda` or `coreml` is strict and fails broker startup 
 provider cannot initialize; CoreML is valid only on macOS and uses `device_id: 0`. The model
 manifest remains hardware-neutral.
 
+During inference, `auto` also treats accelerator out-of-memory errors as temporary: it immediately
+repeats that inference on CPU, then probes the accelerator with a real inference after 1 minute.
+Repeated failed probes use delays of 2, 4, 8, and at most 10 minutes. The accelerator is selected
+again only after the complete probe inference succeeds. All explicit modes (`cpu`, `cuda`, and
+`coreml`) remain strict at runtime and never switch providers automatically.
+
 ## S3 pre-signing
 
 ```yaml
