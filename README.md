@@ -8,8 +8,8 @@ evaluates deny-by-default resource grants from SQL, and exposes:
 - `POST /v1/s3/presign` — one narrowly scoped pre-signed request for each S3 operation;
 - `POST /v1/embeddings` — an OpenAI-shaped contract backed by local inference or a broker-owned
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
-- `POST /v1/rerank` — the versioned Graphit contract backed by local inference or a broker-owned
-  Cohere, Voyage, Jina, or Graphit-compatible adapter;
+- `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
+  Cohere/Voyage/Jina adapters, or embedding-simulated OpenAI and Google Gemini adapters;
 - `/admin/` — an OIDC-protected administration UI for configuration, resource grants, roles,
   and user-role assignments.
 

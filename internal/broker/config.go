@@ -591,11 +591,14 @@ func (c Config) Validate() error {
 var embeddingUpstreamProtocols = []string{
 	"openai", "openai-compatible", "openai-embeddings-v1",
 	"cohere", "cohere-embed-v2", "voyage", "voyage-embeddings-v1",
-	"google", "google-embed-content-v1beta",
+	"google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta",
 }
 
 var rerankUpstreamProtocols = []string{
 	"cohere", "cohere-v2", "jina", "jina-v1", "voyage", "voyage-v1", "graphit-rerank-v1",
+	"openai", "openai-compatible", "openai-embeddings-v1",
+	"cohere-embed-v2", "voyage-embeddings-v1",
+	"google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta",
 }
 
 func (c LocalModelConfig) validate(name string) error {

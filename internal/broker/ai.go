@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -338,12 +339,14 @@ func embedUpstream(ctx context.Context, client *http.Client, cfg EmbeddingServic
 			}
 		}
 		return result, nil
-	case "google", "google-embed-content-v1beta":
+	case "google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta":
 		taskType := "RETRIEVAL_DOCUMENT"
 		if inputType == "query" {
 			taskType = "RETRIEVAL_QUERY"
 		}
-		modelPath := "models/" + strings.TrimPrefix(cfg.Upstream.Model, "models/")
+		modelName := strings.TrimPrefix(cfg.Upstream.Model, "models/")
+		modelPath := "models/" + modelName
+		geminiEmbedding2 := strings.HasPrefix(strings.ToLower(modelName), "gemini-embedding-2")
 		googleCfg := cfg.Upstream
 		googleCfg.URL = googleEmbeddingURL(googleCfg.URL, cfg.Upstream.Model)
 		data := make([]EmbeddingData, 0, len(input))
@@ -351,13 +354,27 @@ func embedUpstream(ctx context.Context, client *http.Client, cfg EmbeddingServic
 			end := min(start+googleEmbeddingBatchLimit, len(input))
 			requests := make([]map[string]any, end-start)
 			for i, text := range input[start:end] {
+				if geminiEmbedding2 {
+					switch inputType {
+					case "query":
+						text = "task: search result | query: " + text
+					case "document":
+						text = "title: none | text: " + text
+					}
+				}
 				item := map[string]any{
-					"model":              modelPath,
-					"content":            map[string]any{"parts": []map[string]string{{"text": text}}},
-					"embedContentConfig": map[string]any{"taskType": taskType},
+					"model":   modelPath,
+					"content": map[string]any{"parts": []map[string]string{{"text": text}}},
+				}
+				if !geminiEmbedding2 {
+					item["embedContentConfig"] = map[string]any{"taskType": taskType}
 				}
 				if cfg.Upstream.SendDimensions {
-					item["embedContentConfig"].(map[string]any)["outputDimensionality"] = cfg.Dimensions
+					if geminiEmbedding2 {
+						item["outputDimensionality"] = cfg.Dimensions
+					} else {
+						item["embedContentConfig"].(map[string]any)["outputDimensionality"] = cfg.Dimensions
+					}
 				}
 				requests[i] = item
 			}
@@ -496,6 +513,8 @@ func rerankUpstream(ctx context.Context, client *http.Client, cfg RerankServiceC
 	}
 	var results []RerankResult
 	switch protocol {
+	case "openai", "openai-compatible", "openai-embeddings-v1", "cohere-embed-v2", "voyage-embeddings-v1", "google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta":
+		return rerankWithEmbeddings(ctx, client, cfg, query, documents, topN)
 	case "cohere", "cohere-v2":
 		results = make([]RerankResult, 0, len(documents))
 		for start := 0; start < len(documents); start += cohereRerankBatchLimit {
@@ -545,6 +564,102 @@ func rerankUpstream(ctx context.Context, client *http.Client, cfg RerankServiceC
 	return results, nil
 }
 
+func rerankWithEmbeddings(ctx context.Context, client *http.Client, cfg RerankServiceConfig, query string, documents []string, topN int) ([]RerankResult, error) {
+	embeddingCfg := EmbeddingServiceConfig{Upstream: cfg.Upstream}
+	queryResponse, err := embedUpstream(ctx, client, embeddingCfg, []string{query}, "query")
+	if err != nil {
+		return nil, err
+	}
+	queryVectors, err := orderedEmbeddingVectors(queryResponse, 1)
+	if err != nil {
+		return nil, fmt.Errorf("rerank query embeddings: %w", err)
+	}
+	documentResponse, err := embedUpstream(ctx, client, embeddingCfg, documents, "document")
+	if err != nil {
+		return nil, err
+	}
+	documentVectors, err := orderedEmbeddingVectors(documentResponse, len(documents))
+	if err != nil {
+		return nil, fmt.Errorf("rerank document embeddings: %w", err)
+	}
+	if len(queryVectors[0]) != len(documentVectors[0]) {
+		return nil, fmt.Errorf("rerank embedding dimensions differ: query has %d and documents have %d", len(queryVectors[0]), len(documentVectors[0]))
+	}
+	results := make([]RerankResult, len(documentVectors))
+	for i, vector := range documentVectors {
+		score, err := cosineSimilarity(queryVectors[0], vector)
+		if err != nil {
+			return nil, fmt.Errorf("rerank document %d: %w", i, err)
+		}
+		results[i] = RerankResult{Index: i, RelevanceScore: score}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].RelevanceScore == results[j].RelevanceScore {
+			return results[i].Index < results[j].Index
+		}
+		return results[i].RelevanceScore > results[j].RelevanceScore
+	})
+	if len(results) > topN {
+		results = results[:topN]
+	}
+	return results, nil
+}
+
+func orderedEmbeddingVectors(response embeddingBackendResponse, expected int) ([][]float32, error) {
+	if len(response.Data) != expected {
+		return nil, fmt.Errorf("provider returned %d vectors for %d inputs", len(response.Data), expected)
+	}
+	vectors := make([][]float32, expected)
+	width := 0
+	for _, item := range response.Data {
+		if item.Index < 0 || item.Index >= expected || vectors[item.Index] != nil {
+			return nil, errors.New("provider returned an invalid or duplicate embedding index")
+		}
+		if len(item.Embedding) == 0 {
+			return nil, errors.New("provider returned an empty embedding")
+		}
+		if width == 0 {
+			width = len(item.Embedding)
+		} else if len(item.Embedding) != width {
+			return nil, errors.New("provider returned inconsistent embedding dimensions")
+		}
+		for _, value := range item.Embedding {
+			if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+				return nil, errors.New("provider returned a non-finite embedding value")
+			}
+		}
+		vectors[item.Index] = item.Embedding
+	}
+	return vectors, nil
+}
+
+func cosineSimilarity(a, b []float32) (float64, error) {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0, errors.New("embedding vectors must have the same non-zero dimensions")
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA == 0 || normB == 0 {
+		return 0, errors.New("embedding vectors must have non-zero magnitude")
+	}
+	score := dot / (math.Sqrt(normA) * math.Sqrt(normB))
+	if math.IsNaN(score) || math.IsInf(score, 0) {
+		return 0, errors.New("embedding similarity is not finite")
+	}
+	if score > 1 {
+		score = 1
+	} else if score < -1 {
+		score = -1
+	}
+	return score, nil
+}
+
 func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cfg HTTPUpstreamConfig, input, output any) error {
 	encoded, err := json.Marshal(input)
 	if err != nil {
@@ -560,7 +675,7 @@ func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cf
 		header := cfg.APIKeyHeader
 		scheme := cfg.APIKeyScheme
 		protocol := strings.ToLower(strings.TrimSpace(cfg.Protocol))
-		google := protocol == "google" || protocol == "google-embed-content-v1beta"
+		google := protocol == "google" || protocol == "google-embed-content-v1beta" || protocol == "gemini" || protocol == "gemini-embed-content-v1beta"
 		if header == "" {
 			if google {
 				header = "x-goog-api-key"

@@ -104,7 +104,8 @@ services:
 
   rerank:
     enabled: true
-    # upstream: Cohere, Voyage, Jina, or Graphit-compatible; local: BGE reranker ONNX.
+    # Native upstream rerank: Cohere, Voyage, Jina, or Graphit-compatible.
+    # Embedding-simulated rerank: OpenAI/OpenAI-compatible or Google Gemini.
     backend: "upstream"
     route: "graphit-default"
     revision: "rerank-route-2026-09-07.1"
@@ -118,6 +119,7 @@ services:
       api_key_header: "Authorization"
       api_key_scheme: "Bearer"
       timeout: 45s
+      # For simulated rerank, set url/model to the provider's embedding endpoint/model instead.
     # Used only when backend is local. The selected catalog manifest owns model semantics.
     local:
       device: "auto" # macOS: CoreML -> CPU; Linux/Windows: visible CUDA -> CPU

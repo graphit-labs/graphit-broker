@@ -199,7 +199,7 @@ stays OpenAI-shaped while its adapter translates request and response fields:
 | OpenAI / compatible | `openai-embeddings-v1` or `openai-compatible` | complete `/v1/embeddings` URL |
 | Cohere | `cohere` or `cohere-embed-v2` | complete `/v2/embed` URL |
 | Voyage | `voyage` or `voyage-embeddings-v1` | complete `/v1/embeddings` URL |
-| Google | `google` or `google-embed-content-v1beta` | API base such as `/v1beta`, or complete `:batchEmbedContents` URL |
+| Google Gemini | `google`, `google-embed-content-v1beta`, `gemini`, or `gemini-embed-content-v1beta` | API base such as `/v1beta`, or complete `:batchEmbedContents` URL |
 
 The broker always selects the configured model; a client-supplied model is ignored. For upstream
 models the operator must change `revision` whenever the effective vector space changes. Local model
@@ -236,10 +236,24 @@ services:
 
 `backend: local` uses `models.rerank`; its default is the `bge-reranker-base` preset. Custom
 cross-encoder inputs, output selection, prefixing, and score transformations are declared in the
-bundle manifest. Upstream protocols are `cohere`/`cohere-v2`, `voyage`/`voyage-v1`,
-`jina`/`jina-v1`, and `graphit-rerank-v1`; configure each with its complete rerank endpoint. Unlike
-embeddings, OpenAI has no rerank API contract, so arbitrary rerank endpoints must not be labeled
-OpenAI-compatible.
+bundle manifest. Native upstream protocols are `cohere`/`cohere-v2`, `voyage`/`voyage-v1`,
+`jina`/`jina-v1`, and `graphit-rerank-v1`; configure each with its complete rerank endpoint.
+
+OpenAI and Google Gemini do not expose the same native rerank contract. For them the broker honors
+`graphit-rerank-v1` by embedding the query and every document, calculating cosine similarity, and
+selecting the global `top_n` with original-index tie breaking. Configure an embedding endpoint and
+model with one of these protocols:
+
+| Provider | Simulated rerank protocol | URL |
+|---|---|---|
+| OpenAI / compatible | `openai`, `openai-compatible`, or `openai-embeddings-v1` | complete `/v1/embeddings` URL |
+| Cohere Embed | `cohere-embed-v2` | complete `/v2/embed` URL |
+| Voyage Embeddings | `voyage-embeddings-v1` | complete `/v1/embeddings` URL |
+| Google Gemini | `google`, `google-embed-content-v1beta`, `gemini`, or `gemini-embed-content-v1beta` | API base such as `/v1beta`, or complete `:batchEmbedContents` URL |
+
+Gemini Embedding 2 requests use Google's retrieval text prefixes; earlier Google embedding models
+use `RETRIEVAL_QUERY` and `RETRIEVAL_DOCUMENT`. The configured rerank `revision` must change whenever
+the embedding model, dimensions, or scoring behavior changes because these determine ranking.
 
 For either local service, `local.device` accepts `auto`, `cpu`, `cuda`, or `coreml`. `auto` is the
 default: on macOS it tries CoreML and then CPU; on Linux and Windows it tries the configured CUDA

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,6 +116,182 @@ func TestAIServiceNormalizesRerankProtocols(t *testing.T) {
 			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "q", []string{"a", "b"}, 1)
 			if err != nil || len(response.Results) != 1 || response.Results[0].Index != 1 {
 				t.Fatalf("response=%#v err=%v", response, err)
+			}
+		})
+	}
+}
+
+func TestAIServiceSimulatesRerankWithEmbeddingProviders(t *testing.T) {
+	tests := []struct {
+		name, protocol, model string
+		assert                func(*testing.T, int, *http.Request, map[string]any)
+		response              func(int) map[string]any
+	}{
+		{
+			name: "openai", protocol: "openai-embeddings-v1", model: "text-embedding-3-small",
+			assert: func(t *testing.T, call int, _ *http.Request, body map[string]any) {
+				inputs := body["input"].([]any)
+				if body["model"] != "text-embedding-3-small" || len(inputs) != []int{1, 3}[call] {
+					t.Errorf("call %d OpenAI body=%#v", call, body)
+				}
+			},
+			response: indexedEmbeddingResponse,
+		},
+		{
+			name: "cohere embed", protocol: "cohere-embed-v2", model: "embed-v4.0",
+			assert: func(t *testing.T, call int, _ *http.Request, body map[string]any) {
+				texts := body["texts"].([]any)
+				inputType := []string{"search_query", "search_document"}[call]
+				if body["input_type"] != inputType || len(texts) != []int{1, 3}[call] {
+					t.Errorf("call %d Cohere Embed body=%#v", call, body)
+				}
+			},
+			response: func(call int) map[string]any {
+				return map[string]any{"embeddings": map[string]any{"float": embeddingVectors(call)}}
+			},
+		},
+		{
+			name: "voyage embeddings", protocol: "voyage-embeddings-v1", model: "voyage-3.5",
+			assert: func(t *testing.T, call int, _ *http.Request, body map[string]any) {
+				inputs := body["input"].([]any)
+				inputType := []string{"query", "document"}[call]
+				if body["input_type"] != inputType || len(inputs) != []int{1, 3}[call] {
+					t.Errorf("call %d Voyage Embeddings body=%#v", call, body)
+				}
+			},
+			response: indexedEmbeddingResponse,
+		},
+		{
+			name: "gemini", protocol: "gemini", model: "gemini-embedding-2",
+			assert: func(t *testing.T, call int, request *http.Request, body map[string]any) {
+				if request.Header.Get("x-goog-api-key") != "secret" || !strings.HasSuffix(request.URL.Path, "/models/gemini-embedding-2:batchEmbedContents") {
+					t.Errorf("call %d Gemini request path=%q headers=%v", call, request.URL.Path, request.Header)
+				}
+				requests := body["requests"].([]any)
+				if len(requests) != []int{1, 3}[call] {
+					t.Fatalf("call %d Gemini requests=%#v", call, requests)
+				}
+				first := requests[0].(map[string]any)
+				if _, exists := first["embedContentConfig"]; exists {
+					t.Errorf("Gemini Embedding 2 request contains unsupported task type: %#v", first)
+				}
+				text := first["content"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
+				prefix := []string{"task: search result | query: ", "title: none | text: "}[call]
+				if !strings.HasPrefix(text, prefix) {
+					t.Errorf("call %d Gemini text=%q", call, text)
+				}
+			},
+			response: func(call int) map[string]any {
+				data := indexedEmbeddingResponse(call)["data"].([]any)
+				embeddings := make([]any, len(data))
+				for i, item := range data {
+					embeddings[i] = map[string]any{"values": item.(map[string]any)["embedding"]}
+				}
+				return map[string]any{"embeddings": embeddings}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				call := calls
+				calls++
+				tc.assert(t, call, r, body)
+				_ = json.NewEncoder(w).Encode(tc.response(call))
+			}))
+			defer upstream.Close()
+
+			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
+				Enabled: true, Backend: "upstream", Route: "default", Revision: "r1",
+				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: tc.model, APIKey: "secret", Timeout: time.Second},
+			}})
+			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", []string{"orthogonal", "same", "related"}, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 || len(response.Results) != 2 || response.Results[0].Index != 1 || response.Results[1].Index != 2 || response.Results[0].RelevanceScore != 1 || response.Results[1].RelevanceScore <= 0 || response.Results[1].RelevanceScore >= 1 {
+				t.Fatalf("calls=%d response=%#v", calls, response)
+			}
+		})
+	}
+}
+
+func indexedEmbeddingResponse(call int) map[string]any {
+	vectors := embeddingVectors(call)
+	data := make([]any, len(vectors))
+	for i, vector := range vectors {
+		data[i] = map[string]any{"index": i, "embedding": vector}
+	}
+	return map[string]any{"data": data}
+}
+
+func embeddingVectors(call int) [][]float32 {
+	return [][][]float32{
+		{{1, 0}},
+		{{0, 1}, {1, 0}, {1, 1}},
+	}[call]
+}
+
+func TestAIServiceRejectsMalformedEmbeddingRerankResponses(t *testing.T) {
+	tests := []struct {
+		name      string
+		responses []map[string]any
+	}{
+		{name: "missing query vector", responses: []map[string]any{{"data": []any{}}}},
+		{name: "duplicate document index", responses: []map[string]any{
+			indexedEmbeddingResponse(0),
+			{"data": []any{
+				map[string]any{"index": 0, "embedding": []float32{1, 0}},
+				map[string]any{"index": 0, "embedding": []float32{0, 1}},
+			}},
+		}},
+		{name: "incompatible dimensions", responses: []map[string]any{
+			indexedEmbeddingResponse(0),
+			{"data": []any{
+				map[string]any{"index": 0, "embedding": []float32{1}},
+				map[string]any{"index": 1, "embedding": []float32{1}},
+			}},
+		}},
+		{name: "zero magnitude", responses: []map[string]any{
+			{"data": []any{map[string]any{"index": 0, "embedding": []float32{0, 0}}}},
+			{"data": []any{
+				map[string]any{"index": 0, "embedding": []float32{1, 0}},
+				map[string]any{"index": 1, "embedding": []float32{0, 1}},
+			}},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				response := tc.responses[min(calls, len(tc.responses)-1)]
+				calls++
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer upstream.Close()
+			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
+				Enabled: true, Backend: "upstream", Revision: "r1",
+				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: "openai", Model: "embedding", Timeout: time.Second},
+			}})
+			if _, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", []string{"a", "b"}, 2); err == nil {
+				t.Fatal("malformed embedding rerank response accepted")
+			}
+		})
+	}
+}
+
+func TestEmbeddingRerankRejectsNonFiniteVectorValues(t *testing.T) {
+	for name, value := range map[string]float32{"NaN": float32(math.NaN()), "infinity": float32(math.Inf(1))} {
+		t.Run(name, func(t *testing.T) {
+			response := embeddingBackendResponse{Data: []EmbeddingData{{Index: 0, Embedding: []float32{value}}}}
+			if _, err := orderedEmbeddingVectors(response, 1); err == nil {
+				t.Fatal("non-finite embedding value accepted")
 			}
 		})
 	}

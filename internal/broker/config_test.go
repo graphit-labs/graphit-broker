@@ -280,6 +280,19 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 	}
 }
 
+func TestConfigAcceptsRerankProviderParity(t *testing.T) {
+	for _, protocol := range rerankUpstreamProtocols {
+		cfg := Config{Services: ServicesConfig{Rerank: RerankServiceConfig{
+			Enabled: true, Backend: "upstream", Revision: "r",
+			Upstream: HTTPUpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
+		}}}
+		cfg.defaults()
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("protocol %q rejected: %v", protocol, err)
+		}
+	}
+}
+
 func TestConfigSelectsCatalogModelsAndRejectsRemovedLegacyLocalFields(t *testing.T) {
 	input := `
 models:

@@ -102,7 +102,9 @@ or the local model while leaving the response contract stable.
 ```
 
 The response contains indexed relevance scores under the versioned Graphit common contract.
-Headers include `X-Graphit-Rerank-Revision` and `X-Graphit-Cache`.
+Native rerank providers supply those scores directly. Embedding-only providers are adapted by
+cosine-scoring the configured provider's query and document vectors, then applying `top_n` with
+original-index tie breaking. Headers include `X-Graphit-Rerank-Revision` and `X-Graphit-Cache`.
 
 ## S3 pre-signed request
 
