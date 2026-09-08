@@ -124,7 +124,7 @@ Use:
 - a native/public Graphit login client using Authorization Code + PKCE;
 - a broker API audience/resource for consumer access;
 - optionally RFC 8693 token exchange when MCP and broker audiences differ;
-- a confidential broker administration web client.
+- a confidential broker administration web client, unless the UI is deliberately local-token-only.
 
 Grant only required scopes and map stable claims. Do not use email as the immutable superadmin key.
 

@@ -51,6 +51,15 @@ func TestControlStorePersistsConfigurationRolesAndAssignmentsAcrossRestart(t *te
 	if allowed, err := reopened.Authorize(ctx, "subject-auditor", "grants.read", "root"); err != nil || !allowed {
 		t.Fatalf("assigned authorization=%v err=%v", allowed, err)
 	}
+	if err := reopened.AssignRole(ctx, "subject-user", userRole); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := reopened.Authorize(ctx, "subject-user", "projects.read", "root"); err != nil || !allowed {
+		t.Fatalf("user project authorization=%v err=%v", allowed, err)
+	}
+	if allowed, err := reopened.Authorize(ctx, "subject-user", "configuration.read", "root"); err != nil || allowed {
+		t.Fatalf("user configuration authorization=%v err=%v", allowed, err)
+	}
 	if mode := fileMode(t, filepath.Dir(path)); mode != 0o700 {
 		t.Fatalf("SQLite directory mode=%o", mode)
 	}

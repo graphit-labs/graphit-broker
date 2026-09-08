@@ -15,9 +15,13 @@ import (
 )
 
 type AdminIdentity struct {
-	Subject string `json:"subject"`
-	Name    string `json:"name,omitempty"`
-	Email   string `json:"email,omitempty"`
+	Issuer       string   `json:"issuer,omitempty"`
+	Subject      string   `json:"subject"`
+	Name         string   `json:"name,omitempty"`
+	Email        string   `json:"email,omitempty"`
+	Username     string   `json:"username,omitempty"`
+	Organization string   `json:"organization,omitempty"`
+	Teams        []string `json:"teams,omitempty"`
 }
 
 type AdminIdentityProvider interface {
@@ -30,6 +34,7 @@ type oidcAdminProvider struct {
 	oauth      oauth2.Config
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client
+	config     AdminOIDCConfig
 }
 
 func NewAdminIdentityProvider(ctx context.Context, cfg AdminOIDCConfig) (AdminIdentityProvider, error) {
@@ -47,7 +52,7 @@ func NewAdminIdentityProvider(ctx context.Context, cfg AdminOIDCConfig) (AdminId
 			ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURL,
 			Endpoint: provider.Endpoint(), Scopes: scopes,
 		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}), httpClient: httpClient,
+		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}), httpClient: httpClient, config: cfg,
 	}, nil
 }
 
@@ -77,7 +82,7 @@ func (p *oidcAdminProvider) Exchange(ctx context.Context, code, verifier, nonce 
 	if idToken.Nonce != nonce {
 		return AdminIdentity{}, errors.New("administration ID token nonce mismatch")
 	}
-	return adminIdentityFromToken(idToken)
+	return adminIdentityFromToken(idToken, p.config)
 }
 
 func (p *oidcAdminProvider) Verify(ctx context.Context, raw string) (AdminIdentity, error) {
@@ -86,7 +91,7 @@ func (p *oidcAdminProvider) Verify(ctx context.Context, raw string) (AdminIdenti
 	if err != nil {
 		return AdminIdentity{}, err
 	}
-	return adminIdentityFromToken(token)
+	return adminIdentityFromToken(token, p.config)
 }
 
 func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context {
@@ -96,18 +101,36 @@ func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context 
 	return context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 }
 
-func adminIdentityFromToken(token *oidc.IDToken) (AdminIdentity, error) {
+func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIdentity, error) {
 	if token == nil || strings.TrimSpace(token.Subject) == "" {
 		return AdminIdentity{}, errors.New("administration ID token has no subject")
 	}
-	var claims struct {
-		Name  string `json:"name"`
-		Email string `json:"email"`
-	}
+	var claims map[string]any
 	if err := token.Claims(&claims); err != nil {
 		return AdminIdentity{}, fmt.Errorf("decode administration ID token claims: %w", err)
 	}
-	return AdminIdentity{Subject: token.Subject, Name: strings.TrimSpace(claims.Name), Email: strings.TrimSpace(claims.Email)}, nil
+	name, err := claimString(claims, "name", false)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	email, err := claimString(claims, "email", false)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	username, err := claimString(claims, cfg.UsernameClaim, false)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	organization, err := claimString(claims, cfg.OrganizationClaim, false)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	teams, err := claimStrings(claims, cfg.TeamsClaim)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	return AdminIdentity{Issuer: token.Issuer, Subject: token.Subject, Name: name, Email: email,
+		Username: username, Organization: organization, Teams: teams}, nil
 }
 
 func randomURLToken(bytes int) (string, error) {

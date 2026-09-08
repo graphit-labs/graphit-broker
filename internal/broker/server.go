@@ -77,7 +77,7 @@ func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func
 		presigner = NewAWSPresignService(cfg.Services.S3)
 	}
 	var adminOIDC AdminIdentityProvider
-	if cfg.Administration.Enabled {
+	if cfg.Administration.Enabled && cfg.Administration.OIDC.configured() {
 		adminOIDC, err = factory(ctx, cfg.Administration.OIDC)
 		if err != nil {
 			return nil, err
@@ -117,8 +117,11 @@ func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *Cont
 		mux.HandleFunc("GET /admin/{$}", s.adminPage)
 		mux.HandleFunc("GET /admin/auth/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/auth/callback", s.adminCallback)
+		mux.HandleFunc("POST /admin/auth/local", s.adminLocalLogin)
 		mux.HandleFunc("POST /admin/auth/logout", s.adminLogout)
+		mux.HandleFunc("GET /admin/api/v1/login-options", s.adminLoginOptions)
 		mux.Handle("GET /admin/api/v1/session", s.requireAdministration("session.read", http.HandlerFunc(s.adminSession)))
+		mux.Handle("GET /admin/api/v1/projects", s.requireAdministration("projects.read", http.HandlerFunc(s.adminProjects)))
 		mux.Handle("GET /admin/api/v1/config", s.requireAdministration("configuration.read", http.HandlerFunc(s.adminConfig)))
 		mux.Handle("PUT /admin/api/v1/config", s.requireAdministration("configuration.write", http.HandlerFunc(s.adminConfig)))
 		mux.Handle("GET /admin/api/v1/grants", s.requireAdministration("grants.read", http.HandlerFunc(s.adminGrants)))

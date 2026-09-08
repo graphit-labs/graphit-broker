@@ -6,7 +6,7 @@ grants, administrative roles, and role assignments.
 
 ## Bootstrap OIDC client
 
-Register a confidential OIDC web application:
+For OIDC login, register a confidential OIDC web application:
 
 - exact redirect URI: `https://BROKER/admin/auth/callback`;
 - authorization-code flow;
@@ -14,32 +14,45 @@ Register a confidential OIDC web application:
 - a client secret delivered to the broker as a secret;
 - HTTPS except for deliberate loopback development.
 
-Set `BROKER_SUPERADMIN_SUBJECT` to the exact immutable `sub` of the first administrator. On an
-empty role-assignment table only this subject can sign in. The superadmin bypass is evaluated from
-the deployment value on every request and cannot be changed by restoring/editing database state.
+Set `BROKER_SUPERADMIN_SUBJECT` to the exact immutable OIDC `sub` or configured API-key `subject`
+of the first administrator. On an empty role-assignment table only this subject can sign in. The
+superadmin bypass is evaluated from the deployment value on every request and cannot be changed by
+restoring/editing database state. A local-only deployment may omit `administration.oidc` when at
+least one `authentication.api_keys` identity is configured.
 
-The browser login uses state, nonce, PKCE, a short-lived database flow record, and a secure
-`HttpOnly`, `SameSite=Lax` session cookie. State-changing cookie requests also require the
-per-session `X-CSRF-Token`.
+The browser OIDC login uses state, nonce, PKCE, and a short-lived database flow record. Local login
+accepts an existing `authentication.api_keys` token once and validates it with the normal consumer
+authenticator. Both flows issue a secure `HttpOnly`, `SameSite=Lax` session cookie; the API key is
+not persisted by the UI. State-changing cookie requests also require the per-session
+`X-CSRF-Token`.
 
 ## UI
 
-The UI has three sections:
+The UI has four sections, shown according to the signed-in subject's permissions:
 
-1. **Configuration** edits strict redacted YAML. Existing secrets appear as
+1. **Projects** lists the exact projects available through the subject's current Hub grants and
+   provides copyable `graphit provider add` and `graphit login` commands tailored to the current
+   OIDC or API-key session. A wildcard grant is shown as access to all projects because project
+   metadata is resolved by Graphit Hub after CLI login.
+2. **Configuration** edits strict redacted YAML. Existing secrets appear as
    `[configured-secret]`; leave the marker to retain, replace it to rotate, or clear it to
    remove. Database driver/DSN and bootstrap superadmin remain deployment-owned.
-2. **Resource grants** performs immediate create/update/delete operations. Every form submission
+3. **Resource grants** performs immediate create/update/delete operations. Every form submission
    includes the displayed ACL revision; a concurrent edit is rejected and must be reloaded.
-3. **Roles & users** creates action-based roles and assigns them to exact OIDC `sub` values.
+4. **Roles & users** creates action-based roles and assigns them to exact OIDC `sub` or API-key
+   `subject` values.
 
-The built-in `admin` role always has every currently supported action and cannot be deleted.
+The built-in `admin` role always has every currently supported action. The built-in `user` role
+has only `session.read` and `projects.read`. Neither built-in role can be deleted. Assign `user` to
+an exact OIDC `sub` or `authentication.api_keys[].subject` to let that identity enter the UI without
+exposing any administrative screen.
 Custom roles may contain `session.read`, `configuration.read`,
 `configuration.write`, `grants.read`, `grants.write`, `roles.read`,
-`roles.write`, or `*`.
+`roles.write`, `projects.read`, or `*`.
 
-Administrative roles do not grant consumer access. A person may administer grants while having no
-Hub/S3/AI grant, or consume services while having no administration role.
+UI roles do not grant consumer access. The projects list is filtered independently through current
+resource grants using the verified OIDC or API-key subject, username, organization, and teams. An
+identity with the `user` role but no matching Hub grant sees an empty project list.
 
 ## Grant API workflow
 

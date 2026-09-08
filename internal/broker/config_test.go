@@ -66,10 +66,19 @@ func TestAdministrationConfigUsesEnvironmentSuperadminAndRejectsRemoteHTTPCallba
 database:
   driver: sqlite
   dsn: /tmp/broker.db
+authentication:
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: preferred_username
+      organization_claim: organization.id
+      teams_claim: groups
 administration:
   enabled: true
   superadmin_subject: yaml-subject
   session_ttl: 1h
+  cli:
+    oidc_client_id: graphit-cli
   oidc:
     issuer: https://identity.example.com
     client_id: broker-admin
@@ -88,9 +97,42 @@ administration:
 	if cfg.Administration.SuperadminSubject != "environment-subject" {
 		t.Fatalf("superadmin=%q", cfg.Administration.SuperadminSubject)
 	}
+	if cfg.Administration.CLI.ProviderName != "organization-broker" || cfg.Administration.OIDC.UsernameClaim != "preferred_username" || cfg.Administration.OIDC.TeamsClaim != "groups" {
+		t.Fatalf("administration defaults=%#v", cfg.Administration)
+	}
 	cfg.Administration.OIDC.RedirectURL = "http://broker.example.com/admin/auth/callback"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS except on loopback") {
 		t.Fatalf("remote HTTP callback validation=%v", err)
+	}
+	cfg.Administration.OIDC.RedirectURL = "http://localhost:8080/admin/auth/callback"
+	cfg.Administration.CLI.OIDCRedirectURI = "https://identity.example.com/callback"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTP loopback") {
+		t.Fatalf("CLI callback validation=%v", err)
+	}
+}
+
+func TestAdministrationAllowsLocalAPIKeyWithoutOIDC(t *testing.T) {
+	input := `
+database:
+  driver: sqlite
+  dsn: /tmp/broker.db
+authentication:
+  api_keys:
+    - name: local
+      token: local-secret
+      subject: local-root
+      username: root
+administration:
+  enabled: true
+  superadmin_subject: local-root
+  session_ttl: 1h
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Administration.OIDC.configured() || cfg.Administration.CLI.ProviderName != "organization-broker" {
+		t.Fatalf("local administration config=%#v", cfg.Administration)
 	}
 }
 

@@ -19,7 +19,7 @@ or upstream secrets.
 | startup cannot connect | driver/DSN/TLS/network/credentials | `BROKER_DATABASE_*`, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
-| admin gets 403 | wrong superadmin `sub` or no role | deployment subject and assignments |
+| UI identity gets 403 | wrong OIDC/API-key superadmin subject or no role | deployment subject and assignments |
 | admin write gets 409 | another admin changed the revision | reload and reapply |
 | Hub outage does not use projects.json | expected secure behavior | selected broker is sole authority |
 | pre-sign gets 403 | missing S3 capability/operation/project/prefix | grant and route |

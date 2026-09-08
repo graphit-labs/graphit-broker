@@ -76,22 +76,38 @@ administration:
   enabled: true
   superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?required}"
   session_ttl: 8h
+  cli:
+    provider_name: organization-broker
+    profile_name: organization-broker
+    oidc_client_id: graphit-cli
+    oidc_redirect_uri: ""
   oidc:
     issuer: https://identity.example.com
     client_id: graphit-broker-admin
     client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
     redirect_url: https://broker.example.com/admin/auth/callback
     scopes: [openid, profile, email]
+    username_claim: preferred_username
+    organization_claim: organization.id
+    teams_claim: groups
 ```
 
-Administration uses a separate confidential OIDC client. The callback may use HTTP only on a
-loopback host. Session TTL must be between 5 minutes and 168 hours. The environment value
-`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start.
+When present, administration OIDC uses a separate confidential client. The callback may use HTTP
+only on a loopback host. OIDC may be omitted for a local-only UI backed by at least one
+`authentication.api_keys` identity. Session TTL must be between 5 minutes and 168 hours. The environment value
+`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start. The three identity claim mappings let
+the projects UI evaluate the same `user`, `organization`, and `team` resource grants as consumer
+requests. When omitted, they inherit from a consumer OIDC issuer with the same issuer URL.
 
-Consumer API keys are not an alternative administration login mechanism. When administration is
-enabled, the administration UI and API require the configured administration OIDC provider; there
-is no local username/password administration login. A self-hosted issuer such as Keycloak or Dex
-can provide OIDC for an otherwise local deployment.
+`administration.cli` supplies the non-secret public/native client details used to render complete
+`graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick
+a free loopback port; when set, it must be an HTTP loopback URL with an explicit port.
+
+An identity from `authentication.api_keys` can also enter the UI with its original local token when
+its configured `subject` has an assigned UI role. The token is validated once by the existing
+consumer authenticator and exchanged for a short-lived, `HttpOnly`, CSRF-protected UI session; the
+API key is not persisted by the UI. For local-only bootstrap, set `BROKER_SUPERADMIN_SUBJECT` to one
+configured API-key `subject`. There is no separate local username/password store.
 
 ## Model catalog
 

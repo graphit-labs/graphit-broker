@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +68,10 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil || s.runtime().adminOIDC == nil {
+		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "OIDC administration is unavailable", requestID(r.Context()))
+		return
+	}
 	if oidcError := strings.TrimSpace(r.URL.Query().Get("error")); oidcError != "" {
 		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected administration login", requestID(r.Context()))
 		return
@@ -87,23 +92,74 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "admin_forbidden", "administration access denied", requestID(r.Context()))
 		return
 	}
+	session := AdminSession{Issuer: identity.Issuer, Subject: identity.Subject,
+		Name: identity.Name, Email: identity.Email, Username: identity.Username, Organization: identity.Organization,
+		Teams: identity.Teams}
+	if !s.createAdminSession(w, r, session) {
+		return
+	}
+	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+}
+
+func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil {
+		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "content_type_required", "local login requires application/json", requestID(r.Context()))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	var request struct {
+		Token string `json:"token"`
+	}
+	if err := s.decodeRequest(w, r, &request); err != nil {
+		return
+	}
+	principal, err := s.runtime().authenticator.Authenticate(r.Context(), request.Token)
+	request.Token = ""
+	if err != nil || principal.AuthMethod != "api_key" {
+		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker token is invalid", requestID(r.Context()))
+		return
+	}
+	allowed, err := s.control.Authorize(r.Context(), principal.Subject, "session.read", s.bootstrap.Administration.SuperadminSubject)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "authorization_failed", "could not authorize local login", requestID(r.Context()))
+		return
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "admin_forbidden", "UI access is not assigned to this local identity", requestID(r.Context()))
+		return
+	}
+	session := AdminSession{Issuer: principal.Issuer, Subject: principal.Subject, Username: principal.Username,
+		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Username}
+	if !s.createAdminSession(w, r, session) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) createAdminSession(w http.ResponseWriter, r *http.Request, session AdminSession) bool {
 	token, err := randomURLToken(32)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "login_failed", "could not create administration session", requestID(r.Context()))
-		return
+		writeError(w, http.StatusInternalServerError, "login_failed", "could not create UI session", requestID(r.Context()))
+		return false
 	}
 	csrf, err := randomURLToken(32)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "login_failed", "could not create administration session", requestID(r.Context()))
-		return
+		writeError(w, http.StatusInternalServerError, "login_failed", "could not create UI session", requestID(r.Context()))
+		return false
 	}
-	expires := time.Now().Add(state.config.Administration.SessionTTL)
-	if err := s.control.CreateSession(r.Context(), token, AdminSession{Subject: identity.Subject, Name: identity.Name, Email: identity.Email, CSRFToken: csrf, ExpiresAt: expires}); err != nil {
-		writeError(w, http.StatusInternalServerError, "login_failed", "could not persist administration session", requestID(r.Context()))
-		return
+	expires := time.Now().Add(s.runtime().config.Administration.SessionTTL)
+	session.CSRFToken = csrf
+	session.ExpiresAt = expires
+	if err := s.control.CreateSession(r.Context(), token, session); err != nil {
+		writeError(w, http.StatusInternalServerError, "login_failed", "could not persist UI session", requestID(r.Context()))
+		return false
 	}
 	http.SetCookie(w, s.adminCookie(token, expires))
-	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+	return true
 }
 
 func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
@@ -121,9 +177,19 @@ func (s *Server) adminLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) adminCookie(value string, expires time.Time) *http.Cookie {
 	redirect, _ := url.Parse(s.runtime().config.Administration.OIDC.RedirectURL)
+	publicURL, _ := url.Parse(s.runtime().config.Server.PublicURL)
 	return &http.Cookie{Name: adminCookieName, Value: value, Path: "/", HttpOnly: true,
-		Secure: redirect != nil && redirect.Scheme == "https", SameSite: http.SameSiteLaxMode,
+		Secure: (redirect != nil && redirect.Scheme == "https") || (publicURL != nil && publicURL.Scheme == "https"), SameSite: http.SameSiteLaxMode,
 		Expires: expires.UTC(), MaxAge: int(time.Until(expires).Seconds())}
+}
+
+func (s *Server) adminLoginOptions(w http.ResponseWriter, _ *http.Request) {
+	state := s.runtime()
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"oidc":  state.adminOIDC != nil,
+		"local": len(state.config.Authentication.APIKeys) > 0,
+	})
 }
 
 func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) {
@@ -132,10 +198,156 @@ func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) {
 	permissions, _ := s.control.SubjectPermissions(r.Context(), session.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject": session.Subject, "name": session.Name, "email": session.Email,
+		"username": session.Username, "organization": session.Organization, "teams": session.Teams,
 		"roles": roles, "superadmin": session.Subject == s.bootstrap.Administration.SuperadminSubject,
 		"permissions": permissions,
 		"csrf_token":  session.CSRFToken,
 	})
+}
+
+type userProject struct {
+	ID           string   `json:"id"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func (s *Server) adminProjects(w http.ResponseWriter, r *http.Request) {
+	session := adminSessionFromContext(r.Context())
+	authMethod := "oidc"
+	if strings.HasPrefix(session.Issuer, "apikey:") {
+		authMethod = "api_key"
+	}
+	principal := Principal{Issuer: session.Issuer, Subject: session.Subject, Username: session.Username,
+		Organization: session.Organization, Teams: session.Teams, AuthMethod: authMethod}
+	document, err := s.runtime().acl.ResolveHubAccess(r.Context(), principal)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "projects_read_failed", "could not resolve accessible projects", requestID(r.Context()))
+		return
+	}
+	capabilities := map[string]map[string]struct{}{}
+	allProjects := false
+	for _, rule := range document.Rules {
+		projects := rule.Projects
+		if len(projects) == 0 {
+			projects = []string{"*"}
+		}
+		for _, project := range projects {
+			project = strings.TrimSpace(project)
+			if project == "*" {
+				allProjects = true
+				continue
+			}
+			if capabilities[project] == nil {
+				capabilities[project] = map[string]struct{}{}
+			}
+			for _, capability := range rule.Capabilities {
+				capabilities[project][capability] = struct{}{}
+			}
+		}
+	}
+	ids := make([]string, 0, len(capabilities))
+	for id := range capabilities {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	projects := make([]userProject, 0, len(ids))
+	for _, id := range ids {
+		values := make([]string, 0, len(capabilities[id]))
+		for capability := range capabilities[id] {
+			values = append(values, capability)
+		}
+		sort.Strings(values)
+		projects = append(projects, userProject{ID: id, Capabilities: values})
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"projects": projects, "all_projects": allProjects, "authorization_revision": document.Revision,
+		"provider_command": s.graphitProviderCommand(session),
+	})
+}
+
+func (s *Server) graphitProviderCommand(session AdminSession) string {
+	cfg := s.runtime().config
+	localToken := strings.HasPrefix(session.Issuer, "apikey:")
+	username := session.Username
+	endpoint := strings.TrimRight(strings.TrimSpace(cfg.Server.PublicURL), "/")
+	if endpoint == "" {
+		endpoint = "<BROKER_URL>"
+	}
+	providerName := cfg.Administration.CLI.ProviderName
+	profileName := cfg.Administration.CLI.ProfileName
+	if providerName == "" {
+		providerName = "organization-broker"
+	}
+	if profileName == "" {
+		profileName = providerName
+	}
+	base := "graphit --non-interactive provider add " + shellArgument(providerName)
+	if localToken {
+		if username == "" {
+			username = "<USERNAME>"
+		}
+		command := base + " --type local --broker-endpoint " + shellArgument(endpoint) +
+			" --embedding-mode broker --rerank-mode broker\n\n" +
+			"graphit --non-interactive login --provider " + shellArgument(providerName) + " --profile " + shellArgument(profileName) + " --username " +
+			shellArgument(username) + " --broker-key \"$GRAPHIT_BROKER_KEY\""
+		if session.Organization != "" {
+			command += " --organization " + shellArgument(session.Organization)
+		}
+		for _, team := range session.Teams {
+			command += " --team " + shellArgument(team)
+		}
+		return command
+	}
+	if len(cfg.Authentication.OIDC) == 0 {
+		return base + " --type local \\\n  --broker-endpoint " + shellArgument(endpoint) + " \\\n  --embedding-mode broker --rerank-mode broker"
+	}
+	issuer := cfg.Authentication.OIDC[0]
+	for _, candidate := range cfg.Authentication.OIDC {
+		if strings.TrimRight(candidate.Issuer, "/") == strings.TrimRight(session.Issuer, "/") {
+			issuer = candidate
+			break
+		}
+	}
+	scopes := cleanStrings(append([]string{"openid", "profile", "offline_access"}, issuer.RequiredScopes...))
+	clientID := strings.TrimSpace(cfg.Administration.CLI.OIDCClientID)
+	if clientID == "" {
+		clientID = "<GRAPHIT_OIDC_CLIENT_ID>"
+	}
+	parts := []string{
+		base + " --type oidc",
+		"  --issuer " + shellArgument(strings.TrimRight(issuer.Issuer, "/")),
+		"  --client-id " + shellArgument(clientID),
+		"  --token-auth-method none",
+		"  --scopes " + shellArgument(strings.Join(scopes, ",")),
+	}
+	if cfg.Administration.CLI.OIDCRedirectURI != "" {
+		parts = append(parts, "  --redirect-uri "+shellArgument(cfg.Administration.CLI.OIDCRedirectURI))
+	}
+	if issuer.UsernameClaim != "" {
+		parts = append(parts, "  --username-claim "+shellArgument(issuer.UsernameClaim))
+	}
+	if issuer.OrganizationClaim != "" {
+		parts = append(parts, "  --organization-claim "+shellArgument(issuer.OrganizationClaim))
+	}
+	if issuer.TeamsClaim != "" {
+		parts = append(parts, "  --teams-claim "+shellArgument(issuer.TeamsClaim))
+	}
+	parts = append(parts,
+		"  --broker-endpoint "+shellArgument(endpoint),
+		"  --broker-token-strategy relay",
+	)
+	if len(issuer.Audiences) > 0 {
+		parts = append(parts, "  --broker-audience "+shellArgument(issuer.Audiences[0]))
+	}
+	parts = append(parts, "  --embedding-mode broker --rerank-mode broker\n\ngraphit login --provider "+shellArgument(providerName)+" --profile "+shellArgument(profileName))
+	return strings.Join(parts, " \\\n")
+}
+
+func shellArgument(value string) string {
+	if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (s *Server) adminConfig(w http.ResponseWriter, r *http.Request) {
@@ -358,7 +570,7 @@ func (s *Server) adminAssignments(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireAdministration(action string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.control == nil || s.runtime().adminOIDC == nil {
+		if s.control == nil {
 			writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 			return
 		}
@@ -376,12 +588,18 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 				return
 			}
 		} else if raw := bearerToken(r); raw != "" {
-			identity, err := s.runtime().adminOIDC.Verify(r.Context(), raw)
+			provider := s.runtime().adminOIDC
+			if provider == nil {
+				writeError(w, http.StatusUnauthorized, "admin_unauthorized", "valid UI credentials are required", requestID(r.Context()))
+				return
+			}
+			identity, err := provider.Verify(r.Context(), raw)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, "admin_unauthorized", "valid administration OIDC credentials are required", requestID(r.Context()))
 				return
 			}
-			session = AdminSession{Subject: identity.Subject, Name: identity.Name, Email: identity.Email}
+			session = AdminSession{Issuer: identity.Issuer, Subject: identity.Subject, Name: identity.Name,
+				Email: identity.Email, Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams}
 		} else {
 			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "OIDC administration login is required", requestID(r.Context()))
 			return

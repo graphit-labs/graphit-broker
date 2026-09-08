@@ -142,12 +142,14 @@ The response never contains bucket, region, base prefix, access key, or secret k
 
 ## Administration API
 
-Administration accepts either the secure OIDC session cookie plus CSRF token for state changes, or
-a valid administration OIDC bearer. Every route is protected by an action:
+Administration accepts a secure session cookie created by OIDC or by exchanging an existing
+`authentication.api_keys` token at `POST /admin/auth/local`. State changes require the session CSRF
+token. A valid administration OIDC bearer is also accepted directly. Protected routes are:
 
 | Route | Action | Purpose |
 |---|---|---|
 | `GET /admin/api/v1/session` | `session.read` | identity, roles, actions, CSRF |
+| `GET /admin/api/v1/projects` | `projects.read` | current identity's exact Hub projects and CLI commands |
 | `GET /admin/api/v1/config` | `configuration.read` | redacted YAML and ETag |
 | `PUT /admin/api/v1/config` | `configuration.write` | validate, persist, hot activate |
 | `GET /admin/api/v1/grants` | `grants.read` | list grants and ACL ETag |
@@ -158,6 +160,9 @@ a valid administration OIDC bearer. Every route is protected by an action:
 | `GET /admin/api/v1/roles` | `roles.read` | roles and supported actions |
 | `PUT/DELETE /admin/api/v1/roles/{role}` | `roles.write` | manage role definition |
 | `GET/POST/DELETE /admin/api/v1/role-assignments` | role action | manage exact-sub assignments |
+
+`GET /admin/api/v1/login-options` is public and reports whether OIDC and local-token login are
+available; it contains no credentials or identity data.
 
 Grant and configuration writes require `If-Match` with the current ETag. A stale revision returns
 `409`; a missing precondition returns `428`. Grant CRUD increments only the ACL revision.

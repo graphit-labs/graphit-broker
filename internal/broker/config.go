@@ -78,18 +78,34 @@ type APIKeyConfig struct {
 }
 
 type AdministrationConfig struct {
-	Enabled           bool            `yaml:"enabled" json:"enabled"`
-	SuperadminSubject string          `yaml:"superadmin_subject" json:"superadmin_subject"`
-	SessionTTL        time.Duration   `yaml:"session_ttl" json:"session_ttl"`
-	OIDC              AdminOIDCConfig `yaml:"oidc" json:"oidc"`
+	Enabled           bool             `yaml:"enabled" json:"enabled"`
+	SuperadminSubject string           `yaml:"superadmin_subject" json:"superadmin_subject"`
+	SessionTTL        time.Duration    `yaml:"session_ttl" json:"session_ttl"`
+	OIDC              AdminOIDCConfig  `yaml:"oidc" json:"oidc"`
+	CLI               GraphitCLIConfig `yaml:"cli" json:"cli"`
+}
+
+type GraphitCLIConfig struct {
+	ProviderName    string `yaml:"provider_name" json:"provider_name"`
+	ProfileName     string `yaml:"profile_name" json:"profile_name"`
+	OIDCClientID    string `yaml:"oidc_client_id" json:"oidc_client_id"`
+	OIDCRedirectURI string `yaml:"oidc_redirect_uri" json:"oidc_redirect_uri,omitempty"`
 }
 
 type AdminOIDCConfig struct {
-	Issuer       string   `yaml:"issuer" json:"issuer"`
-	ClientID     string   `yaml:"client_id" json:"client_id"`
-	ClientSecret string   `yaml:"client_secret" json:"client_secret,omitempty"`
-	RedirectURL  string   `yaml:"redirect_url" json:"redirect_url"`
-	Scopes       []string `yaml:"scopes" json:"scopes,omitempty"`
+	Issuer            string   `yaml:"issuer" json:"issuer"`
+	ClientID          string   `yaml:"client_id" json:"client_id"`
+	ClientSecret      string   `yaml:"client_secret" json:"client_secret,omitempty"`
+	RedirectURL       string   `yaml:"redirect_url" json:"redirect_url"`
+	Scopes            []string `yaml:"scopes" json:"scopes,omitempty"`
+	UsernameClaim     string   `yaml:"username_claim" json:"username_claim,omitempty"`
+	OrganizationClaim string   `yaml:"organization_claim" json:"organization_claim,omitempty"`
+	TeamsClaim        string   `yaml:"teams_claim" json:"teams_claim,omitempty"`
+}
+
+func (c AdminOIDCConfig) configured() bool {
+	return strings.TrimSpace(c.Issuer) != "" || strings.TrimSpace(c.ClientID) != "" ||
+		strings.TrimSpace(c.ClientSecret) != "" || strings.TrimSpace(c.RedirectURL) != ""
 }
 
 type ACLRuleConfig struct {
@@ -287,6 +303,27 @@ func (c *Config) defaults() {
 	if len(c.Administration.OIDC.Scopes) == 0 {
 		c.Administration.OIDC.Scopes = []string{"openid", "profile", "email"}
 	}
+	if c.Administration.CLI.ProviderName == "" {
+		c.Administration.CLI.ProviderName = "organization-broker"
+	}
+	if c.Administration.CLI.ProfileName == "" {
+		c.Administration.CLI.ProfileName = c.Administration.CLI.ProviderName
+	}
+	for _, issuer := range c.Authentication.OIDC {
+		if strings.TrimRight(strings.TrimSpace(issuer.Issuer), "/") != strings.TrimRight(strings.TrimSpace(c.Administration.OIDC.Issuer), "/") {
+			continue
+		}
+		if c.Administration.OIDC.UsernameClaim == "" {
+			c.Administration.OIDC.UsernameClaim = issuer.UsernameClaim
+		}
+		if c.Administration.OIDC.OrganizationClaim == "" {
+			c.Administration.OIDC.OrganizationClaim = issuer.OrganizationClaim
+		}
+		if c.Administration.OIDC.TeamsClaim == "" {
+			c.Administration.OIDC.TeamsClaim = issuer.TeamsClaim
+		}
+		break
+	}
 	if strings.TrimSpace(c.Models.Directory) == "" {
 		c.Models.Directory = "/var/cache/graphit-broker/models"
 	}
@@ -422,17 +459,29 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.Administration.SuperadminSubject) == "" {
 			return errors.New("administration.superadmin_subject or BROKER_SUPERADMIN_SUBJECT is required when administration is enabled")
 		}
-		if err := validateHTTPSURL(c.Administration.OIDC.Issuer, "administration OIDC issuer"); err != nil {
-			return err
-		}
-		if strings.TrimSpace(c.Administration.OIDC.ClientID) == "" {
-			return errors.New("administration.oidc.client_id is required when administration is enabled")
-		}
-		if err := validateHTTPSOrLoopbackURL(c.Administration.OIDC.RedirectURL, "administration OIDC redirect URL"); err != nil {
-			return err
+		if c.Administration.OIDC.configured() {
+			if err := validateHTTPSURL(c.Administration.OIDC.Issuer, "administration OIDC issuer"); err != nil {
+				return err
+			}
+			if strings.TrimSpace(c.Administration.OIDC.ClientID) == "" {
+				return errors.New("administration.oidc.client_id is required when administration OIDC is configured")
+			}
+			if err := validateHTTPSOrLoopbackURL(c.Administration.OIDC.RedirectURL, "administration OIDC redirect URL"); err != nil {
+				return err
+			}
+		} else if len(c.Authentication.APIKeys) == 0 {
+			return errors.New("administration requires an OIDC client or at least one authentication.api_keys identity")
 		}
 		if c.Administration.SessionTTL < 5*time.Minute || c.Administration.SessionTTL > 7*24*time.Hour {
 			return errors.New("administration.session_ttl must be between 5m and 168h")
+		}
+		if !safeSegment(c.Administration.CLI.ProviderName) || !safeSegment(c.Administration.CLI.ProfileName) {
+			return errors.New("administration.cli provider_name and profile_name must be safe names")
+		}
+		if c.Administration.CLI.OIDCRedirectURI != "" {
+			if err := validateGraphitCLIRedirect(c.Administration.CLI.OIDCRedirectURI); err != nil {
+				return err
+			}
 		}
 	}
 	if !filepath.IsAbs(c.Models.Directory) {
@@ -622,6 +671,19 @@ func validateHTTPSOrLoopbackURL(raw, name string) error {
 		return nil
 	}
 	return fmt.Errorf("%s must use HTTPS except on loopback", name)
+}
+
+func validateGraphitCLIRedirect(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "http" || u.Port() == "" {
+		return errors.New("Graphit CLI OIDC redirect URI must be an HTTP loopback URL with an explicit port")
+	}
+	host := strings.ToLower(u.Hostname())
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("Graphit CLI OIDC redirect URI must be an HTTP loopback URL with an explicit port")
+	}
+	return nil
 }
 
 func validateHTTPURL(raw, name string) error {

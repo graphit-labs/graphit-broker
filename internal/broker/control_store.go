@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,12 +16,17 @@ import (
 
 var ErrRevisionConflict = errors.New("revision conflict")
 
-const adminRole = "admin"
+const (
+	adminRole = "admin"
+	userRole  = "user"
+)
 
 var adminActions = []string{
 	"session.read", "configuration.read", "configuration.write",
-	"grants.read", "grants.write", "roles.read", "roles.write",
+	"grants.read", "grants.write", "roles.read", "roles.write", "projects.read",
 }
+
+var userActions = []string{"session.read", "projects.read"}
 
 // ControlStore owns all durable broker state. Domain persistence is portable across the SQL
 // backends supported by DatabaseDialect.
@@ -47,11 +53,15 @@ type RoleAssignment struct {
 }
 
 type AdminSession struct {
-	Subject   string
-	Name      string
-	Email     string
-	CSRFToken string
-	ExpiresAt time.Time
+	Issuer       string
+	Subject      string
+	Name         string
+	Email        string
+	Username     string
+	Organization string
+	Teams        []string
+	CSRFToken    string
+	ExpiresAt    time.Time
 }
 
 type OIDCFlow struct {
@@ -116,6 +126,7 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 		`CREATE TABLE IF NOT EXISTS role_permissions (role VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, PRIMARY KEY(role, action), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS role_assignments (subject VARCHAR(512) NOT NULL, role VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, role), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_sessions (token_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, csrf_token VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
@@ -145,6 +156,17 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 	for _, action := range adminActions {
 		if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO role_permissions(role, action) VALUES(?, ?)`)), adminRole, action); err != nil {
 			return fmt.Errorf("seed admin permissions: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO roles(name, created_at) VALUES(?, ?)`)), userRole, now); err != nil {
+		return fmt.Errorf("seed user role: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM role_permissions WHERE role=?`), userRole); err != nil {
+		return fmt.Errorf("reset user permissions: %w", err)
+	}
+	for _, action := range userActions {
+		if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO role_permissions(role, action) VALUES(?, ?)`)), userRole, action); err != nil {
+			return fmt.Errorf("seed user permissions: %w", err)
 		}
 	}
 	encoded, err := yaml.Marshal(seed)
@@ -296,6 +318,8 @@ func (s *ControlStore) SetRole(ctx context.Context, role AdminRole) error {
 	role.Permissions = cleanStrings(role.Permissions)
 	if role.Name == adminRole {
 		role.Permissions = append([]string(nil), adminActions...)
+	} else if role.Name == userRole {
+		role.Permissions = append([]string(nil), userActions...)
 	}
 	if !safeSegment(role.Name) || len(role.Permissions) == 0 {
 		return errors.New("role needs a safe name and at least one permission")
@@ -326,8 +350,8 @@ func (s *ControlStore) SetRole(ctx context.Context, role AdminRole) error {
 
 func (s *ControlStore) DeleteRole(ctx context.Context, role string) error {
 	role = strings.TrimSpace(role)
-	if role == adminRole {
-		return errors.New("the built-in admin role cannot be deleted")
+	if role == adminRole || role == userRole {
+		return errors.New("built-in roles cannot be deleted")
 	}
 	if !safeSegment(role) {
 		return errors.New("a safe role name is required")
@@ -672,8 +696,23 @@ func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState string) (OIDCFl
 }
 
 func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, session AdminSession) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO admin_sessions(token_hash, subject, name, email, csrf_token, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`), tokenHash(rawToken), session.Subject, session.Name, session.Email, session.CSRFToken, session.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hash := tokenHash(rawToken)
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_sessions(token_hash, subject, name, email, csrf_token, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`), hash, session.Subject, session.Name, session.Email, session.CSRFToken, session.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	teams, err := json.Marshal(cleanStrings(session.Teams))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json) VALUES(?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSession, error) {
@@ -687,6 +726,14 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 	if err != nil || !session.ExpiresAt.After(time.Now()) {
 		_ = s.DeleteSession(ctx, rawToken)
 		return AdminSession{}, errors.New("administration session expired")
+	}
+	var teams string
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT issuer, username, organization, teams_json FROM admin_session_principals WHERE token_hash=?`), tokenHash(rawToken)).Scan(&session.Issuer, &session.Username, &session.Organization, &teams)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return AdminSession{}, err
+	}
+	if err == nil && json.Unmarshal([]byte(teams), &session.Teams) != nil {
+		return AdminSession{}, errors.New("administration session identity is invalid")
 	}
 	return session, nil
 }

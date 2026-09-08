@@ -46,9 +46,9 @@ Administrative RBAC and resource authorization are separate:
 
 ## Quick start with Docker
 
-Requirements: Docker 24+, an OIDC web client for administration, an immutable `sub` for the first
-superadmin, and the credentials for any enabled upstream services. Local AI does not need provider
-credentials.
+Requirements: Docker 24+, either an OIDC web client or an `authentication.api_keys` identity for
+administration, an immutable OIDC/API-key subject for the first superadmin, and the credentials for
+any enabled upstream services. Local AI does not need provider credentials.
 
 ```bash
 cp .env.example .env

@@ -1,12 +1,16 @@
 # OIDC integration
 
-The broker uses two OIDC clients/trust paths:
+When OIDC is configured, the broker uses two OIDC clients/trust paths:
 
 - consumer bearer validation for Graphit MCP, Hub, S3, embedding, and rerank requests;
 - a separate confidential web client for administration login.
 
 They may use the same issuer, but their client IDs, redirect behavior, audiences, and policies are
 independent.
+
+Administration OIDC is optional when the UI is intentionally local-only and at least one
+`authentication.api_keys` identity is configured. That mode does not change consumer OIDC
+validation.
 
 ## Consumer issuer
 
