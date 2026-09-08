@@ -10,7 +10,7 @@ evaluates deny-by-default resource grants from SQL, and exposes:
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
   Cohere/Voyage/Jina adapters, or embedding-simulated OpenAI and Google Gemini adapters;
-- `/admin/` — an OIDC-protected administration UI for configuration, resource grants, roles,
+- `/admin/` — an OIDC/local-password administration UI for read-only configuration, resource grants, roles,
   and user-role assignments.
 
 Only the broker knows AI API keys, upstream models, S3 credentials, bucket, region, endpoint,
@@ -26,17 +26,23 @@ or anonymous access.
 
 ## Persistence and authorization
 
-All durable broker state is stored in the configured SQL database: complete mutable configuration,
-normalized resource grants, grant revision, administrative roles and assignments, OIDC login
-flows, and sessions. SQLite is the default single-node deployment; PostgreSQL and MySQL use the
-same domain model and transaction boundaries.
+`config.yaml`, after environment expansion, is the sole configuration authority. Changes are
+applied by deployment/restart and the administration API exposes only a redacted read-only view.
+SQL stores normalized resource grants, grant revision, administrative roles and assignments, OIDC
+login flows, and sessions—but never the configuration document or its resolved secrets. SQLite is
+the default single-node deployment; PostgreSQL and MySQL use the same domain model.
 
-`config.yaml` seeds an empty database. It is not an ACL file and is not re-imported after the
-database has state. Resource grants are created through the UI or administration API. A new
-database has no grants and therefore denies every consumer operation.
+Resource grants are created through the UI or administration API. A new database has no grants and
+therefore denies every consumer operation.
 
 There is deliberately no migration, compatibility loader, dual read/write, or fallback path in
 this development version. Recreate the database when the schema version changes.
+
+Local identities use a unique `username`, a pepper of at least 32 bytes, and the matching Argon2id
+PHC. Generate that PHC with `graphit-broker --hash-password --password-pepper-env ENV_NAME`, or use
+`--hash-password-stdin` for automation; the password remains in TTY/stdin and only the pepper is
+read from the named environment variable. See [configuration](docs/configuration.md) and
+[administration bootstrap](docs/administration.md).
 
 Administrative RBAC and resource authorization are separate:
 
@@ -48,7 +54,8 @@ Administrative RBAC and resource authorization are separate:
 ## Quick start with Docker
 
 Requirements: Docker 24+, either an OIDC web client or an `authentication.api_keys` identity for
-administration, an immutable OIDC/API-key subject for the first superadmin, and the credentials for
+administration, a first local identity with `roles: [admin]` (or an OIDC `role_claim` that yields
+`admin`), a per-identity password pepper matching its generated Argon2id verifier, and the credentials for
 any enabled upstream services. Local AI does not need provider credentials.
 
 ```bash

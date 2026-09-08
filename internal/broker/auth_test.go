@@ -106,18 +106,37 @@ func TestTokenScopesAndClaimSelectorsSupportCommonIdPShapes(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorAcceptsConfiguredAPIKeyInConstantDigestForm(t *testing.T) {
-	digest := sha256.Sum256([]byte("secret-key"))
-	a, err := newAuthenticator(context.Background(), AuthenticationConfig{APIKeys: []APIKeyConfig{{Name: "ci", TokenSHA256: fmtHex(digest[:]), Subject: "ci", Username: "automation", Organization: "acme"}}}, false, http.DefaultClient)
+func TestAuthenticatorAcceptsUsernameSelectedPepperedArgon2idPassword(t *testing.T) {
+	a, err := newAuthenticator(context.Background(), AuthenticationConfig{APIKeys: []APIKeyConfig{
+		{Username: "automation", PasswordHash: mustPasswordHash(t, "secret-key"), Pepper: testPasswordPepper, Subject: "ci", Organization: "acme"},
+		{Username: "deployment", PasswordHash: mustPasswordHash(t, "deployment-key"), Pepper: testPasswordPepper, Subject: "deploy"},
+	}}, false, http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := a.Authenticate(context.Background(), "secret-key")
+	principal, err := a.Authenticate(context.Background(), "automation:secret-key")
 	if err != nil || principal.AuthMethod != "api_key" {
 		t.Fatalf("principal=%#v err=%v", principal, err)
 	}
-	if _, err := a.Authenticate(context.Background(), "wrong"); err == nil {
+	if _, err := a.Authenticate(context.Background(), "automation:wrong"); err == nil {
 		t.Fatal("wrong API key accepted")
+	}
+	if principal, err := a.Authenticate(context.Background(), "deployment:deployment-key"); err != nil || principal.Subject != "deploy" {
+		t.Fatalf("second username principal=%#v err=%v", principal, err)
+	}
+	if _, err := a.Authenticate(context.Background(), "unknown:secret-key"); err == nil {
+		t.Fatal("unknown API key username accepted")
+	}
+	if _, err := a.Authenticate(context.Background(), "secret-key"); err == nil {
+		t.Fatal("unnamed password accepted")
+	}
+	wrongPepper := AuthenticationConfig{APIKeys: []APIKeyConfig{{Username: "automation", PasswordHash: mustPasswordHash(t, "secret-key"), Pepper: "different-password-pepper-01234567", Subject: "ci"}}}
+	other, err := newAuthenticator(context.Background(), wrongPepper, false, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Authenticate(context.Background(), "automation:secret-key"); err == nil {
+		t.Fatal("password authenticated with a different pepper")
 	}
 }
 
@@ -144,13 +163,4 @@ func cloneClaims(input map[string]any) map[string]any {
 	var output map[string]any
 	_ = json.Unmarshal(encoded, &output)
 	return output
-}
-func fmtHex(value []byte) string {
-	const alphabet = "0123456789abcdef"
-	out := make([]byte, len(value)*2)
-	for i, b := range value {
-		out[i*2] = alphabet[b>>4]
-		out[i*2+1] = alphabet[b&15]
-	}
-	return string(out)
 }

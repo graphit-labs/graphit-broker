@@ -10,11 +10,10 @@ server:
 
 authentication:
   api_keys:
-    # SHA-256 of the deliberately synthetic value "graphit-example-only".
-    - name: "smoke-test"
-      token_sha256: "7d1587faea36cfc02707965ca9f2f56d59bdf16519ea0ff4b62ab9c8e45c4421"
+    - username: "smoke-test"
+      password_hash: "${BROKER_EXAMPLE_PASSWORD_HASH:?generate with graphit-broker --hash-password --password-pepper-env BROKER_EXAMPLE_PASSWORD_PEPPER}"
+      pepper: "${BROKER_EXAMPLE_PASSWORD_PEPPER:?set at least 32 bytes}"
       subject: "smoke-test"
-      username: "smoke-test"
 
 services:
   embeddings:

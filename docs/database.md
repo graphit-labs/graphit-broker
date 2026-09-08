@@ -1,9 +1,11 @@
 # Database backends
 
-The broker has one authoritative SQL database selected by the deployment. Every durable feature
-uses it: broker configuration, resource grants and revision, administration roles and assignments,
-OIDC login state, and sessions. In-memory AI result caches and generated pre-signed URLs are not
-persisted.
+The broker has one SQL database selected by the deployment. It stores resource grants and revision,
+administration roles and assignments, OIDC login state, and sessions. It never stores `config.yml`,
+the expanded configuration, local password hashes/peppers, or deployment secrets. Local sessions
+store only a keyed credential fingerprint so a configuration change can force reauthentication;
+the fingerprint cannot recover the password, PHC, or pepper. In-memory AI result caches and generated
+pre-signed URLs are not persisted.
 
 ## Common configuration
 
@@ -75,9 +77,10 @@ replicas may share the same MySQL database; the same transactional revision fenc
 
 ## Backup and restore
 
-Back up the database together with the deployment definition and injected secrets. The database
-contains sensitive provider secrets, direct S3 signing credentials, administrative identities,
-and live session records. Encrypt backups and restrict access.
+Back up the database together with the deployment definition, while backing up injected secrets
+through the secret manager's own mechanism. The database contains authorization state,
+administrative identities, and live session records, but not configuration/provider/S3 secrets.
+Encrypt backups and restrict access.
 
 Restore into the same broker build/schema version, then start one broker and verify `/readyz`,
 discovery, an administrative read, and representative denied/allowed consumer requests before

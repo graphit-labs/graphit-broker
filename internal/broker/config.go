@@ -1,8 +1,6 @@
 package broker
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -68,21 +66,21 @@ type OIDCIssuerConfig struct {
 }
 
 type APIKeyConfig struct {
-	Name         string   `yaml:"name"`
-	Token        string   `yaml:"token"`
-	TokenSHA256  string   `yaml:"token_sha256"`
-	Subject      string   `yaml:"subject"`
 	Username     string   `yaml:"username"`
+	PasswordHash string   `yaml:"password_hash"`
+	Pepper       string   `yaml:"pepper"`
+	Subject      string   `yaml:"subject"`
 	Organization string   `yaml:"organization"`
 	Teams        []string `yaml:"teams"`
+	Roles        []string `yaml:"roles"`
 }
 
 type AdministrationConfig struct {
-	Enabled           bool             `yaml:"enabled" json:"enabled"`
-	SuperadminSubject string           `yaml:"superadmin_subject" json:"superadmin_subject"`
-	SessionTTL        time.Duration    `yaml:"session_ttl" json:"session_ttl"`
-	OIDC              AdminOIDCConfig  `yaml:"oidc" json:"oidc"`
-	CLI               GraphitCLIConfig `yaml:"cli" json:"cli"`
+	Enabled     bool             `yaml:"enabled" json:"enabled"`
+	TokenPepper string           `yaml:"token_pepper" json:"token_pepper,omitempty"`
+	SessionTTL  time.Duration    `yaml:"session_ttl" json:"session_ttl"`
+	OIDC        AdminOIDCConfig  `yaml:"oidc" json:"oidc"`
+	CLI         GraphitCLIConfig `yaml:"cli" json:"cli"`
 }
 
 type GraphitCLIConfig struct {
@@ -219,9 +217,6 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
-	}
-	if subject := strings.TrimSpace(getenv("BROKER_SUPERADMIN_SUBJECT")); subject != "" {
-		cfg.Administration.SuperadminSubject = subject
 	}
 	if driver := strings.TrimSpace(getenv("BROKER_DATABASE_DRIVER")); driver != "" {
 		cfg.Database.Driver = driver
@@ -456,26 +451,33 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+	apiKeyUsernames := map[string]struct{}{}
 	for i, key := range c.Authentication.APIKeys {
-		if key.Token == "" && key.TokenSHA256 == "" {
-			return fmt.Errorf("authentication.api_keys[%d]: token or token_sha256 is required", i)
+		if !safeSegment(key.Username) {
+			return fmt.Errorf("authentication.api_keys[%d]: username must be a safe non-empty identifier", i)
 		}
-		if key.Token != "" && key.TokenSHA256 != "" {
-			return fmt.Errorf("authentication.api_keys[%d]: token and token_sha256 are mutually exclusive", i)
+		if _, duplicate := apiKeyUsernames[key.Username]; duplicate {
+			return fmt.Errorf("authentication.api_keys[%d]: duplicate username %q", i, key.Username)
 		}
-		if key.Subject == "" || key.Username == "" {
-			return fmt.Errorf("authentication.api_keys[%d]: subject and username are required", i)
+		apiKeyUsernames[key.Username] = struct{}{}
+		if key.Subject == "" {
+			return fmt.Errorf("authentication.api_keys[%d]: subject is required", i)
 		}
-		if key.TokenSHA256 != "" {
-			decoded, err := hex.DecodeString(key.TokenSHA256)
-			if err != nil || len(decoded) != sha256.Size {
-				return fmt.Errorf("authentication.api_keys[%d]: token_sha256 must be a 64-character hexadecimal SHA-256", i)
+		if _, err := parsePasswordVerifier(key.PasswordHash); err != nil {
+			return fmt.Errorf("authentication.api_keys[%d].password_hash: %w", i, err)
+		}
+		if len(key.Pepper) < passwordPepperMinimumBytes {
+			return fmt.Errorf("authentication.api_keys[%d].pepper must contain at least %d bytes", i, passwordPepperMinimumBytes)
+		}
+		for _, role := range cleanStrings(key.Roles) {
+			if !safeSegment(role) {
+				return fmt.Errorf("authentication.api_keys[%d].roles contains unsafe role %q", i, role)
 			}
 		}
 	}
 	if c.Administration.Enabled {
-		if strings.TrimSpace(c.Administration.SuperadminSubject) == "" {
-			return errors.New("administration.superadmin_subject or BROKER_SUPERADMIN_SUBJECT is required when administration is enabled")
+		if len(c.Administration.TokenPepper) < tokenPepperMinimumBytes {
+			return fmt.Errorf("administration.token_pepper must contain at least %d bytes", tokenPepperMinimumBytes)
 		}
 		if c.Administration.OIDC.configured() {
 			if err := validateHTTPSURL(c.Administration.OIDC.Issuer, "administration OIDC issuer"); err != nil {

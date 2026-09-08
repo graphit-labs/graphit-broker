@@ -2,9 +2,6 @@ package broker
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,6 +21,7 @@ type Principal struct {
 	Organization string
 	Teams        []string
 	Scopes       []string
+	Roles        []string
 	AuthMethod   string
 }
 
@@ -49,13 +47,16 @@ type oidcVerifier struct {
 }
 
 type apiKeyIdentity struct {
-	digest    [sha256.Size]byte
+	verifier  passwordVerifier
+	pepper    []byte
 	principal Principal
 }
 
 type authenticator struct {
-	oidc    []oidcVerifier
-	apiKeys []apiKeyIdentity
+	oidc         []oidcVerifier
+	apiKeys      map[string]apiKeyIdentity
+	dummy        *apiKeyIdentity
+	passwordWork chan struct{}
 }
 
 func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig) (Authenticator, error) {
@@ -63,7 +64,7 @@ func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig) (Authentica
 }
 
 func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
-	a := &authenticator{}
+	a := &authenticator{apiKeys: make(map[string]apiKeyIdentity, len(cfg.APIKeys)), passwordWork: make(chan struct{}, 1)}
 	providerContext := oidc.ClientContext(ctx, client)
 	for _, issuerCfg := range cfg.OIDC {
 		issuerURL := strings.TrimRight(issuerCfg.Issuer, "/")
@@ -81,31 +82,43 @@ func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, allowInsecu
 		a.oidc = append(a.oidc, oidcVerifier{config: issuerCfg, verifier: verifier})
 	}
 	for _, key := range cfg.APIKeys {
-		var digest [sha256.Size]byte
-		if key.TokenSHA256 != "" {
-			decoded, _ := hex.DecodeString(key.TokenSHA256)
-			copy(digest[:], decoded)
-		} else {
-			digest = sha256.Sum256([]byte(key.Token))
+		verifier, err := parsePasswordVerifier(key.PasswordHash)
+		if err != nil {
+			return nil, fmt.Errorf("authentication API key %q password hash: %w", key.Username, err)
 		}
-		a.apiKeys = append(a.apiKeys, apiKeyIdentity{digest: digest, principal: Principal{
-			Issuer: "apikey:" + key.Name, Subject: key.Subject, Username: key.Username,
-			Organization: key.Organization, Teams: cleanStrings(key.Teams), AuthMethod: "api_key",
-		}})
+		if len(key.Pepper) < passwordPepperMinimumBytes {
+			return nil, fmt.Errorf("authentication API key %q password pepper must contain at least %d bytes", key.Username, passwordPepperMinimumBytes)
+		}
+		if _, duplicate := a.apiKeys[key.Username]; duplicate {
+			return nil, fmt.Errorf("duplicate authentication API key username %q", key.Username)
+		}
+		identity := apiKeyIdentity{verifier: verifier, pepper: []byte(key.Pepper), principal: Principal{
+			Issuer: "apikey:" + key.Username, Subject: key.Subject, Username: key.Username,
+			Organization: key.Organization, Teams: cleanStrings(key.Teams), Roles: cleanStrings(key.Roles), AuthMethod: "api_key",
+		}}
+		a.apiKeys[key.Username] = identity
+		if a.dummy == nil {
+			a.dummy = &identity
+		}
 	}
 	return a, nil
 }
 
 func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+	if strings.TrimSpace(raw) == "" {
 		return Principal{}, ErrUnauthenticated
 	}
-	digest := sha256.Sum256([]byte(raw))
-	for _, key := range a.apiKeys {
-		if subtle.ConstantTimeCompare(digest[:], key.digest[:]) == 1 {
-			return key.principal, nil
+	if username, password, ok := localPasswordCredential(raw); ok {
+		if key, exists := a.apiKeys[username]; exists {
+			if a.verifyPassword(ctx, key.verifier, key.pepper, password) {
+				return key.principal, nil
+			}
+		} else if a.dummy != nil {
+			// Unknown local names still pay one Argon2id verification to reduce account-name
+			// enumeration through response timing without multiplying work by configured identities.
+			a.verifyPassword(ctx, a.dummy.verifier, a.dummy.pepper, password)
 		}
+		return Principal{}, ErrUnauthenticated
 	}
 	for _, candidate := range a.oidc {
 		token, err := candidate.verifier.Verify(ctx, raw)
@@ -118,6 +131,26 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 		}
 	}
 	return Principal{}, ErrUnauthenticated
+}
+
+func (a *authenticator) verifyPassword(ctx context.Context, verifier passwordVerifier, pepper []byte, password string) bool {
+	plaintext := []byte(password)
+	defer clear(plaintext)
+	select {
+	case a.passwordWork <- struct{}{}:
+		defer func() { <-a.passwordWork }()
+	case <-ctx.Done():
+		return false
+	}
+	return verifier.verify(plaintext, pepper)
+}
+
+func localPasswordCredential(raw string) (string, string, bool) {
+	separator := strings.IndexByte(raw, ':')
+	if separator <= 0 || separator == len(raw)-1 {
+		return "", "", false
+	}
+	return raw[:separator], raw[separator+1:], true
 }
 
 func principalFromIDToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (Principal, error) {

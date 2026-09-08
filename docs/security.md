@@ -18,8 +18,20 @@ Username, organization, and teams come only from verified exact-key or RFC 9535 
 selectors; canonical identity is
 `iss|sub`. Invalid credentials return `401` and are not treated as anonymous.
 
-Configured API keys are constant-time compared against a stored SHA-256 digest. Use them only for
-service/local identities. Anonymous access requires an explicit `anonymous` grant.
+Configured local/API-key passwords are HMAC-prehashed with a per-identity external pepper and then
+verified against salted Argon2id PHC verifiers. The pepper is not embedded in the PHC. A credential
+selects the username first, so each request performs at most one expensive KDF. System-generated
+OIDC state and administration session tokens are stored as HMAC-SHA-256 values using an external
+deployment pepper and separate domains. Anonymous access requires an explicit `anonymous` grant.
+
+Password preprocessing uses a dedicated domain and
+`HMAC-SHA-256(pepper, domain || 0x00 || password)`;
+Argon2id then receives that fixed-size result and a random per-verifier salt. A pepper must contain
+at least 32 bytes. It may be written literally in YAML because deployment configuration is the
+operator's responsibility, but an ENV/secret-manager reference gives better separation from the
+PHC. If both locations leak, treat the password as exposed to offline guessing. Losing or rotating
+the pepper requires generating a new PHC, and either a pepper or PHC change invalidates existing
+local administration sessions.
 
 For HTTP MCP, Graphit first validates the end-user token for its MCP audience and preserves that
 bearer in request context. The broker validates it again. When Graphit uses RFC 8693 exchange, the
@@ -35,9 +47,9 @@ Every grant mutation and revision increment is atomic.
 Administrative roles protect control-plane actions and never imply resource access. When an
 administration `role_claim` is configured, its verified token values replace all database role
 assignments for that OIDC subject; missing/invalid values fail closed. API-key identities use
-database assignments, and the deployment superadmin remains an explicit recovery bypass. Cookie
-sessions require CSRF on state changes. The deployment superadmin is an explicit emergency
-bootstrap subject.
+database assignments unless the identity declares authoritative `roles` in configuration. Cookie
+sessions require CSRF on state changes. There is no superadmin bypass: bootstrap uses a local
+Argon2id identity with `roles: [admin]`.
 
 When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source. There is no
 `projects.json` read, synchronization, or fallback. A provider without that protocol uses
@@ -45,10 +57,10 @@ When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source.
 
 ## Data at rest
 
-The SQL database contains sensitive configuration, upstream/API/S3 secrets, identities, roles,
-grants, OIDC flow state, and live sessions. Encrypt storage/backups and restrict database/network
-access. SQLite parent/file modes are `0700`/`0600`; PostgreSQL/MySQL access must be protected by
-database roles and TLS/network policy.
+The SQL database contains identities, roles, grants, HMAC-protected OIDC flow state, and
+HMAC-protected live session keys. It does not contain `config.yml`, resolved OIDC/upstream/S3
+secrets, local password peppers, or password hashes. Encrypt storage/backups and restrict database/network access. SQLite parent/file modes are
+`0700`/`0600`; PostgreSQL/MySQL access must be protected by database roles and TLS/network policy.
 
 Configuration API responses replace secrets with `[configured-secret]`. Logs and public errors
 do not include bearer tokens, request bodies, upstream response bodies, signed URLs, or secrets.
@@ -71,7 +83,7 @@ never cached by the broker.
 
 - forged claims: rejected because claims are read only after JWT verification;
 - stolen token: bounded by token expiry, audience, scope, and current grants;
-- stale admin write: rejected by ETag compare-and-swap;
+- attempted configuration write: rejected because the endpoint is read-only;
 - ACL race: the revision changes transactionally and in-flight mismatch fails closed;
 - compromised Graphit client: cannot obtain direct S3 or upstream provider credentials;
 - broker database outage: consumer authorization fails closed;

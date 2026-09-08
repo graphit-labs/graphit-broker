@@ -83,7 +83,7 @@ an invalid signature, and a request with no token. Only the intended grants shou
 ```yaml
 administration:
   enabled: true
-  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?required}"
+  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?at least 32 random bytes}"
   session_ttl: 8h
   oidc:
     issuer: https://identity.example.com
@@ -100,8 +100,10 @@ administration:
 ```
 
 Register the callback exactly. The browser flow uses code, state, nonce, and PKCE. The broker
-persists only hashed state/session tokens and server-side metadata. Set
-`BROKER_SUPERADMIN_SUBJECT` from the immutable admin `sub`, never an email address.
+persists only HMAC-SHA-256 state/session token identifiers and server-side metadata. Bootstrap the
+first administrator with a local Argon2id identity whose configured roles contain `admin`, whose
+per-identity pepper matches the one used by the password-generation command, or make the OIDC
+`role_claim` yield the built-in `admin` role.
 
 All administration identity mappings accept exact claim keys or RFC 9535 JSONPath. `name`, email,
 username, and organization must resolve to zero or one string (username is optional for the admin
@@ -109,7 +111,8 @@ client); teams and roles may resolve a string, a string array, or multiple strin
 `role_claim` is required to return at least one role. Its values are authoritative and completely
 replace local database assignments for that OIDC subject; they are not merged. Role permissions
 still come from broker role definitions. Missing, empty, non-string, or syntactically invalid role
-selection fails closed. API-key sessions keep using database assignments.
+selection fails closed. Local sessions use configured `authentication.api_keys[].roles` when
+present and otherwise use database assignments.
 
 Examples for common token layouts:
 

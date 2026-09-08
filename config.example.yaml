@@ -23,20 +23,23 @@ authentication:
       username_claim: "preferred_username"
       organization_claim: "organization.id"
       teams_claim: "groups"
-  # API keys are useful for trusted local/service profiles. Prefer token_sha256.
+  # Local identities use Argon2id PHC verifiers plus an external pepper per identity.
+  # Generate BROKER_LOCAL_PASSWORD_HASH with:
+  # graphit-broker --hash-password --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
   # api_keys:
-  #   - name: "local-automation"
-  #     token_sha256: "<64-character SHA-256 of the local broker token>"
+  #   - username: "automation"
+  #     password_hash: "${BROKER_LOCAL_PASSWORD_HASH}"
+  #     pepper: "${BROKER_LOCAL_PASSWORD_PEPPER}"
   #     subject: "local-automation"
-  #     username: "automation"
   #     organization: "local"
   #     teams: ["automation"]
+  #     # roles: ["admin"] # use on the first local administrator; see docs/administration.md
 
-# Administration uses its own confidential OIDC client. The database and bootstrap superadmin
-# remain deployment-owned; the UI/API manage all other persisted configuration and grants.
+# Configuration is deployment-owned and changes require a restart. The administration API exposes
+# a redacted read-only view. Resource grants, roles, assignments, flows, and sessions remain in SQL.
 administration:
   enabled: true
-  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?set the exact OIDC sub for the bootstrap superadmin}"
+  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
   session_ttl: 8h
   # Public/native Graphit CLI client used only to render exact provider/login snippets in the UI.
   cli:

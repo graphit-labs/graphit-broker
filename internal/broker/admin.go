@@ -2,12 +2,16 @@ package broker
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,8 +24,10 @@ import (
 var adminHTML []byte
 
 const (
-	adminCookieName  = "graphit_admin_session"
-	configuredSecret = "[configured-secret]"
+	adminCookieName                  = "graphit_admin_session"
+	configuredSecret                 = "[configured-secret]"
+	localAPIKeyRoleSource            = "authentication.api_keys.roles"
+	localCredentialFingerprintDomain = "graphit-broker/local-admin-credential/v1"
 )
 
 type adminContextKey string
@@ -112,19 +118,36 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	var request struct {
-		Token string `json:"token"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
 	}
-	principal, err := s.runtime().authenticator.Authenticate(r.Context(), request.Token)
-	request.Token = ""
+	request.Username = strings.TrimSpace(request.Username)
+	if request.Username == "" || request.Password == "" {
+		request.Password = ""
+		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
+		return
+	}
+	credential := request.Username + ":" + request.Password
+	request.Password = ""
+	state := s.runtime()
+	principal, err := state.authenticator.Authenticate(r.Context(), credential)
+	credential = ""
 	if err != nil || principal.AuthMethod != "api_key" {
-		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker token is invalid", requestID(r.Context()))
+		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
+		return
+	}
+	key, found := localAPIKeyByUsername(state.config.Authentication.APIKeys, principal.Username, principal.Subject)
+	if !found {
+		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
 		return
 	}
 	session := AdminSession{Issuer: principal.Issuer, Subject: principal.Subject, Username: principal.Username,
-		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Username}
+		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Username,
+		Roles: principal.Roles, RolesFromClaim: len(principal.Roles) > 0, RoleClaimSelector: localAPIKeyRoleSource,
+		CredentialFingerprint: localCredentialFingerprint(key, state.config.Administration.TokenPepper)}
 	allowed, err := s.authorizeAdmin(r.Context(), session, "session.read")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "authorization_failed", "could not authorize local login", requestID(r.Context()))
@@ -200,13 +223,16 @@ func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roleSource := "database"
-	if s.claimRolesAuthoritative(session) {
+	if s.sessionRolesAuthoritative(session) {
 		roleSource = "claim"
+		if strings.HasPrefix(session.Issuer, "apikey:") {
+			roleSource = "configuration"
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject": session.Subject, "name": session.Name, "email": session.Email,
 		"username": session.Username, "organization": session.Organization, "teams": session.Teams,
-		"roles": roles, "role_source": roleSource, "superadmin": session.Subject == s.bootstrap.Administration.SuperadminSubject,
+		"roles": roles, "role_source": roleSource,
 		"permissions": permissions,
 		"csrf_token":  session.CSRFToken,
 	})
@@ -358,81 +384,14 @@ func shellArgument(value string) string {
 }
 
 func (s *Server) adminConfig(w http.ResponseWriter, r *http.Request) {
-	stored, err := s.control.Config(r.Context())
+	redacted := redactConfig(s.runtime().config)
+	encoded, err := yaml.Marshal(redacted)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "configuration_read_failed", "could not read broker configuration", requestID(r.Context()))
+		writeError(w, http.StatusInternalServerError, "configuration_encode_failed", "could not encode broker configuration", requestID(r.Context()))
 		return
 	}
-	if r.Method == http.MethodGet {
-		redacted := redactConfig(stored.Config)
-		redacted.Database = s.bootstrap.Database
-		redacted.Database.DSN = configuredSecret
-		redacted.Administration.SuperadminSubject = s.bootstrap.Administration.SuperadminSubject
-		encoded, err := yaml.Marshal(redacted)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "configuration_encode_failed", "could not encode broker configuration", requestID(r.Context()))
-			return
-		}
-		w.Header().Set("ETag", configETag(stored.Revision))
-		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"revision": stored.Revision, "updated_at": stored.UpdatedAt, "yaml": string(encoded)})
-		return
-	}
-	expected, err := parseConfigETag(r.Header.Get("If-Match"))
-	if err != nil {
-		writeError(w, http.StatusPreconditionRequired, "precondition_required", "If-Match with the current configuration revision is required", requestID(r.Context()))
-		return
-	}
-	var request struct {
-		YAML string `json:"yaml"`
-	}
-	if err := s.decodeRequest(w, r, &request); err != nil {
-		return
-	}
-	var next Config
-	decoder := yaml.NewDecoder(strings.NewReader(request.YAML))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&next); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_configuration", "configuration YAML is invalid: "+err.Error(), requestID(r.Context()))
-		return
-	}
-	next.defaults()
-	next.Database = s.bootstrap.Database
-	next.Administration.Enabled = true
-	next.Administration.SuperadminSubject = s.bootstrap.Administration.SuperadminSubject
-	mergeConfiguredSecrets(&next, stored.Config)
-	updated, err := s.replaceRuntimeConfig(r.Context(), expected, next)
-	if errors.Is(err, ErrRevisionConflict) {
-		writeError(w, http.StatusConflict, "revision_conflict", "broker configuration changed; reload before saving", requestID(r.Context()))
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_configuration", err.Error(), requestID(r.Context()))
-		return
-	}
-	w.Header().Set("ETag", configETag(updated.Revision))
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"revision": updated.Revision, "updated_at": updated.UpdatedAt})
-}
-
-func (s *Server) replaceRuntimeConfig(ctx context.Context, expected uint64, next Config) (StoredConfig, error) {
-	if err := next.Validate(); err != nil {
-		return StoredConfig{}, err
-	}
-	prepared, err := buildRuntime(ctx, next, expected+1, s.adminProviderFactory, s.control)
-	if err != nil {
-		return StoredConfig{}, err
-	}
-	stored, err := s.control.ReplaceConfig(ctx, expected, next)
-	if err != nil {
-		if prepared.ai != nil {
-			_ = prepared.ai.Close()
-		}
-		return StoredConfig{}, err
-	}
-	prepared.configurationRevision = stored.Revision
-	s.state.Store(prepared)
-	return stored, nil
+	writeJSON(w, http.StatusOK, map[string]any{"source": "deployment", "restart_required": true, "yaml": string(encoded)})
 }
 
 func (s *Server) adminGrants(w http.ResponseWriter, r *http.Request) {
@@ -551,8 +510,7 @@ func (s *Server) adminAssignments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		count, _ := s.control.AssignmentCount(r.Context())
-		writeJSON(w, http.StatusOK, map[string]any{"assignments": assignments, "bootstrap_only": count == 0,
-			"superadmin_subject": s.bootstrap.Administration.SuperadminSubject})
+		writeJSON(w, http.StatusOK, map[string]any{"assignments": assignments, "bootstrap_only": count == 0})
 		return
 	}
 	var request struct {
@@ -612,8 +570,8 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "OIDC administration login is required", requestID(r.Context()))
 			return
 		}
-		if s.sessionNeedsClaimRoleRefresh(session) {
-			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "administration login must be refreshed to load claimed roles", requestID(r.Context()))
+		if s.sessionNeedsRoleRefresh(session) {
+			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "administration login must be refreshed to load current roles", requestID(r.Context()))
 			return
 		}
 		allowed, err := s.authorizeAdmin(r.Context(), session, action)
@@ -631,17 +589,14 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 }
 
 func (s *Server) authorizeAdmin(ctx context.Context, session AdminSession, action string) (bool, error) {
-	if strings.TrimSpace(session.Subject) != "" && session.Subject == strings.TrimSpace(s.bootstrap.Administration.SuperadminSubject) {
-		return true, nil
-	}
-	if s.claimRolesAuthoritative(session) {
+	if s.sessionRolesAuthoritative(session) {
 		return s.control.AuthorizeRoles(ctx, session.Roles, action)
 	}
-	return s.control.Authorize(ctx, session.Subject, action, s.bootstrap.Administration.SuperadminSubject)
+	return s.control.Authorize(ctx, session.Subject, action)
 }
 
 func (s *Server) adminRolesAndPermissions(ctx context.Context, session AdminSession) ([]string, []string, error) {
-	if s.claimRolesAuthoritative(session) {
+	if s.sessionRolesAuthoritative(session) {
 		roles := cleanStrings(session.Roles)
 		permissions, err := s.control.RolePermissions(ctx, roles)
 		return roles, permissions, err
@@ -654,15 +609,31 @@ func (s *Server) adminRolesAndPermissions(ctx context.Context, session AdminSess
 	return roles, permissions, err
 }
 
-func (s *Server) sessionNeedsClaimRoleRefresh(session AdminSession) bool {
+func (s *Server) sessionNeedsRoleRefresh(session AdminSession) bool {
+	if strings.HasPrefix(session.Issuer, "apikey:") {
+		username := strings.TrimPrefix(session.Issuer, "apikey:")
+		key, found := localAPIKeyByUsername(s.runtime().config.Authentication.APIKeys, username, session.Subject)
+		if !found || !constantEqual(session.CredentialFingerprint, localCredentialFingerprint(key, s.runtime().config.Administration.TokenPepper)) {
+			return true
+		}
+		roles := cleanStrings(key.Roles)
+		if len(roles) == 0 {
+			return session.RolesFromClaim
+		}
+		return !session.RolesFromClaim || strings.TrimSpace(session.RoleClaimSelector) != localAPIKeyRoleSource ||
+			!slices.Equal(roles, cleanStrings(session.Roles))
+	}
 	selector := strings.TrimSpace(s.runtime().config.Administration.OIDC.RoleClaim)
-	return selector != "" && !strings.HasPrefix(session.Issuer, "apikey:") &&
+	return selector != "" &&
 		(!session.RolesFromClaim || selector != strings.TrimSpace(session.RoleClaimSelector))
 }
 
-func (s *Server) claimRolesAuthoritative(session AdminSession) bool {
+func (s *Server) sessionRolesAuthoritative(session AdminSession) bool {
+	if strings.HasPrefix(session.Issuer, "apikey:") {
+		return session.RolesFromClaim && strings.TrimSpace(session.RoleClaimSelector) == localAPIKeyRoleSource
+	}
 	selector := strings.TrimSpace(s.runtime().config.Administration.OIDC.RoleClaim)
-	return selector != "" && !strings.HasPrefix(session.Issuer, "apikey:") && session.RolesFromClaim &&
+	return selector != "" && session.RolesFromClaim &&
 		selector == strings.TrimSpace(session.RoleClaimSelector)
 }
 
@@ -694,15 +665,29 @@ func parseConfigETag(value string) (uint64, error) {
 }
 
 func redactConfig(cfg Config) Config {
+	cfg.Authentication.APIKeys = append([]APIKeyConfig(nil), cfg.Authentication.APIKeys...)
+	if cfg.Services.S3.Routes != nil {
+		routes := make(map[string]S3RouteConfig, len(cfg.Services.S3.Routes))
+		for name, route := range cfg.Services.S3.Routes {
+			routes[name] = route
+		}
+		cfg.Services.S3.Routes = routes
+	}
+	if cfg.Database.DSN != "" {
+		cfg.Database.DSN = configuredSecret
+	}
+	if cfg.Administration.TokenPepper != "" {
+		cfg.Administration.TokenPepper = configuredSecret
+	}
 	if cfg.Administration.OIDC.ClientSecret != "" {
 		cfg.Administration.OIDC.ClientSecret = configuredSecret
 	}
 	for i := range cfg.Authentication.APIKeys {
-		if cfg.Authentication.APIKeys[i].Token != "" {
-			cfg.Authentication.APIKeys[i].Token = configuredSecret
+		if cfg.Authentication.APIKeys[i].PasswordHash != "" {
+			cfg.Authentication.APIKeys[i].PasswordHash = configuredSecret
 		}
-		if cfg.Authentication.APIKeys[i].TokenSHA256 != "" {
-			cfg.Authentication.APIKeys[i].TokenSHA256 = configuredSecret
+		if cfg.Authentication.APIKeys[i].Pepper != "" {
+			cfg.Authentication.APIKeys[i].Pepper = configuredSecret
 		}
 	}
 	if cfg.Services.Embeddings.Upstream.APIKey != "" {
@@ -720,33 +705,32 @@ func redactConfig(cfg Config) Config {
 	return cfg
 }
 
-func mergeConfiguredSecrets(next *Config, current Config) {
-	if next.Administration.OIDC.ClientSecret == configuredSecret {
-		next.Administration.OIDC.ClientSecret = current.Administration.OIDC.ClientSecret
-	}
-	byName := map[string]APIKeyConfig{}
-	for _, key := range current.Authentication.APIKeys {
-		byName[key.Name] = key
-	}
-	for i := range next.Authentication.APIKeys {
-		old := byName[next.Authentication.APIKeys[i].Name]
-		if next.Authentication.APIKeys[i].Token == configuredSecret {
-			next.Authentication.APIKeys[i].Token = old.Token
-		}
-		if next.Authentication.APIKeys[i].TokenSHA256 == configuredSecret {
-			next.Authentication.APIKeys[i].TokenSHA256 = old.TokenSHA256
+func localAPIKeyByUsername(keys []APIKeyConfig, username, subject string) (APIKeyConfig, bool) {
+	for _, key := range keys {
+		if key.Username == username && key.Subject == subject {
+			return key, true
 		}
 	}
-	if next.Services.Embeddings.Upstream.APIKey == configuredSecret {
-		next.Services.Embeddings.Upstream.APIKey = current.Services.Embeddings.Upstream.APIKey
+	return APIKeyConfig{}, false
+}
+
+func localCredentialFingerprint(key APIKeyConfig, tokenPepper string) string {
+	mac := hmac.New(sha256.New, []byte(tokenPepper))
+	_, _ = mac.Write([]byte(localCredentialFingerprintDomain))
+	writeField := func(label, value string) {
+		_, _ = fmt.Fprintf(mac, "\x00%d:%s\x00%d:", len(label), label, len(value))
+		_, _ = mac.Write([]byte(value))
 	}
-	if next.Services.Rerank.Upstream.APIKey == configuredSecret {
-		next.Services.Rerank.Upstream.APIKey = current.Services.Rerank.Upstream.APIKey
+	writeField("username", key.Username)
+	writeField("subject", key.Subject)
+	writeField("password_hash", key.PasswordHash)
+	writeField("pepper", key.Pepper)
+	writeField("organization", key.Organization)
+	for _, team := range key.Teams {
+		writeField("team", team)
 	}
-	for name, route := range next.Services.S3.Routes {
-		if route.SecretAccessKey == configuredSecret {
-			route.SecretAccessKey = current.Services.S3.Routes[name].SecretAccessKey
-			next.Services.S3.Routes[name] = route
-		}
+	for _, role := range key.Roles {
+		writeField("role", role)
 	}
+	return hex.EncodeToString(mac.Sum(nil))
 }

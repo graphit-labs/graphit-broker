@@ -17,22 +17,19 @@ import (
 )
 
 type runtimeState struct {
-	config                Config
-	configurationRevision uint64
-	authenticator         Authenticator
-	acl                   *ACL
-	ai                    *AIService
-	presigner             PresignService
-	adminOIDC             AdminIdentityProvider
+	config        Config
+	authenticator Authenticator
+	acl           *ACL
+	ai            *AIService
+	presigner     PresignService
+	adminOIDC     AdminIdentityProvider
 }
 
 type Server struct {
-	bootstrap            Config
-	state                atomic.Pointer[runtimeState]
-	control              *ControlStore
-	adminProviderFactory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)
-	handler              http.Handler
-	ready                atomic.Bool
+	state   atomic.Pointer[runtimeState]
+	control *ControlStore
+	handler http.Handler
+	ready   atomic.Bool
 }
 
 type contextKey string
@@ -47,27 +44,22 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 }
 
 func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) (*Server, error) {
-	control, stored, err := OpenControlStore(cfg.Database, cfg)
+	control, err := OpenControlStore(cfg.Database, cfg.Administration.TokenPepper)
 	if err != nil {
 		return nil, err
 	}
-	effective := stored.Config
-	// Database selection and the administration bootstrap are deployment-owned, not mutable UI state.
-	effective.Database = cfg.Database
-	effective.Administration.Enabled = cfg.Administration.Enabled
-	effective.Administration.SuperadminSubject = cfg.Administration.SuperadminSubject
-	runtime, err := buildRuntime(ctx, effective, stored.Revision, factory, control)
+	runtime, err := buildRuntime(ctx, cfg, factory, control)
 	if err != nil {
 		if control != nil {
 			_ = control.Close()
 		}
 		return nil, err
 	}
-	s := newServerFromRuntime(cfg, runtime, control, factory)
+	s := newServerFromRuntime(runtime, control)
 	return s, nil
 }
 
-func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
+func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
 	authenticator, err := NewAuthenticator(ctx, cfg.Authentication)
 	if err != nil {
 		return nil, err
@@ -89,17 +81,17 @@ func buildRuntime(ctx context.Context, cfg Config, revision uint64, factory func
 		return nil, err
 	}
 	cfg.Services = ai.EffectiveServices()
-	return &runtimeState{config: cfg, configurationRevision: revision, authenticator: authenticator,
+	return &runtimeState{config: cfg, authenticator: authenticator,
 		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
 func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
 	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
-	return newServerFromRuntime(cfg, runtime, control, nil)
+	return newServerFromRuntime(runtime, control)
 }
 
-func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *ControlStore, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) *Server {
-	s := &Server{bootstrap: bootstrap, control: control, adminProviderFactory: factory}
+func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server {
+	s := &Server{control: control}
 	s.state.Store(runtime)
 	s.ready.Store(true)
 	mux := http.NewServeMux()
@@ -110,7 +102,7 @@ func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *Cont
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
 	mux.Handle("POST /v1/s3/presign", s.resolvePrincipal(http.HandlerFunc(s.s3Presign)))
 	mux.Handle("POST /v1/hub/access/resolve", s.resolvePrincipal(http.HandlerFunc(s.hubAccessResolve)))
-	if bootstrap.Administration.Enabled {
+	if runtime.config.Administration.Enabled {
 		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)
 		})
@@ -123,7 +115,6 @@ func newServerFromRuntime(bootstrap Config, runtime *runtimeState, control *Cont
 		mux.Handle("GET /admin/api/v1/session", s.requireAdministration("session.read", http.HandlerFunc(s.adminSession)))
 		mux.Handle("GET /admin/api/v1/projects", s.requireAdministration("projects.read", http.HandlerFunc(s.adminProjects)))
 		mux.Handle("GET /admin/api/v1/config", s.requireAdministration("configuration.read", http.HandlerFunc(s.adminConfig)))
-		mux.Handle("PUT /admin/api/v1/config", s.requireAdministration("configuration.write", http.HandlerFunc(s.adminConfig)))
 		mux.Handle("GET /admin/api/v1/grants", s.requireAdministration("grants.read", http.HandlerFunc(s.adminGrants)))
 		mux.Handle("POST /admin/api/v1/grants", s.requireAdministration("grants.write", http.HandlerFunc(s.adminGrants)))
 		mux.Handle("PUT /admin/api/v1/grants/{grant}", s.requireAdministration("grants.write", http.HandlerFunc(s.adminGrant)))

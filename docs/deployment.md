@@ -4,7 +4,7 @@
 
 The Dockerfile produces one non-root image with CA certificates, a health check, ONNX Runtime, and
 CUDA libraries. Model weights are not included. The example Compose service uses a read-only root
-filesystem, drops all capabilities, enables `no-new-privileges`, and persists configuration,
+filesystem, drops all capabilities, enables `no-new-privileges`, and mounts configuration,
 database state, and downloaded model files in separate named volumes.
 
 ```bash
@@ -13,9 +13,9 @@ docker compose -f docker-compose.yml up --build -d
 ```
 
 Docker seeds the empty `broker-config` volume from `/etc/graphit-broker/config.yaml` in the image.
-The mounted YAML is deployment bootstrap configuration; after it initializes an empty SQL database,
-changes made through the administration UI are stored in `broker-state` (or the configured remote
-database). To initialize the volume from a customized file:
+The mounted YAML, after environment expansion, is always authoritative. It is never stored in SQL;
+edit or replace the deployment file/secrets and restart to apply changes. To initialize the volume
+from a customized file:
 
 ```bash
 cp config.example.yaml config.yaml
@@ -34,8 +34,8 @@ SQLite needs the named `broker-state` volume and exactly one writable broker. Po
 should use a secret-injected DSN and database network policy; several stateless broker replicas may
 share the remote database. See [database backends](database.md).
 
-The first process creates the current schema and seeds configuration. Start one replica for a new
-database, verify it, then scale. There are no migrations: an incompatible schema requires an
+The first process creates the current SQL schema. Start one replica for a new database, verify it,
+then scale. There are no migrations: an incompatible schema requires an
 explicit recreate/restore for the matching build.
 
 ## S3 routes
@@ -50,7 +50,7 @@ object versioning, retention, and audit controls appropriate to the data.
 
 Named routes can provide logical staging/production separation inside one broker when exact
 projects and distinct deployment principals deterministically select each route. This still
-shares one broker process, administration boundary, configuration store, and grant database. For
+shares one broker process, administration boundary, deployment configuration, and grant database. For
 strong environment isolation, deploy separate brokers with separate databases, credentials,
 buckets/accounts, and administration configuration:
 
@@ -124,12 +124,13 @@ Use:
 - a native/public Graphit login client using Authorization Code + PKCE;
 - a broker API audience/resource for consumer access;
 - optionally RFC 8693 token exchange when MCP and broker audiences differ;
-- a confidential broker administration web client, unless the UI is deliberately local-token-only.
+- a confidential broker administration web client, unless the UI is deliberately local-password-only.
 
 Grant only required scopes and map stable claims. Claim mappings accept exact top-level keys or
 RFC 9535 JSONPath. If `administration.oidc.role_claim` is enabled, ensure every administrator token
-contains at least one broker role; those roles replace local database assignments. Do not use email
-as the immutable superadmin key.
+contains at least one broker role; those roles replace local database assignments. Bootstrap a new
+database with a local identity configured with `roles: [admin]`, a per-identity password pepper,
+and its matching Argon2id verifier if OIDC does not already yield it.
 
 ## Rollout
 
@@ -141,8 +142,8 @@ as the immutable superadmin key.
    applicable, embeddings, rerank, and admin login.
 6. Add remote-database replicas only after the single instance is healthy.
 
-Configuration changes through the UI are built before commit and atomically replace the runtime.
-Grant changes are independent SQL transactions and apply on the next consumer operation.
+Configuration changes require a deployment update and broker restart. Grant changes are
+independent SQL transactions and apply on the next consumer operation.
 
 ## Kubernetes outline
 

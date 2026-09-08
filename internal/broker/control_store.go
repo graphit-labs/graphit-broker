@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -10,19 +11,21 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 var ErrRevisionConflict = errors.New("revision conflict")
 
 const (
-	adminRole = "admin"
-	userRole  = "user"
+	adminRole               = "admin"
+	userRole                = "user"
+	schemaVersion           = 3
+	tokenPepperMinimumBytes = 32
+	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
+	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
 )
 
 var adminActions = []string{
-	"session.read", "configuration.read", "configuration.write",
+	"session.read", "configuration.read",
 	"grants.read", "grants.write", "roles.read", "roles.write", "projects.read",
 }
 
@@ -31,14 +34,9 @@ var userActions = []string{"session.read", "projects.read"}
 // ControlStore owns all durable broker state. Domain persistence is portable across the SQL
 // backends supported by DatabaseDialect.
 type ControlStore struct {
-	db      *sql.DB
-	dialect DatabaseDialect
-}
-
-type StoredConfig struct {
-	Revision  uint64    `json:"revision"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Config    Config    `json:"config"`
+	db          *sql.DB
+	dialect     DatabaseDialect
+	tokenPepper []byte
 }
 
 type AdminRole struct {
@@ -53,18 +51,19 @@ type RoleAssignment struct {
 }
 
 type AdminSession struct {
-	Issuer            string
-	Subject           string
-	Name              string
-	Email             string
-	Username          string
-	Organization      string
-	Teams             []string
-	Roles             []string
-	RolesFromClaim    bool
-	RoleClaimSelector string
-	CSRFToken         string
-	ExpiresAt         time.Time
+	Issuer                string
+	Subject               string
+	Name                  string
+	Email                 string
+	Username              string
+	Organization          string
+	Teams                 []string
+	Roles                 []string
+	RolesFromClaim        bool
+	RoleClaimSelector     string
+	CredentialFingerprint string
+	CSRFToken             string
+	ExpiresAt             time.Time
 }
 
 type OIDCFlow struct {
@@ -74,42 +73,38 @@ type OIDCFlow struct {
 	ExpiresAt    time.Time
 }
 
-func OpenControlStore(cfg DatabaseConfig, seed Config) (*ControlStore, StoredConfig, error) {
+func OpenControlStore(cfg DatabaseConfig, tokenPepper string) (*ControlStore, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	db, dialect, err := openDatabase(ctx, cfg)
 	if err != nil {
-		return nil, StoredConfig{}, err
+		return nil, err
 	}
-	store := &ControlStore{db: db, dialect: dialect}
-	if err := store.initialize(ctx, seed); err != nil {
+	store := &ControlStore{db: db, dialect: dialect, tokenPepper: []byte(tokenPepper)}
+	if err := store.initialize(ctx); err != nil {
 		_ = db.Close()
-		return nil, StoredConfig{}, err
+		return nil, err
 	}
 	if dialect.Name() == "sqlite" {
 		if err := secureSQLiteFile(cfg.DSN); err != nil {
 			_ = db.Close()
-			return nil, StoredConfig{}, err
+			return nil, err
 		}
 	}
-	stored, err := store.Config(ctx)
-	if err != nil {
-		_ = db.Close()
-		return nil, StoredConfig{}, err
-	}
-	return store, stored, nil
+	return store, nil
 }
 
 func (s *ControlStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	clear(s.tokenPepper)
 	return s.db.Close()
 }
 
 func (s *ControlStore) bind(query string) string { return s.dialect.Bind(query) }
 
-func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
+func (s *ControlStore) initialize(ctx context.Context) error {
 	if s.dialect.Name() == "sqlite" {
 		for _, statement := range []string{`PRAGMA journal_mode=WAL`, `PRAGMA foreign_keys=ON`, `PRAGMA busy_timeout=5000`} {
 			if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -124,12 +119,11 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 	defer tx.Rollback()
 	for _, statement := range []string{
 		`CREATE TABLE IF NOT EXISTS schema_meta (id SMALLINT PRIMARY KEY, version BIGINT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS broker_config (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, config_yaml TEXT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS roles (name VARCHAR(128) PRIMARY KEY, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS role_permissions (role VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, PRIMARY KEY(role, action), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS role_assignments (subject VARCHAR(512) NOT NULL, role VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, role), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_sessions (token_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, csrf_token VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, credential_fingerprint VARCHAR(64) NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_claim_roles (token_hash VARCHAR(64) PRIMARY KEY, claim_selector VARCHAR(4096) NOT NULL, roles_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
@@ -144,15 +138,15 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO schema_meta(id, version) VALUES(?, ?)`)), 1, 1); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO schema_meta(id, version) VALUES(?, ?)`)), 1, schemaVersion); err != nil {
 		return fmt.Errorf("seed schema version: %w", err)
 	}
-	var schemaVersion int
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT version FROM schema_meta WHERE id=?`), 1).Scan(&schemaVersion); err != nil {
+	var storedSchemaVersion int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT version FROM schema_meta WHERE id=?`), 1).Scan(&storedSchemaVersion); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if schemaVersion != 1 {
-		return fmt.Errorf("unsupported database schema version %d: recreate the database", schemaVersion)
+	if storedSchemaVersion != schemaVersion {
+		return fmt.Errorf("unsupported database schema version %d: recreate the database", storedSchemaVersion)
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO roles(name, created_at) VALUES(?, ?)`)), adminRole, now); err != nil {
 		return fmt.Errorf("seed admin role: %w", err)
@@ -173,13 +167,6 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 			return fmt.Errorf("seed user permissions: %w", err)
 		}
 	}
-	encoded, err := yaml.Marshal(seed)
-	if err != nil {
-		return fmt.Errorf("encode initial broker configuration: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO broker_config(id, revision, config_yaml, updated_at) VALUES(?, ?, ?, ?)`)), 1, 1, string(encoded), now); err != nil {
-		return fmt.Errorf("seed broker configuration: %w", err)
-	}
 	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO resource_acl_state(id, revision, updated_at) VALUES(?, ?, ?)`)), 1, 1, now); err != nil {
 		return fmt.Errorf("seed resource ACL revision: %w", err)
 	}
@@ -189,50 +176,7 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 	return nil
 }
 
-func (s *ControlStore) Config(ctx context.Context) (StoredConfig, error) {
-	var revision uint64
-	var raw, updated string
-	if err := s.db.QueryRowContext(ctx, s.bind(`SELECT revision, config_yaml, updated_at FROM broker_config WHERE id=?`), 1).Scan(&revision, &raw, &updated); err != nil {
-		return StoredConfig{}, fmt.Errorf("read broker configuration: %w", err)
-	}
-	var cfg Config
-	decoder := yaml.NewDecoder(strings.NewReader(raw))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&cfg); err != nil {
-		return StoredConfig{}, fmt.Errorf("decode broker configuration: %w", err)
-	}
-	cfg.defaults()
-	when, err := time.Parse(time.RFC3339Nano, updated)
-	if err != nil {
-		return StoredConfig{}, fmt.Errorf("decode broker configuration timestamp: %w", err)
-	}
-	return StoredConfig{Revision: revision, UpdatedAt: when, Config: cfg}, nil
-}
-
-func (s *ControlStore) ReplaceConfig(ctx context.Context, expected uint64, cfg Config) (StoredConfig, error) {
-	if err := cfg.Validate(); err != nil {
-		return StoredConfig{}, err
-	}
-	encoded, err := yaml.Marshal(cfg)
-	if err != nil {
-		return StoredConfig{}, fmt.Errorf("encode broker configuration: %w", err)
-	}
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE broker_config SET revision=revision+1, config_yaml=?, updated_at=? WHERE id=? AND revision=?`), string(encoded), now.Format(time.RFC3339Nano), 1, expected)
-	if err != nil {
-		return StoredConfig{}, fmt.Errorf("replace broker configuration: %w", err)
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return StoredConfig{}, ErrRevisionConflict
-	}
-	return s.Config(ctx)
-}
-
-func (s *ControlStore) Authorize(ctx context.Context, subject, action, superadmin string) (bool, error) {
-	if strings.TrimSpace(subject) != "" && subject == strings.TrimSpace(superadmin) {
-		return true, nil
-	}
+func (s *ControlStore) Authorize(ctx context.Context, subject, action string) (bool, error) {
 	var one int
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1 FROM role_assignments a JOIN role_permissions p ON p.role=a.role WHERE a.subject=? AND (p.action=? OR p.action='*')`), subject, action).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -694,13 +638,16 @@ func (s *ControlStore) ResolveHubAccess(ctx context.Context, principal Principal
 	return document, nil
 }
 
-func tokenHash(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
+func (s *ControlStore) tokenHash(domain, raw string) string {
+	mac := hmac.New(sha256.New, s.tokenPepper)
+	_, _ = mac.Write([]byte(domain))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(raw))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func (s *ControlStore) SaveFlow(ctx context.Context, rawState string, flow OIDCFlow) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, nonce, pkce_verifier, expires_at, created_at) VALUES(?, ?, ?, ?, ?)`), tokenHash(rawState), flow.Nonce, flow.PKCEVerifier, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, nonce, pkce_verifier, expires_at, created_at) VALUES(?, ?, ?, ?, ?)`), s.tokenHash(oidcFlowTokenDomain, rawState), flow.Nonce, flow.PKCEVerifier, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -712,7 +659,7 @@ func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState string) (OIDCFl
 	defer tx.Rollback()
 	var flow OIDCFlow
 	var expires string
-	key := tokenHash(rawState)
+	key := s.tokenHash(oidcFlowTokenDomain, rawState)
 	if err := tx.QueryRowContext(ctx, s.bind(`SELECT nonce, pkce_verifier, expires_at FROM oidc_flows WHERE state_hash=?`), key).Scan(&flow.Nonce, &flow.PKCEVerifier, &expires); err != nil {
 		return OIDCFlow{}, err
 	}
@@ -740,7 +687,7 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 		return err
 	}
 	defer tx.Rollback()
-	hash := tokenHash(rawToken)
+	hash := s.tokenHash(adminSessionTokenDomain, rawToken)
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_sessions(token_hash, subject, name, email, csrf_token, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`), hash, session.Subject, session.Name, session.Email, session.CSRFToken, session.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
@@ -748,7 +695,7 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json) VALUES(?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams)); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json, credential_fingerprint) VALUES(?, ?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams), session.CredentialFingerprint); err != nil {
 		return err
 	}
 	if session.RolesFromClaim {
@@ -773,7 +720,7 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSession, error) {
 	var session AdminSession
 	var expires string
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, name, email, csrf_token, expires_at FROM admin_sessions WHERE token_hash=?`), tokenHash(rawToken)).Scan(&session.Subject, &session.Name, &session.Email, &session.CSRFToken, &expires)
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, name, email, csrf_token, expires_at FROM admin_sessions WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken)).Scan(&session.Subject, &session.Name, &session.Email, &session.CSRFToken, &expires)
 	if err != nil {
 		return AdminSession{}, err
 	}
@@ -783,7 +730,7 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 		return AdminSession{}, errors.New("administration session expired")
 	}
 	var teams string
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT issuer, username, organization, teams_json FROM admin_session_principals WHERE token_hash=?`), tokenHash(rawToken)).Scan(&session.Issuer, &session.Username, &session.Organization, &teams)
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT issuer, username, organization, teams_json, credential_fingerprint FROM admin_session_principals WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken)).Scan(&session.Issuer, &session.Username, &session.Organization, &teams, &session.CredentialFingerprint)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return AdminSession{}, err
 	}
@@ -791,7 +738,7 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 		return AdminSession{}, errors.New("administration session identity is invalid")
 	}
 	var roles string
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT claim_selector, roles_json FROM admin_session_claim_roles WHERE token_hash=?`), tokenHash(rawToken)).Scan(&session.RoleClaimSelector, &roles)
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT claim_selector, roles_json FROM admin_session_claim_roles WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken)).Scan(&session.RoleClaimSelector, &roles)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return AdminSession{}, err
 	}
@@ -806,7 +753,7 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 }
 
 func (s *ControlStore) DeleteSession(ctx context.Context, rawToken string) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM admin_sessions WHERE token_hash=?`), tokenHash(rawToken))
+	_, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM admin_sessions WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken))
 	return err
 }
 

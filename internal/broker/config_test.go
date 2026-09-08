@@ -1,18 +1,20 @@
 package broker
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecodeConfigExpandsRequiredEnvironmentAndDefaults(t *testing.T) {
 	input := `
 authentication:
   api_keys:
-    - name: local
-      token: "${TOKEN:?TOKEN is required}"
+    - username: service
+      password_hash: "${PASSWORD_HASH:?PASSWORD_HASH is required}"
+      pepper: "${PASSWORD_PEPPER:?PASSWORD_PEPPER is required}"
       subject: service
-      username: service
 services:
   embeddings:
     enabled: true
@@ -24,8 +26,11 @@ services:
       model: internal-model
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
-		if name == "TOKEN" {
-			return "secret"
+		switch name {
+		case "PASSWORD_HASH":
+			return mustPasswordHash(t, "secret")
+		case "PASSWORD_PEPPER":
+			return testPasswordPepper
 		}
 		return ""
 	})
@@ -35,7 +40,7 @@ services:
 	if cfg.Server.Address != ":8080" || cfg.Services.Embeddings.MaxBatch != 256 {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
-	if cfg.Authentication.APIKeys[0].Token != "secret" {
+	if cfg.Authentication.APIKeys[0].PasswordHash == "" {
 		t.Fatal("environment value was not expanded")
 	}
 }
@@ -43,7 +48,7 @@ services:
 func TestDecodeConfigRejectsUnknownFieldsAndMissingEnvironment(t *testing.T) {
 	for name, input := range map[string]string{
 		"unknown":     "unknown: true\n",
-		"environment": "authentication:\n  api_keys:\n    - token: '${TOKEN:?required}'\n",
+		"environment": "authentication:\n  api_keys:\n    - password_hash: '${PASSWORD_HASH:?required}'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
@@ -61,7 +66,7 @@ func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
 	}
 }
 
-func TestAdministrationConfigUsesEnvironmentSuperadminAndRejectsRemoteHTTPCallback(t *testing.T) {
+func TestAdministrationConfigRejectsRemoteHTTPCallback(t *testing.T) {
 	input := `
 database:
   driver: sqlite
@@ -75,7 +80,7 @@ authentication:
       teams_claim: $.groups[*]
 administration:
   enabled: true
-  superadmin_subject: yaml-subject
+  token_pepper: 0123456789abcdef0123456789abcdef
   session_ttl: 1h
   cli:
     oidc_client_id: graphit-cli
@@ -86,17 +91,9 @@ administration:
     redirect_url: http://localhost:8080/admin/auth/callback
     role_claim: $.realm_access.roles[*]
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
-		if name == "BROKER_SUPERADMIN_SUBJECT" {
-			return "environment-subject"
-		}
-		return ""
-	})
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
-	}
-	if cfg.Administration.SuperadminSubject != "environment-subject" {
-		t.Fatalf("superadmin=%q", cfg.Administration.SuperadminSubject)
 	}
 	if cfg.Administration.CLI.ProviderName != "organization-broker" || cfg.Administration.OIDC.UsernameClaim != "preferred_username" || cfg.Administration.OIDC.TeamsClaim != "$.groups[*]" || cfg.Administration.OIDC.RoleClaim != "$.realm_access.roles[*]" || cfg.Administration.OIDC.NameClaim != "name" || cfg.Administration.OIDC.EmailClaim != "email" {
 		t.Fatalf("administration defaults=%#v", cfg.Administration)
@@ -133,21 +130,121 @@ database:
   dsn: /tmp/broker.db
 authentication:
   api_keys:
-    - name: local
-      token: local-secret
+    - username: root
+      password_hash: "${PASSWORD_HASH:?required}"
+      pepper: "${PASSWORD_PEPPER:?required}"
       subject: local-root
-      username: root
+      roles: [admin]
 administration:
   enabled: true
-  superadmin_subject: local-root
+  token_pepper: 0123456789abcdef0123456789abcdef
   session_ttl: 1h
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
+		switch name {
+		case "PASSWORD_HASH":
+			return mustPasswordHash(t, "local-secret")
+		case "PASSWORD_PEPPER":
+			return testPasswordPepper
+		}
+		return ""
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Administration.OIDC.configured() || cfg.Administration.CLI.ProviderName != "organization-broker" {
 		t.Fatalf("local administration config=%#v", cfg.Administration)
+	}
+}
+
+func TestAdministrationRequiresExternalTokenPepper(t *testing.T) {
+	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
+	cfg.Authentication.APIKeys = []APIKeyConfig{{Username: "admin", PasswordHash: mustPasswordHash(t, "password"), Pepper: testPasswordPepper, Subject: "admin", Roles: []string{adminRole}}}
+	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour}
+	cfg.defaults()
+	for _, pepper := range []string{"", "too-short"} {
+		cfg.Administration.TokenPepper = pepper
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "token_pepper") {
+			t.Fatalf("pepper %q validation=%v", pepper, err)
+		}
+	}
+	cfg.Administration.TokenPepper = testTokenPepper
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid pepper rejected: %v", err)
+	}
+}
+
+func TestConfigRejectsLegacyLocalCredentialFields(t *testing.T) {
+	for _, field := range []string{"token", "token_" + "sha256"} {
+		input := "authentication:\n  api_keys:\n    - username: local\n      " + field + ": secret\n      pepper: " + testPasswordPepper + "\n      subject: local\n"
+		if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+			t.Fatalf("legacy field %s was accepted", field)
+		}
+	}
+}
+
+func TestConfigRequiresUniqueUsernameAndStrongPasswordPepper(t *testing.T) {
+	validHash := mustPasswordHash(t, "password")
+	for name, input := range map[string]string{
+		"legacy name":        "authentication:\n  api_keys:\n    - name: local\n      username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: local\n",
+		"missing pepper":     "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      subject: local\n",
+		"short pepper":       "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: too-short\n      subject: local\n",
+		"duplicate username": "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: one\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: two\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+				t.Fatal("invalid local identity configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestConfigAcceptsLiteralOrEnvironmentPasswordPepper(t *testing.T) {
+	hash := mustPasswordHash(t, "password")
+	for name, pepper := range map[string]string{
+		"literal":     testPasswordPepper,
+		"environment": "${PASSWORD_PEPPER:?required}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + hash + "'\n      pepper: '" + pepper + "'\n      subject: local\n"
+			cfg, err := DecodeConfig(strings.NewReader(input), func(variable string) string {
+				if variable == "PASSWORD_PEPPER" {
+					return testPasswordPepper
+				}
+				return ""
+			})
+			if err != nil || cfg.Authentication.APIKeys[0].Pepper != testPasswordPepper {
+				t.Fatalf("pepper=%q err=%v", cfg.Authentication.APIKeys[0].Pepper, err)
+			}
+		})
+	}
+}
+
+func TestRepositoryConfigurationExamplesDecodeWithInjectedSecrets(t *testing.T) {
+	hash := mustPasswordHash(t, "example-password")
+	secrets := map[string]string{
+		"BROKER_EXAMPLE_PASSWORD_HASH":    hash,
+		"BROKER_EXAMPLE_PASSWORD_PEPPER":  testPasswordPepper,
+		"BROKER_ADMIN_TOKEN_PEPPER":       testTokenPepper,
+		"BROKER_ADMIN_OIDC_ISSUER":        "https://identity.example.com",
+		"BROKER_ADMIN_OIDC_CLIENT_ID":     "broker-admin",
+		"BROKER_ADMIN_OIDC_CLIENT_SECRET": "oidc-secret",
+		"BROKER_ADMIN_OIDC_REDIRECT_URL":  "https://broker.example.com/admin/auth/callback",
+		"OPENAI_API_KEY":                  "openai-secret", "COHERE_API_KEY": "cohere-secret",
+		"PRIMARY_S3_ACCESS_KEY_ID": "primary-access", "PRIMARY_S3_SECRET_ACCESS_KEY": "primary-secret",
+		"PUBLIC_S3_ACCESS_KEY_ID": "public-access", "PUBLIC_S3_SECRET_ACCESS_KEY": "public-secret",
+	}
+	for _, path := range []string{"../../config.example.yaml", "../../examples/health-only.yaml", "../../examples/local-models.yaml"} {
+		t.Run(path, func(t *testing.T) {
+			file, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if _, err := DecodeConfig(file, func(name string) string { return secrets[name] }); err != nil {
+				t.Fatalf("DecodeConfig: %v", err)
+			}
+		})
 	}
 }
 

@@ -9,10 +9,11 @@ before decoding:
 
 Run `graphit-broker --config config.yaml --check-config` to validate without serving.
 
-The YAML document seeds only an empty database. After initialization, mutable configuration is
-read from SQL and edited through `/admin/` or `/admin/api/v1/config`. Database selection,
-administration enabled state, and the effective superadmin subject remain deployment-owned.
-Resource grants are never configured in YAML.
+The expanded YAML document is the sole configuration authority. It is never serialized into SQL.
+Change it through deployment/secret-management tooling and restart the broker to activate the new
+configuration. `/admin/api/v1/config` is a redacted read-only view. Resource grants, roles, role
+assignments, login flows, and sessions remain durable SQL state; resource grants are never
+configured in YAML.
 
 ## Database
 
@@ -73,15 +74,55 @@ JSONPath fails configuration validation. The canonical identity remains the veri
 `iss` plus `sub`; protocol claims including `iss`, `sub`, `aud`, expiry, nonce, and scopes are not
 remappable selectors.
 
-`authentication.api_keys` supports service/local identities. Each item has `name`, exactly one
-of `token` or 64-character `token_sha256`, `subject`, `username`, optional
-`organization`, and optional `teams`. Prefer the digest form. These keys are bearer
-credentials and receive only grants matching their configured identity.
+`authentication.api_keys` supports service/local identities backed by human-chosen passwords.
+Each item has a unique `username`, an Argon2id PHC `password_hash`, a pepper of at least 32 bytes,
+`subject`, optional `organization`, optional `teams`, and optional administration `roles`.
+Plaintext passwords, unsalted SHA-256 digests, and the former `name` selector are rejected. Generate
+a verifier interactively without terminal echo, naming the environment variable that holds the
+same pepper configured on the identity:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `username` | yes | Safe unique public selector sent before the password; it does not enter Argon2id |
+| `password_hash` | yes | Complete PHC emitted by the password-generation command |
+| `pepper` | yes | At least 32 bytes; external secret used to generate and verify this PHC |
+| `subject` | yes | Stable authorization subject |
+| `organization` | no | Organization attribute used by resource grants |
+| `teams` | no | Team attributes used by resource grants |
+| `roles` | no | Authoritative administration roles for this local identity |
+
+```bash
+graphit-broker --hash-password \
+  --password-pepper-env BROKER_BOOTSTRAP_PASSWORD_PEPPER
+```
+
+For automation, pass the secret only through standard input from a secret manager or mounted
+secret file. Do not put it in command arguments, shell text, or environment variables:
+
+```bash
+cat /run/secrets/broker-bootstrap-password | graphit-broker --hash-password-stdin \
+  --password-pepper-env BROKER_BOOTSTRAP_PASSWORD_PEPPER
+```
+
+Both commands combine the pepper with the password before Argon2id and write only the PHC verifier
+to standard output. Store that verifier in a secret manager/environment value referenced by
+`config.yml`; the plaintext and pepper are not embedded in the PHC. A literal YAML pepper is
+accepted under the operator's responsibility, but an environment/secret-manager reference is
+recommended. Losing or rotating the pepper requires generating a new `password_hash`.
+When a Docker Compose `.env` file carries the verifier, single-quote the complete PHC value so
+Compose does not interpolate its `$` characters.
+
+The construction is `HMAC-SHA-256(pepper, domain || 0x00 || password)`, followed by Argon2id with
+a new random salt. The PHC contains the Argon2id version, parameters, salt, and
+derived hash; it deliberately does not contain the pepper. The same pepper value must therefore be
+available to the generation command and to the corresponding `api_keys` entry. Each entry may use
+a different pepper. Changing username, password hash, pepper, or roles invalidates existing local
+administration sessions after restart.
 
 Consumer endpoints do not require OIDC when API keys are sufficient for the deployment. A broker
-may configure only API-key identities, only OIDC issuers, or both. An API-key client sends the
-original token as `Authorization: Bearer <token>`; `token_sha256` is the digest stored in
-configuration. The broker has no built-in username/password identity store. Omitting the
+may configure only local identities, only OIDC issuers, or both. A local client sends
+`Authorization: Bearer <username>:<password>`; the server selects that username and performs one
+peppered Argon2id verification. Omitting the
 `Authorization` header creates an anonymous principal rather than an authenticated identity, and
 that principal can do work only when an explicit `anonymous` resource grant matches.
 
@@ -90,7 +131,7 @@ that principal can do work only when an explicit `anonymous` resource grant matc
 ```yaml
 administration:
   enabled: true
-  superadmin_subject: "${BROKER_SUPERADMIN_SUBJECT:?required}"
+  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?at least 32 random bytes}"
   session_ttl: 8h
   cli:
     provider_name: organization-broker
@@ -113,8 +154,8 @@ administration:
 
 When present, administration OIDC uses a separate confidential client. The callback may use HTTP
 only on a loopback host. OIDC may be omitted for a local-only UI backed by at least one
-`authentication.api_keys` identity. Session TTL must be between 5 minutes and 168 hours. The environment value
-`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start. `name_claim` and `email_claim` default to
+`authentication.api_keys` identity. Session TTL must be between 5 minutes and 168 hours.
+`name_claim` and `email_claim` default to
 `name` and `email`. The username, organization, and team mappings let the projects UI evaluate the
 same `user`, `organization`, and `team` resource grants as consumer requests; when omitted, those
 three mappings inherit from a consumer OIDC issuer with the same issuer URL. All six mappings use
@@ -124,19 +165,33 @@ the exact-key/JSONPath rules above.
 `role_assignments`. When configured, it must resolve to at least one role string and is
 authoritative for that OIDC identity: claimed roles replace, rather than merge with, every local
 role assignment for the same `sub`. Role names still refer to role definitions and permissions in
-SQL; an unknown claimed role grants nothing. The deployment `superadmin_subject` remains the
-emergency bypass. API-key UI identities have no token claims and continue to use local database
-assignments.
+SQL; an unknown claimed role grants nothing. Local UI identities use their configured `roles` when
+present; those roles are authoritative for that identity. Without configured roles, they use local
+database assignments. There is no superadmin bypass.
 
 `administration.cli` supplies the non-secret public/native client details used to render complete
 `graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick
 a free loopback port; when set, it must be an HTTP loopback URL with an explicit port.
 
-An identity from `authentication.api_keys` can also enter the UI with its original local token when
-its configured `subject` has an assigned UI role. The token is validated once by the existing
-consumer authenticator and exchanged for a short-lived, `HttpOnly`, CSRF-protected UI session; the
-API key is not persisted by the UI. For local-only bootstrap, set `BROKER_SUPERADMIN_SUBJECT` to one
-configured API-key `subject`. There is no separate local username/password store.
+An identity from `authentication.api_keys` enters the UI with its configured username and plaintext
+password. The password is validated once and exchanged for a short-lived, `HttpOnly`,
+CSRF-protected UI session; it is not persisted by the UI or database.
+
+For a new database, create the first administrator entirely through deployment configuration:
+
+```yaml
+authentication:
+  api_keys:
+    - username: bootstrap-admin
+      password_hash: "${BROKER_BOOTSTRAP_PASSWORD_HASH:?required}"
+      pepper: "${BROKER_BOOTSTRAP_PASSWORD_PEPPER:?at least 32 bytes}"
+      subject: bootstrap-admin
+      roles: [admin]
+```
+
+Sign in locally, create any OIDC/database role assignments needed for normal operation, then remove
+or narrow the bootstrap identity in `config.yml` and restart. There is no special superadmin
+subject or authorization bypass.
 
 ## Model catalog
 

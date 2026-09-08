@@ -66,6 +66,30 @@ operator-managed library and suppresses extraction of the embedded runtime.
 
 ## Install and configure
 
+To generate an Argon2id verifier for a local identity, first inject a pepper of at least 32 bytes
+into an environment variable. The interactive mode requires a TTY, disables terminal echo, asks
+for confirmation, reads the pepper from the named variable, and writes only the verifier to stdout:
+
+```bash
+graphit-broker --hash-password \
+  --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
+```
+
+Unattended provisioning must use the explicit stdin mode. Feed it from a secret manager or a
+permission-restricted mounted file; never put the plaintext password in argv or an environment
+variable:
+
+```bash
+cat /run/secrets/broker-password | graphit-broker --hash-password-stdin \
+  --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
+```
+
+Treat the resulting verifier as sensitive configuration and inject it into the environment value
+referenced by `authentication.api_keys[].password_hash`. Configure that identity's `pepper` with
+the same environment value. The pepper value is never accepted as an argument or written to output.
+`--password-pepper-env` is mandatory in both hashing modes; an absent, empty, or shorter-than-32-byte
+value fails without producing a verifier. The flag carries only the variable name, never its value.
+
 This example creates a dedicated service identity and persistent directories:
 
 ```bash

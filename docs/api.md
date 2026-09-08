@@ -144,16 +144,20 @@ The response never contains bucket, region, base prefix, access key, or secret k
 
 ## Administration API
 
-Administration accepts a secure session cookie created by OIDC or by exchanging an existing
-`authentication.api_keys` token at `POST /admin/auth/local`. State changes require the session CSRF
+Administration accepts a secure session cookie created by OIDC or by validating an existing
+username-selected `authentication.api_keys` password at `POST /admin/auth/local` with JSON fields
+`username` and `password`. State changes require the session CSRF
 token. A valid administration OIDC bearer is also accepted directly. Protected routes are:
+
+The password is a sensitive request-body value: send it only over HTTPS from the UI or another
+client that does not place it in process arguments, shell history, URLs, or logs. The response does
+not echo it.
 
 | Route | Action | Purpose |
 |---|---|---|
 | `GET /admin/api/v1/session` | `session.read` | identity, effective roles, `role_source`, actions, CSRF |
 | `GET /admin/api/v1/projects` | `projects.read` | current identity's exact Hub projects and CLI commands |
-| `GET /admin/api/v1/config` | `configuration.read` | redacted YAML and ETag |
-| `PUT /admin/api/v1/config` | `configuration.write` | validate, persist, hot activate |
+| `GET /admin/api/v1/config` | `configuration.read` | redacted deployment YAML (read-only) |
 | `GET /admin/api/v1/grants` | `grants.read` | list grants and ACL ETag |
 | `POST /admin/api/v1/grants` | `grants.write` | create a grant |
 | `PUT /admin/api/v1/grants/{id}` | `grants.write` | replace one grant |
@@ -163,12 +167,15 @@ token. A valid administration OIDC bearer is also accepted directly. Protected r
 | `PUT/DELETE /admin/api/v1/roles/{role}` | `roles.write` | manage role definition |
 | `GET/POST/DELETE /admin/api/v1/role-assignments` | role action | manage exact-sub assignments |
 
-`GET /admin/api/v1/login-options` is public and reports whether OIDC and local-token login are
+`GET /admin/api/v1/login-options` is public and reports whether OIDC and local-password login are
 available; it contains no credentials or identity data.
 
-Grant and configuration writes require `If-Match` with the current ETag. A stale revision returns
-`409`; a missing precondition returns `428`. Grant CRUD increments only the ACL revision.
-Configuration changes increment only the configuration revision.
+The configuration response replaces both `authentication.api_keys[].password_hash` and
+`authentication.api_keys[].pepper` with `[configured-secret]` and never reads either from SQL.
+
+Grant writes require `If-Match` with the current ETag. A stale revision returns `409`; a missing
+precondition returns `428`. There is no configuration write endpoint; update deployment
+configuration and restart the broker.
 
 ## Error envelope
 

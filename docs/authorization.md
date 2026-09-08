@@ -10,7 +10,8 @@ Hub resolution, S3 pre-sign, embedding, or rerank request.
 The broker derives the principal from exactly one source:
 
 - no `Authorization` header: anonymous principal;
-- a configured API key: the fixed subject/username/organization/teams stored with that key;
+- a configured local credential: the username-selected, peppered Argon2id password identity and its fixed
+  subject/username/organization/teams;
 - an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured exact-key or
   RFC 9535 JSONPath claim selectors are validated before attributes are mapped.
 
