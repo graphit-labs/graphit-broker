@@ -50,6 +50,14 @@ Custom roles may contain `session.read`, `configuration.read`,
 `configuration.write`, `grants.read`, `grants.write`, `roles.read`,
 `roles.write`, `projects.read`, or `*`.
 
+OIDC roles can instead come from `administration.oidc.role_claim`. If that selector is configured,
+it must produce at least one string and the claimed roles are authoritative for the session: the
+broker ignores all local `role_assignments` for that OIDC `sub`, including assignments that would
+grant more access. A claimed `user` therefore overrides a local `admin`, and a claimed `admin`
+overrides a local `user`. Claimed names resolve through the same database role definitions, so an
+unknown name has no permissions. The deployment superadmin bypass remains in force. API-key login
+continues to use local assignments because API keys do not carry claims.
+
 UI roles do not grant consumer access. The projects list is filtered independently through current
 resource grants using the verified OIDC or API-key subject, username, organization, and teams. An
 identity with the `user` role but no matching Hub grant sees an empty project list.
@@ -107,9 +115,13 @@ resource grants.
 
 Assignments use the exact administration token `sub`, not email or display name. On successful
 login the server checks `session.read`; every API call then checks its own action. Revocation
-takes effect on the next request. If no assignment rows exist, the superadmin is still the only
-administrator; once assignments exist, the deployment superadmin continues to retain emergency
-access.
+takes effect on the next request for database-backed identities. When `role_claim` is configured,
+local assignments for OIDC users remain visible/manageable but do not participate in their
+authorization. Claim roles are captured in the browser session and refresh at the next login;
+direct bearer requests evaluate the current token. If a deployment enables `role_claim`, older
+sessions without captured claim roles are rejected and must sign in again. If no assignment rows
+exist, the superadmin is still the only database-backed administrator; the deployment superadmin
+always retains emergency access.
 
 ## Recovery
 

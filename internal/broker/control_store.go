@@ -53,15 +53,18 @@ type RoleAssignment struct {
 }
 
 type AdminSession struct {
-	Issuer       string
-	Subject      string
-	Name         string
-	Email        string
-	Username     string
-	Organization string
-	Teams        []string
-	CSRFToken    string
-	ExpiresAt    time.Time
+	Issuer            string
+	Subject           string
+	Name              string
+	Email             string
+	Username          string
+	Organization      string
+	Teams             []string
+	Roles             []string
+	RolesFromClaim    bool
+	RoleClaimSelector string
+	CSRFToken         string
+	ExpiresAt         time.Time
 }
 
 type OIDCFlow struct {
@@ -127,6 +130,7 @@ func (s *ControlStore) initialize(ctx context.Context, seed Config) error {
 		`CREATE TABLE IF NOT EXISTS role_assignments (subject VARCHAR(512) NOT NULL, role VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, role), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_sessions (token_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, csrf_token VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS admin_session_claim_roles (token_hash VARCHAR(64) PRIMARY KEY, claim_selector VARCHAR(4096) NOT NULL, roles_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
@@ -281,6 +285,41 @@ func (s *ControlStore) SubjectPermissions(ctx context.Context, subject string) (
 		values = append(values, value)
 	}
 	return values, rows.Err()
+}
+
+func (s *ControlStore) RolePermissions(ctx context.Context, roles []string) ([]string, error) {
+	roles = cleanStrings(roles)
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(roles))
+	arguments := make([]any, len(roles))
+	for i, role := range roles {
+		placeholders[i], arguments[i] = "?", role
+	}
+	query := `SELECT DISTINCT action FROM role_permissions WHERE role IN (` + strings.Join(placeholders, ",") + `) ORDER BY action`
+	rows, err := s.db.QueryContext(ctx, s.bind(query), arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var values []string
+	for rows.Next() {
+		var value string
+		if err := rows.Scan(&value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (s *ControlStore) AuthorizeRoles(ctx context.Context, roles []string, action string) (bool, error) {
+	permissions, err := s.RolePermissions(ctx, roles)
+	if err != nil {
+		return false, fmt.Errorf("authorize claimed administration roles: %w", err)
+	}
+	return containsString(permissions, action) || containsString(permissions, "*"), nil
 }
 
 func (s *ControlStore) Roles(ctx context.Context) ([]AdminRole, error) {
@@ -712,6 +751,22 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json) VALUES(?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams)); err != nil {
 		return err
 	}
+	if session.RolesFromClaim {
+		if strings.TrimSpace(session.RoleClaimSelector) == "" {
+			return errors.New("administration session role claim selector is required")
+		}
+		claimedRoles := cleanStrings(session.Roles)
+		if len(claimedRoles) == 0 {
+			return errors.New("administration session claimed roles are required")
+		}
+		roles, err := json.Marshal(claimedRoles)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_claim_roles(token_hash, claim_selector, roles_json) VALUES(?, ?, ?)`), hash, strings.TrimSpace(session.RoleClaimSelector), string(roles)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -734,6 +789,18 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 	}
 	if err == nil && json.Unmarshal([]byte(teams), &session.Teams) != nil {
 		return AdminSession{}, errors.New("administration session identity is invalid")
+	}
+	var roles string
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT claim_selector, roles_json FROM admin_session_claim_roles WHERE token_hash=?`), tokenHash(rawToken)).Scan(&session.RoleClaimSelector, &roles)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return AdminSession{}, err
+	}
+	if err == nil {
+		if json.Unmarshal([]byte(roles), &session.Roles) != nil || len(cleanStrings(session.Roles)) == 0 {
+			return AdminSession{}, errors.New("administration session claimed roles are invalid")
+		}
+		session.Roles = cleanStrings(session.Roles)
+		session.RolesFromClaim = true
 	}
 	return session, nil
 }

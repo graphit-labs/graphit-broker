@@ -11,8 +11,8 @@ The broker derives the principal from exactly one source:
 
 - no `Authorization` header: anonymous principal;
 - a configured API key: the fixed subject/username/organization/teams stored with that key;
-- an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured claim paths
-  are validated before attributes are mapped.
+- an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured exact-key or
+  RFC 9535 JSONPath claim selectors are validated before attributes are mapped.
 
 Request bodies cannot provide identity claims. Canonical OIDC identity is `iss|sub`; username,
 organization, and teams are attributes from the verified token only. An invalid bearer returns

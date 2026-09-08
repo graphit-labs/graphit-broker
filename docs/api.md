@@ -148,7 +148,7 @@ token. A valid administration OIDC bearer is also accepted directly. Protected r
 
 | Route | Action | Purpose |
 |---|---|---|
-| `GET /admin/api/v1/session` | `session.read` | identity, roles, actions, CSRF |
+| `GET /admin/api/v1/session` | `session.read` | identity, effective roles, `role_source`, actions, CSRF |
 | `GET /admin/api/v1/projects` | `projects.read` | current identity's exact Hub projects and CLI commands |
 | `GET /admin/api/v1/config` | `configuration.read` | redacted YAML and ETag |
 | `PUT /admin/api/v1/config` | `configuration.write` | validate, persist, hot activate |

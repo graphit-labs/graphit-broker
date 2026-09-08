@@ -121,6 +121,22 @@ func TestControlStoreFailsClosedAndPreservesStateAfterRejectedUpdates(t *testing
 	if allowed, _ := store.Authorize(ctx, "reader-subject", "configuration.write", "super"); allowed {
 		t.Fatal("unassigned permission allowed")
 	}
+	if allowed, err := store.AuthorizeRoles(ctx, []string{"reader"}, "configuration.read"); err != nil || !allowed {
+		t.Fatalf("claimed role permission allowed=%v err=%v", allowed, err)
+	}
+	if allowed, err := store.AuthorizeRoles(ctx, []string{userRole}, "configuration.read"); err != nil || allowed {
+		t.Fatalf("claimed user role configuration allowed=%v err=%v", allowed, err)
+	}
+	rawSession := "claimed-session"
+	wantSession := AdminSession{Issuer: "https://identity.example", Subject: "reader-subject", Roles: []string{"reader"}, RolesFromClaim: true, RoleClaimSelector: "$.roles[*]",
+		CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := store.CreateSession(ctx, rawSession, wantSession); err != nil {
+		t.Fatal(err)
+	}
+	gotSession, err := store.Session(ctx, rawSession)
+	if err != nil || !gotSession.RolesFromClaim || !reflect.DeepEqual(gotSession.Roles, wantSession.Roles) {
+		t.Fatalf("claimed session=%#v err=%v", gotSession, err)
+	}
 	if err := store.RevokeRole(ctx, "reader-subject", "reader"); err != nil {
 		t.Fatal(err)
 	}

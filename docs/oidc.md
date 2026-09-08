@@ -24,12 +24,14 @@ authentication:
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
       username_claim: preferred_username
-      organization_claim: organization.id
-      teams_claim: groups
+      organization_claim: "$.organization.id"
+      teams_claim: "$.groups[*].name"
 ```
 
 The broker discovers signing keys and verifies token signature, exact issuer, accepted audience,
-expiry, and every required scope. It then maps configured claim paths. The `sub` claim is always
+expiry, and every required scope. It then maps configured claim selectors. A selector can be an
+exact top-level key or an RFC 9535 JSONPath beginning with `$`; multi-value selectors can traverse
+arrays and select multiple string nodes. The `sub` claim is always
 required and canonical identity remains `iss|sub`; mapped fields cannot replace it.
 
 Access tokens must be JWTs verifiable through issuer discovery/JWKS. Opaque tokens are not
@@ -68,7 +70,7 @@ Collect:
 - broker API audience;
 - optional required scope;
 - stable username claim;
-- optional organization and group/team claim paths;
+- optional organization and group/team claim selectors;
 - for Graphit login, native/public client ID, scopes, and redirect policy;
 - for token exchange, client authentication method and whether RFC 8693 is enabled for that client;
 - for administration, confidential web client ID/secret and exact callback.
@@ -89,11 +91,43 @@ administration:
     client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
     redirect_url: https://broker.example.com/admin/auth/callback
     scopes: [openid, profile, email]
+    name_claim: name
+    email_claim: email
+    username_claim: preferred_username
+    organization_claim: "$.organization.id"
+    teams_claim: "$.groups[*].name"
+    role_claim: "$.realm_access.roles[*]"
 ```
 
 Register the callback exactly. The browser flow uses code, state, nonce, and PKCE. The broker
 persists only hashed state/session tokens and server-side metadata. Set
 `BROKER_SUPERADMIN_SUBJECT` from the immutable admin `sub`, never an email address.
+
+All administration identity mappings accept exact claim keys or RFC 9535 JSONPath. `name`, email,
+username, and organization must resolve to zero or one string (username is optional for the admin
+client); teams and roles may resolve a string, a string array, or multiple strings. A configured
+`role_claim` is required to return at least one role. Its values are authoritative and completely
+replace local database assignments for that OIDC subject; they are not merged. Role permissions
+still come from broker role definitions. Missing, empty, non-string, or syntactically invalid role
+selection fails closed. API-key sessions keep using database assignments.
+
+Examples for common token layouts:
+
+```yaml
+# Exact top-level/namespaced keys
+username_claim: preferred_username
+teams_claim: https://claims.example.com/teams
+
+# Nested objects and arrays
+organization_claim: "$.tenants[?@.primary == true].id"
+teams_claim: "$.groups[*].name"
+role_claim: "$.realm_access.roles[*]"
+```
+
+Exact keys are tested before traversal, including keys containing dots. A non-JSONPath dotted value
+such as `organization.id` remains supported for compatibility when no exact key exists. Prefer
+JSONPath for new nested/array mappings. Invalid JSONPath is rejected by `--check-config` and normal
+startup.
 
 ## Common provider notes
 
@@ -114,5 +148,5 @@ JWT access token, correct audience/scope, stable `sub`, and explicit claim mappi
 - `403`: token valid, but no current resource grant matches.
 - Graphit exchange error: RFC 8693 disabled, client authentication wrong, target audience/resource
   not permitted, or invalid subject token.
-- Admin callback rejected: redirect URI mismatch, code/state/nonce/PKCE failure, or subject lacks
-  `session.read`.
+- Admin callback rejected: redirect URI mismatch, code/state/nonce/PKCE failure, invalid/missing
+  role claim, or effective roles lack `session.read`.

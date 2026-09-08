@@ -126,7 +126,10 @@ Use:
 - optionally RFC 8693 token exchange when MCP and broker audiences differ;
 - a confidential broker administration web client, unless the UI is deliberately local-token-only.
 
-Grant only required scopes and map stable claims. Do not use email as the immutable superadmin key.
+Grant only required scopes and map stable claims. Claim mappings accept exact top-level keys or
+RFC 9535 JSONPath. If `administration.oidc.role_claim` is enabled, ensure every administrator token
+contains at least one broker role; those roles replace local database assignments. Do not use email
+as the immutable superadmin key.
 
 ## Rollout
 

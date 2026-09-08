@@ -40,7 +40,8 @@ this development version. Recreate the database when the schema version changes.
 
 Administrative RBAC and resource authorization are separate:
 
-- roles control who may operate the administration API;
+- roles control who may operate the administration API; optional verified OIDC claim roles
+  override local subject assignments;
 - resource grants control which verified consumer may use `hub`, `s3`, `embeddings`, and
   `rerank`, for which exact projects and S3 operations/routes/prefixes.
 

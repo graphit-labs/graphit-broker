@@ -71,8 +71,8 @@ authentication:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
       username_claim: preferred_username
-      organization_claim: organization.id
-      teams_claim: groups
+      organization_claim: $.organization.id
+      teams_claim: $.groups[*]
 administration:
   enabled: true
   superadmin_subject: yaml-subject
@@ -84,6 +84,7 @@ administration:
     client_id: broker-admin
     client_secret: secret
     redirect_url: http://localhost:8080/admin/auth/callback
+    role_claim: $.realm_access.roles[*]
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
 		if name == "BROKER_SUPERADMIN_SUBJECT" {
@@ -97,7 +98,7 @@ administration:
 	if cfg.Administration.SuperadminSubject != "environment-subject" {
 		t.Fatalf("superadmin=%q", cfg.Administration.SuperadminSubject)
 	}
-	if cfg.Administration.CLI.ProviderName != "organization-broker" || cfg.Administration.OIDC.UsernameClaim != "preferred_username" || cfg.Administration.OIDC.TeamsClaim != "groups" {
+	if cfg.Administration.CLI.ProviderName != "organization-broker" || cfg.Administration.OIDC.UsernameClaim != "preferred_username" || cfg.Administration.OIDC.TeamsClaim != "$.groups[*]" || cfg.Administration.OIDC.RoleClaim != "$.realm_access.roles[*]" || cfg.Administration.OIDC.NameClaim != "name" || cfg.Administration.OIDC.EmailClaim != "email" {
 		t.Fatalf("administration defaults=%#v", cfg.Administration)
 	}
 	cfg.Administration.OIDC.RedirectURL = "http://broker.example.com/admin/auth/callback"
@@ -108,6 +109,20 @@ administration:
 	cfg.Administration.CLI.OIDCRedirectURI = "https://identity.example.com/callback"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTP loopback") {
 		t.Fatalf("CLI callback validation=%v", err)
+	}
+}
+
+func TestConfigRejectsInvalidClaimJSONPath(t *testing.T) {
+	input := `
+authentication:
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: $.profile[
+`
+	_, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err == nil || !strings.Contains(err.Error(), "username_claim") || !strings.Contains(err.Error(), "invalid JSONPath") {
+		t.Fatalf("invalid claim JSONPath error=%v", err)
 	}
 }
 

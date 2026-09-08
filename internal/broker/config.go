@@ -98,14 +98,18 @@ type AdminOIDCConfig struct {
 	ClientSecret      string   `yaml:"client_secret" json:"client_secret,omitempty"`
 	RedirectURL       string   `yaml:"redirect_url" json:"redirect_url"`
 	Scopes            []string `yaml:"scopes" json:"scopes,omitempty"`
+	NameClaim         string   `yaml:"name_claim" json:"name_claim,omitempty"`
+	EmailClaim        string   `yaml:"email_claim" json:"email_claim,omitempty"`
 	UsernameClaim     string   `yaml:"username_claim" json:"username_claim,omitempty"`
 	OrganizationClaim string   `yaml:"organization_claim" json:"organization_claim,omitempty"`
 	TeamsClaim        string   `yaml:"teams_claim" json:"teams_claim,omitempty"`
+	RoleClaim         string   `yaml:"role_claim" json:"role_claim,omitempty"`
 }
 
 func (c AdminOIDCConfig) configured() bool {
 	return strings.TrimSpace(c.Issuer) != "" || strings.TrimSpace(c.ClientID) != "" ||
-		strings.TrimSpace(c.ClientSecret) != "" || strings.TrimSpace(c.RedirectURL) != ""
+		strings.TrimSpace(c.ClientSecret) != "" || strings.TrimSpace(c.RedirectURL) != "" ||
+		strings.TrimSpace(c.RoleClaim) != ""
 }
 
 type ACLRuleConfig struct {
@@ -303,6 +307,12 @@ func (c *Config) defaults() {
 	if len(c.Administration.OIDC.Scopes) == 0 {
 		c.Administration.OIDC.Scopes = []string{"openid", "profile", "email"}
 	}
+	if c.Administration.OIDC.NameClaim == "" {
+		c.Administration.OIDC.NameClaim = "name"
+	}
+	if c.Administration.OIDC.EmailClaim == "" {
+		c.Administration.OIDC.EmailClaim = "email"
+	}
 	if c.Administration.CLI.ProviderName == "" {
 		c.Administration.CLI.ProviderName = "organization-broker"
 	}
@@ -437,6 +447,14 @@ func (c Config) Validate() error {
 		if issuer.UsernameClaim == "" {
 			return fmt.Errorf("authentication.oidc[%d]: username_claim is required", i)
 		}
+		for _, mapping := range []struct{ field, selector string }{
+			{"username_claim", issuer.UsernameClaim}, {"organization_claim", issuer.OrganizationClaim},
+			{"teams_claim", issuer.TeamsClaim},
+		} {
+			if err := validateClaimSelector(mapping.selector); err != nil {
+				return fmt.Errorf("authentication.oidc[%d].%s: %w", i, mapping.field, err)
+			}
+		}
 	}
 	for i, key := range c.Authentication.APIKeys {
 		if key.Token == "" && key.TokenSHA256 == "" {
@@ -468,6 +486,15 @@ func (c Config) Validate() error {
 			}
 			if err := validateHTTPSOrLoopbackURL(c.Administration.OIDC.RedirectURL, "administration OIDC redirect URL"); err != nil {
 				return err
+			}
+			for _, mapping := range []struct{ field, selector string }{
+				{"name_claim", c.Administration.OIDC.NameClaim}, {"email_claim", c.Administration.OIDC.EmailClaim},
+				{"username_claim", c.Administration.OIDC.UsernameClaim}, {"organization_claim", c.Administration.OIDC.OrganizationClaim},
+				{"teams_claim", c.Administration.OIDC.TeamsClaim}, {"role_claim", c.Administration.OIDC.RoleClaim},
+			} {
+				if err := validateClaimSelector(mapping.selector); err != nil {
+					return fmt.Errorf("administration.oidc.%s: %w", mapping.field, err)
+				}
 			}
 		} else if len(c.Authentication.APIKeys) == 0 {
 			return errors.New("administration requires an OIDC client or at least one authentication.api_keys identity")

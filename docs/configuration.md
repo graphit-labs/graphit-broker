@@ -50,12 +50,28 @@ Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides a
 | `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
 | `audiences` | yes | At least one accepted broker audience |
 | `required_scopes` | no | Every listed scope must be present |
-| `username_claim` | yes | Verified string claim path |
-| `organization_claim` | no | Verified string claim path |
-| `teams_claim` | no | Verified string/string-array claim path |
+| `username_claim` | yes | Verified single-string claim selector |
+| `organization_claim` | no | Verified single-string claim selector |
+| `teams_claim` | no | Verified multi-string claim selector |
 
-Nested claim paths use dots, for example `organization.id`. The canonical identity remains the
-verified `iss` plus `sub`.
+Every claim selector accepts either an exact top-level claim key or an
+[RFC 9535 JSONPath](https://www.rfc-editor.org/rfc/rfc9535.html) expression beginning with `$`.
+Exact keys are checked first, so namespaced keys such as `https://claims.example.com/teams` and
+literal keys containing dots work unchanged. For backward compatibility, a non-JSONPath value
+whose exact key is absent also supports dotted object traversal such as `organization.id`.
+JSONPath should be used for arrays, wildcards, filters, slices, or unambiguous nested traversal:
+
+```yaml
+username_claim: "$.accounts[?@.primary == true].username"
+organization_claim: "$.organization.id"
+teams_claim: "$.groups[*].name"
+```
+
+Single-string mappings must select exactly one non-empty string. Multi-string mappings accept one
+string, one string array, or multiple selected strings and flatten/deduplicate the result. Invalid
+JSONPath fails configuration validation. The canonical identity remains the verified standard
+`iss` plus `sub`; protocol claims including `iss`, `sub`, `aud`, expiry, nonce, and scopes are not
+remappable selectors.
 
 `authentication.api_keys` supports service/local identities. Each item has `name`, exactly one
 of `token` or 64-character `token_sha256`, `subject`, `username`, optional
@@ -87,17 +103,30 @@ administration:
     client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
     redirect_url: https://broker.example.com/admin/auth/callback
     scopes: [openid, profile, email]
+    name_claim: name
+    email_claim: email
     username_claim: preferred_username
-    organization_claim: organization.id
-    teams_claim: groups
+    organization_claim: "$.organization.id"
+    teams_claim: "$.groups[*].name"
+    role_claim: "$.realm_access.roles[*]"
 ```
 
 When present, administration OIDC uses a separate confidential client. The callback may use HTTP
 only on a loopback host. OIDC may be omitted for a local-only UI backed by at least one
 `authentication.api_keys` identity. Session TTL must be between 5 minutes and 168 hours. The environment value
-`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start. The three identity claim mappings let
-the projects UI evaluate the same `user`, `organization`, and `team` resource grants as consumer
-requests. When omitted, they inherit from a consumer OIDC issuer with the same issuer URL.
+`BROKER_SUPERADMIN_SUBJECT` overrides YAML on every start. `name_claim` and `email_claim` default to
+`name` and `email`. The username, organization, and team mappings let the projects UI evaluate the
+same `user`, `organization`, and `team` resource grants as consumer requests; when omitted, those
+three mappings inherit from a consumer OIDC issuer with the same issuer URL. All six mappings use
+the exact-key/JSONPath rules above.
+
+`administration.oidc.role_claim` is optional. When absent, UI permissions come from local SQL
+`role_assignments`. When configured, it must resolve to at least one role string and is
+authoritative for that OIDC identity: claimed roles replace, rather than merge with, every local
+role assignment for the same `sub`. Role names still refer to role definitions and permissions in
+SQL; an unknown claimed role grants nothing. The deployment `superadmin_subject` remains the
+emergency bypass. API-key UI identities have no token claims and continue to use local database
+assignments.
 
 `administration.cli` supplies the non-secret public/native client details used to render complete
 `graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick

@@ -51,11 +51,16 @@ administration:
     client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?set the confidential client secret}"
     redirect_url: "${BROKER_ADMIN_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
     scopes: ["openid", "profile", "email"]
-    # These default to the matching consumer OIDC issuer mappings above. Set them explicitly
-    # when the administration client uses a different issuer or claim layout.
+    # A plain value is an exact top-level claim key. A value beginning with $ is RFC 9535
+    # JSONPath and can select nested/array values. name_claim and email_claim default as below;
+    # username/organization/teams inherit from a matching consumer issuer when omitted.
+    name_claim: "name"
+    email_claim: "email"
     username_claim: "preferred_username"
-    organization_claim: "organization.id"
-    teams_claim: "groups"
+    organization_claim: "$.organization.id"
+    teams_claim: "$.groups[*].name"
+    # When configured, this is authoritative: token roles replace database role assignments.
+    role_claim: "$.realm_access.roles[*]"
 
 # Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
 # /admin/, then create grants in Resource grants or through /admin/api/v1/grants.

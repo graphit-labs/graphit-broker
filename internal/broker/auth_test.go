@@ -34,7 +34,7 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 	}))
 	defer server.Close()
 	issuer = server.URL
-	cfg := AuthenticationConfig{OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"graphit.use"}, UsernameClaim: "profile.username", OrganizationClaim: "organization.id", TeamsClaim: "groups"}}}
+	cfg := AuthenticationConfig{OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"graphit.use"}, UsernameClaim: "$.profile.username", OrganizationClaim: "$.organization.id", TeamsClaim: "$.groups[*]"}}}
 	authenticator, err := newAuthenticator(context.Background(), cfg, true, server.Client())
 	if err != nil {
 		t.Fatalf("newAuthenticator: %v", err)
@@ -71,11 +71,13 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 	}
 }
 
-func TestTokenScopesAndClaimPathsSupportCommonIdPShapes(t *testing.T) {
+func TestTokenScopesAndClaimSelectorsSupportCommonIdPShapes(t *testing.T) {
 	claims := map[string]any{
 		"scp":                              "graphit.use profile",
 		"organization":                     map[string]any{"id": "acme"},
 		"https://claims.example.com/teams": []any{"platform"},
+		"realm_access":                     map[string]any{"roles": []any{"user", "auditor"}},
+		"accounts":                         []any{map[string]any{"primary": true, "name": "alice"}, map[string]any{"primary": false, "name": "bob"}},
 	}
 	if scopes := tokenScopes(claims); !containsString(scopes, "graphit.use") {
 		t.Fatalf("scopes=%v", scopes)
@@ -85,6 +87,22 @@ func TestTokenScopesAndClaimPathsSupportCommonIdPShapes(t *testing.T) {
 	}
 	if value, ok := claimValue(claims, "https://claims.example.com/teams"); !ok || value == nil {
 		t.Fatalf("namespaced claim=%v ok=%v", value, ok)
+	}
+	roles, err := claimStrings(claims, "$.realm_access.roles[*]")
+	if err != nil || len(roles) != 2 || roles[0] != "auditor" || roles[1] != "user" {
+		t.Fatalf("JSONPath roles=%v err=%v", roles, err)
+	}
+	username, err := claimString(claims, "$.accounts[?@.primary == true].name", true)
+	if err != nil || username != "alice" {
+		t.Fatalf("filtered JSONPath username=%q err=%v", username, err)
+	}
+	claims["organization.id"] = "literal-acme"
+	organization, err := claimString(claims, "organization.id", true)
+	if err != nil || organization != "literal-acme" {
+		t.Fatalf("exact dotted claim did not take precedence: %q err=%v", organization, err)
+	}
+	if _, err := claimStrings(claims, "$.realm_access["); err == nil {
+		t.Fatal("invalid JSONPath was accepted")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/theory/jsonpath"
 )
 
 var ErrUnauthenticated = errors.New("authentication failed")
@@ -183,6 +184,45 @@ func claimValue(claims map[string]any, path string) (any, bool) {
 	return current, true
 }
 
+// claimValues resolves a configured claim selector. An exact top-level key always wins, which
+// keeps namespaced and dotted claim names unambiguous. Selectors beginning with $ are evaluated as
+// RFC 9535 JSONPath; other values retain the legacy dotted-object traversal as a fallback.
+func claimValues(claims map[string]any, selector string) ([]any, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, nil
+	}
+	if value, ok := claims[selector]; ok {
+		return []any{value}, nil
+	}
+	if strings.HasPrefix(selector, "$") {
+		path, err := jsonpath.Parse(selector)
+		if err != nil {
+			return nil, fmt.Errorf("invalid claim JSONPath %q: %w", selector, err)
+		}
+		var values []any
+		for value := range path.Select(claims).All() {
+			values = append(values, value)
+		}
+		return values, nil
+	}
+	if value, ok := claimValue(claims, selector); ok {
+		return []any{value}, nil
+	}
+	return nil, nil
+}
+
+func validateClaimSelector(selector string) error {
+	selector = strings.TrimSpace(selector)
+	if selector == "" || !strings.HasPrefix(selector, "$") {
+		return nil
+	}
+	if _, err := jsonpath.Parse(selector); err != nil {
+		return fmt.Errorf("invalid JSONPath %q: %w", selector, err)
+	}
+	return nil
+}
+
 func claimString(claims map[string]any, path string, required bool) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		if required {
@@ -190,14 +230,20 @@ func claimString(claims map[string]any, path string, required bool) (string, err
 		}
 		return "", nil
 	}
-	value, ok := claimValue(claims, path)
-	if !ok {
+	values, err := claimValues(claims, path)
+	if err != nil {
+		return "", err
+	}
+	if len(values) == 0 {
 		if required {
 			return "", fmt.Errorf("required claim %q is missing", path)
 		}
 		return "", nil
 	}
-	text, ok := value.(string)
+	if len(values) != 1 {
+		return "", fmt.Errorf("claim %q must select exactly one value", path)
+	}
+	text, ok := values[0].(string)
 	if !ok || strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("claim %q must be a non-empty string", path)
 	}
@@ -208,26 +254,33 @@ func claimStrings(claims map[string]any, path string) ([]string, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
 	}
-	value, ok := claimValue(claims, path)
-	if !ok {
+	selected, err := claimValues(claims, path)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
 		return nil, nil
 	}
-	switch typed := value.(type) {
-	case string:
-		return cleanStrings([]string{typed}), nil
-	case []any:
-		values := make([]string, 0, len(typed))
-		for _, item := range typed {
-			text, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("claim %q must contain only strings", path)
+	var values []string
+	for _, value := range selected {
+		switch typed := value.(type) {
+		case string:
+			values = append(values, typed)
+		case []any:
+			for _, item := range typed {
+				text, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("claim %q must contain only strings", path)
+				}
+				values = append(values, text)
 			}
-			values = append(values, text)
+		case []string:
+			values = append(values, typed...)
+		default:
+			return nil, fmt.Errorf("claim %q must select only strings or string arrays", path)
 		}
-		return cleanStrings(values), nil
-	default:
-		return nil, fmt.Errorf("claim %q must be a string or string array", path)
 	}
+	return cleanStrings(values), nil
 }
 
 func tokenScopes(claims map[string]any) []string {

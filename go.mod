@@ -10,6 +10,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/sugarme/tokenizer v0.3.0
+	github.com/theory/jsonpath v0.12.0
 	github.com/yalue/onnxruntime_go v1.36.0
 	golang.org/x/oauth2 v0.28.0
 	gopkg.in/yaml.v3 v3.0.1

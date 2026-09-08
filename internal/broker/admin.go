@@ -87,14 +87,14 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_identity", "OIDC administration identity is invalid", requestID(r.Context()))
 		return
 	}
-	allowed, err := s.control.Authorize(r.Context(), identity.Subject, "session.read", s.bootstrap.Administration.SuperadminSubject)
+	session := AdminSession{Issuer: identity.Issuer, Subject: identity.Subject,
+		Name: identity.Name, Email: identity.Email, Username: identity.Username, Organization: identity.Organization,
+		Teams: identity.Teams, Roles: identity.Roles, RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector}
+	allowed, err := s.authorizeAdmin(r.Context(), session, "session.read")
 	if err != nil || !allowed {
 		writeError(w, http.StatusForbidden, "admin_forbidden", "administration access denied", requestID(r.Context()))
 		return
 	}
-	session := AdminSession{Issuer: identity.Issuer, Subject: identity.Subject,
-		Name: identity.Name, Email: identity.Email, Username: identity.Username, Organization: identity.Organization,
-		Teams: identity.Teams}
 	if !s.createAdminSession(w, r, session) {
 		return
 	}
@@ -123,7 +123,9 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker token is invalid", requestID(r.Context()))
 		return
 	}
-	allowed, err := s.control.Authorize(r.Context(), principal.Subject, "session.read", s.bootstrap.Administration.SuperadminSubject)
+	session := AdminSession{Issuer: principal.Issuer, Subject: principal.Subject, Username: principal.Username,
+		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Username}
+	allowed, err := s.authorizeAdmin(r.Context(), session, "session.read")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "authorization_failed", "could not authorize local login", requestID(r.Context()))
 		return
@@ -132,8 +134,6 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "admin_forbidden", "UI access is not assigned to this local identity", requestID(r.Context()))
 		return
 	}
-	session := AdminSession{Issuer: principal.Issuer, Subject: principal.Subject, Username: principal.Username,
-		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Username}
 	if !s.createAdminSession(w, r, session) {
 		return
 	}
@@ -194,12 +194,19 @@ func (s *Server) adminLoginOptions(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) adminSession(w http.ResponseWriter, r *http.Request) {
 	session := adminSessionFromContext(r.Context())
-	roles, _ := s.control.SubjectRoles(r.Context(), session.Subject)
-	permissions, _ := s.control.SubjectPermissions(r.Context(), session.Subject)
+	roles, permissions, err := s.adminRolesAndPermissions(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "authorization_failed", "could not read administration roles", requestID(r.Context()))
+		return
+	}
+	roleSource := "database"
+	if s.claimRolesAuthoritative(session) {
+		roleSource = "claim"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject": session.Subject, "name": session.Name, "email": session.Email,
 		"username": session.Username, "organization": session.Organization, "teams": session.Teams,
-		"roles": roles, "superadmin": session.Subject == s.bootstrap.Administration.SuperadminSubject,
+		"roles": roles, "role_source": roleSource, "superadmin": session.Subject == s.bootstrap.Administration.SuperadminSubject,
 		"permissions": permissions,
 		"csrf_token":  session.CSRFToken,
 	})
@@ -599,12 +606,17 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 				return
 			}
 			session = AdminSession{Issuer: identity.Issuer, Subject: identity.Subject, Name: identity.Name,
-				Email: identity.Email, Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams}
+				Email: identity.Email, Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams,
+				Roles: identity.Roles, RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector}
 		} else {
 			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "OIDC administration login is required", requestID(r.Context()))
 			return
 		}
-		allowed, err := s.control.Authorize(r.Context(), session.Subject, action, s.bootstrap.Administration.SuperadminSubject)
+		if s.sessionNeedsClaimRoleRefresh(session) {
+			writeError(w, http.StatusUnauthorized, "admin_unauthorized", "administration login must be refreshed to load claimed roles", requestID(r.Context()))
+			return
+		}
+		allowed, err := s.authorizeAdmin(r.Context(), session, action)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "authorization_failed", "could not authorize administration request", requestID(r.Context()))
 			return
@@ -616,6 +628,42 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 		ctx := context.WithValue(r.Context(), adminSessionKey, session)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) authorizeAdmin(ctx context.Context, session AdminSession, action string) (bool, error) {
+	if strings.TrimSpace(session.Subject) != "" && session.Subject == strings.TrimSpace(s.bootstrap.Administration.SuperadminSubject) {
+		return true, nil
+	}
+	if s.claimRolesAuthoritative(session) {
+		return s.control.AuthorizeRoles(ctx, session.Roles, action)
+	}
+	return s.control.Authorize(ctx, session.Subject, action, s.bootstrap.Administration.SuperadminSubject)
+}
+
+func (s *Server) adminRolesAndPermissions(ctx context.Context, session AdminSession) ([]string, []string, error) {
+	if s.claimRolesAuthoritative(session) {
+		roles := cleanStrings(session.Roles)
+		permissions, err := s.control.RolePermissions(ctx, roles)
+		return roles, permissions, err
+	}
+	roles, err := s.control.SubjectRoles(ctx, session.Subject)
+	if err != nil {
+		return nil, nil, err
+	}
+	permissions, err := s.control.SubjectPermissions(ctx, session.Subject)
+	return roles, permissions, err
+}
+
+func (s *Server) sessionNeedsClaimRoleRefresh(session AdminSession) bool {
+	selector := strings.TrimSpace(s.runtime().config.Administration.OIDC.RoleClaim)
+	return selector != "" && !strings.HasPrefix(session.Issuer, "apikey:") &&
+		(!session.RolesFromClaim || selector != strings.TrimSpace(session.RoleClaimSelector))
+}
+
+func (s *Server) claimRolesAuthoritative(session AdminSession) bool {
+	selector := strings.TrimSpace(s.runtime().config.Administration.OIDC.RoleClaim)
+	return selector != "" && !strings.HasPrefix(session.Issuer, "apikey:") && session.RolesFromClaim &&
+		selector == strings.TrimSpace(session.RoleClaimSelector)
 }
 
 func adminSessionFromContext(ctx context.Context) AdminSession {

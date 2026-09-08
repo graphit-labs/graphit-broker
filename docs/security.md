@@ -14,7 +14,8 @@ route credentials, and signing implementation remain private.
 ## Authentication
 
 OIDC access tokens are checked for signature, issuer, audience, expiry, and required scopes.
-Username, organization, and teams come only from verified claim paths; canonical identity is
+Username, organization, and teams come only from verified exact-key or RFC 9535 JSONPath claim
+selectors; canonical identity is
 `iss|sub`. Invalid credentials return `401` and are not treated as anonymous.
 
 Configured API keys are constant-time compared against a stored SHA-256 digest. Use them only for
@@ -31,7 +32,10 @@ Resource grants are normalized SQL state and are re-read for each Hub resolution
 embedding, and rerank call. No match is deny. Matching S3 rules must agree on one private route.
 Every grant mutation and revision increment is atomic.
 
-Administrative roles protect control-plane actions and never imply resource access. Cookie
+Administrative roles protect control-plane actions and never imply resource access. When an
+administration `role_claim` is configured, its verified token values replace all database role
+assignments for that OIDC subject; missing/invalid values fail closed. API-key identities use
+database assignments, and the deployment superadmin remains an explicit recovery bypass. Cookie
 sessions require CSRF on state changes. The deployment superadmin is an explicit emergency
 bootstrap subject.
 

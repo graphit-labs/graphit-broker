@@ -185,6 +185,71 @@ func TestAdminRBACBootstrapAssignmentAndRevocation(t *testing.T) {
 	_ = denied.Body.Close()
 }
 
+func TestClaimRolesOverrideLocalRoleAssignments(t *testing.T) {
+	service, httpServer, provider := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+
+	state := *service.runtime()
+	state.config.Administration.OIDC.RoleClaim = "$.realm_access.roles[*]"
+	service.state.Store(&state)
+	ctx := context.Background()
+	if err := service.control.AssignRole(ctx, "other-subject", adminRole); err != nil {
+		t.Fatal(err)
+	}
+	identity := provider.identities["other-token"]
+	identity.Roles = []string{userRole}
+	identity.RolesFromClaim = true
+	identity.RoleClaimSelector = "$.realm_access.roles[*]"
+	provider.identities["other-token"] = identity
+
+	denied := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "other-token", "")
+	_ = denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("local admin assignment overrode claimed user role: status=%d", denied.StatusCode)
+	}
+	projects := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/projects", "other-token", "")
+	_ = projects.Body.Close()
+	if projects.StatusCode != http.StatusOK {
+		t.Fatalf("claimed user role projects status=%d", projects.StatusCode)
+	}
+	session := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/session", "other-token", "")
+	var sessionBody struct {
+		Roles      []string `json:"roles"`
+		RoleSource string   `json:"role_source"`
+	}
+	if err := json.NewDecoder(session.Body).Decode(&sessionBody); err != nil {
+		t.Fatal(err)
+	}
+	_ = session.Body.Close()
+	if sessionBody.RoleSource != "claim" || len(sessionBody.Roles) != 1 || sessionBody.Roles[0] != userRole {
+		t.Fatalf("session role view=%#v", sessionBody)
+	}
+
+	if err := service.control.RevokeRole(ctx, "other-subject", adminRole); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.control.AssignRole(ctx, "other-subject", userRole); err != nil {
+		t.Fatal(err)
+	}
+	identity.Roles = []string{adminRole}
+	provider.identities["other-token"] = identity
+	allowed := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "other-token", "")
+	_ = allowed.Body.Close()
+	if allowed.StatusCode != http.StatusOK {
+		t.Fatalf("claimed admin role did not override local user assignment: status=%d", allowed.StatusCode)
+	}
+
+	state = *service.runtime()
+	state.config.Administration.OIDC.RoleClaim = ""
+	service.state.Store(&state)
+	databaseRole := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "other-token", "")
+	_ = databaseRole.Body.Close()
+	if databaseRole.StatusCode != http.StatusForbidden {
+		t.Fatalf("disabled role claim did not restore local user assignment: status=%d", databaseRole.StatusCode)
+	}
+}
+
 func TestUserRoleListsOnlyAccessibleProjectsAndProviderCommand(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()

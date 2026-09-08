@@ -15,13 +15,16 @@ import (
 )
 
 type AdminIdentity struct {
-	Issuer       string   `json:"issuer,omitempty"`
-	Subject      string   `json:"subject"`
-	Name         string   `json:"name,omitempty"`
-	Email        string   `json:"email,omitempty"`
-	Username     string   `json:"username,omitempty"`
-	Organization string   `json:"organization,omitempty"`
-	Teams        []string `json:"teams,omitempty"`
+	Issuer            string   `json:"issuer,omitempty"`
+	Subject           string   `json:"subject"`
+	Name              string   `json:"name,omitempty"`
+	Email             string   `json:"email,omitempty"`
+	Username          string   `json:"username,omitempty"`
+	Organization      string   `json:"organization,omitempty"`
+	Teams             []string `json:"teams,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
+	RolesFromClaim    bool     `json:"-"`
+	RoleClaimSelector string   `json:"-"`
 }
 
 type AdminIdentityProvider interface {
@@ -109,11 +112,19 @@ func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIden
 	if err := token.Claims(&claims); err != nil {
 		return AdminIdentity{}, fmt.Errorf("decode administration ID token claims: %w", err)
 	}
-	name, err := claimString(claims, "name", false)
+	nameClaim := cfg.NameClaim
+	if strings.TrimSpace(nameClaim) == "" {
+		nameClaim = "name"
+	}
+	emailClaim := cfg.EmailClaim
+	if strings.TrimSpace(emailClaim) == "" {
+		emailClaim = "email"
+	}
+	name, err := claimString(claims, nameClaim, false)
 	if err != nil {
 		return AdminIdentity{}, err
 	}
-	email, err := claimString(claims, "email", false)
+	email, err := claimString(claims, emailClaim, false)
 	if err != nil {
 		return AdminIdentity{}, err
 	}
@@ -129,8 +140,22 @@ func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIden
 	if err != nil {
 		return AdminIdentity{}, err
 	}
+	roles, err := claimStrings(claims, cfg.RoleClaim)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	rolesFromClaim := strings.TrimSpace(cfg.RoleClaim) != ""
+	if rolesFromClaim && len(roles) == 0 {
+		return AdminIdentity{}, fmt.Errorf("role claim %q is missing or empty", cfg.RoleClaim)
+	}
+	for _, role := range roles {
+		if !safeSegment(role) {
+			return AdminIdentity{}, fmt.Errorf("role claim %q contains invalid role %q", cfg.RoleClaim, role)
+		}
+	}
 	return AdminIdentity{Issuer: token.Issuer, Subject: token.Subject, Name: name, Email: email,
-		Username: username, Organization: organization, Teams: teams}, nil
+		Username: username, Organization: organization, Teams: teams, Roles: roles,
+		RolesFromClaim: rolesFromClaim, RoleClaimSelector: strings.TrimSpace(cfg.RoleClaim)}, nil
 }
 
 func randomURLToken(bytes int) (string, error) {
