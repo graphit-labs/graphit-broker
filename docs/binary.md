@@ -191,10 +191,16 @@ library, embeds it, and removes the temporary source payload:
 
 ```bash
 make build VERSION=dev                  # current supported host
+make install VERSION=dev                # build and install to /usr/local/bin
+make install PREFIX="$HOME/.local/bin"   # install without a global destination
 make release-linux VERSION=v1.0.0       # Linux amd64 runner
 make release-darwin VERSION=v1.0.0      # macOS arm64 runner
 make release-windows VERSION=v1.0.0     # Windows amd64/MSYS2 runner
 ```
+
+Like Graphit Code, `make install` accepts `PREFIX` as the destination directory and warns when
+that directory is not on `PATH`. The installed executable is named `graphit-broker` (or
+`graphit-broker.exe` on Windows).
 
 [`native-deps.env`](../native-deps.env) is only the build-time lockfile: it pins the ONNX Runtime
 version, official archive names, and SHA-256 values used by the Makefile, Docker build, and release

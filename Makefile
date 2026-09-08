@@ -1,14 +1,28 @@
-.PHONY: build fmt vet test check docker-build release-linux release-darwin release-windows
+.PHONY: build install fmt vet test check docker-build release-linux release-darwin release-windows
 
 include native-deps.env
 
 VERSION ?= dev
 BUILD_DIR ?= .build
+PREFIX ?= /usr/local/bin
 HOST_PLATFORM := $(shell go env GOOS)-$(shell go env GOARCH)
 HOST_BINARY := graphit-broker$(if $(filter windows-%,$(HOST_PLATFORM)),.exe,)
 
 build:
 	./scripts/build-embedded.sh "$(HOST_PLATFORM)" "$(HOST_BINARY)" "$(VERSION)"
+
+install: build
+	mkdir -p "$(PREFIX)"
+	@if [ -w "$(PREFIX)" ]; then \
+		cp "$(HOST_BINARY)" "$(PREFIX)/$(HOST_BINARY)"; \
+	else \
+		sudo cp "$(HOST_BINARY)" "$(PREFIX)/$(HOST_BINARY)"; \
+	fi
+	@echo "  ✓ Installed to $(PREFIX)/$(HOST_BINARY)"
+	@case ":$$PATH:" in \
+		*":$(PREFIX):"*) ;; \
+		*) echo "  ⚠ $(PREFIX) is not in your PATH. Add it: export PATH=\"\$$PATH:$(PREFIX)\"" ;; \
+	esac
 
 fmt:
 	gofmt -w cmd internal
