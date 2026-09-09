@@ -63,6 +63,10 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 }
 
 func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
+	if cfg.Authentication.LocalLogin.Enabled == nil {
+		enabled := cfg.Administration.Enabled
+		cfg.Authentication.LocalLogin.Enabled = &enabled
+	}
 	cfg.Authentication.LocalMFA.setDefaults()
 	cfg.Authentication.LocalTokens.setDefaults()
 	if cfg.Administration.CookieSecure == nil {
@@ -75,21 +79,25 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	if err != nil {
 		return nil, err
 	}
-	localPasswords, err := newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers)
-	if err != nil {
-		return nil, err
-	}
 	control, _ := grants.(*ControlStore)
-	localAuth, err := newLocalAuthenticationService(cfg.Authentication, control, localPasswords)
-	if err != nil {
-		return nil, err
+	var localPasswords *localPasswordAuthenticator
+	var localAuth *localAuthenticationService
+	if cfg.Authentication.LocalLogin.isEnabled() {
+		localPasswords, err = newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers)
+		if err != nil {
+			return nil, err
+		}
+		localAuth, err = newLocalAuthenticationService(cfg.Authentication, control, localPasswords)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var presigner PresignService
 	if cfg.Services.S3.Enabled {
 		presigner = NewAWSPresignService(cfg.Services.S3)
 	}
 	var adminOIDC AdminIdentityProvider
-	if loginConfig, ok := browserLoginOIDC(cfg.Authentication.OIDC); cfg.Administration.Enabled && ok {
+	if loginConfig, ok := browserLoginOIDC(cfg.Authentication.OIDC); ok {
 		adminOIDC, err = factory(ctx, loginConfig)
 		if err != nil {
 			return nil, err
@@ -122,7 +130,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
-	if runtime.config.Administration.Enabled {
+	if runtime.config.Authentication.LocalLogin.isEnabled() || runtime.adminOIDC != nil {
 		mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.oauthMetadata)
 		mux.HandleFunc("GET /oauth/authorize", s.oauthAuthorize)
 		mux.HandleFunc("POST /oauth/authorize", s.oauthAuthorize)
@@ -131,6 +139,8 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.HandleFunc("POST /oauth/device", s.oauthDeviceVerification)
 		mux.HandleFunc("POST /oauth/token", s.oauthToken)
 		mux.HandleFunc("POST /oauth/revoke", s.oauthRevoke)
+		mux.Handle("GET /oauth/userinfo", s.resolvePrincipal(http.HandlerFunc(s.oauthUserinfo)))
+		mux.HandleFunc("GET /oauth/oidc/callback", s.adminCallback)
 	}
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
@@ -142,7 +152,6 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		})
 		mux.HandleFunc("GET /admin/{$}", s.adminPage)
 		mux.HandleFunc("GET /admin/auth/login", s.adminLogin)
-		mux.HandleFunc("GET /admin/auth/callback", s.adminCallback)
 		mux.HandleFunc("POST /admin/auth/local", s.adminLocalLogin)
 		mux.HandleFunc("POST /admin/auth/local/continue", s.adminLocalLoginContinue)
 		mux.HandleFunc("POST /admin/auth/logout", s.adminLogout)
@@ -236,8 +245,15 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		audiences = append(audiences, issuer.Audiences...)
 	}
 	authentication := map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}
-	if state.config.Administration.Enabled {
+	methods, methodsErr := s.oauthLoginMethods(r)
+	if methodsErr != nil {
+		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "authentication discovery is unavailable", requestID(r.Context()))
+		return
+	}
+	if len(methods) > 0 {
 		authentication["authorization_server"] = s.publicURL(r) + "/.well-known/oauth-authorization-server"
+		authentication["client_id"] = state.config.Authentication.LocalTokens.CLIClientID
+		authentication["login_methods"] = methods
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.publicURL(r),
 		"authentication": authentication, "services": services})

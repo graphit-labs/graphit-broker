@@ -16,7 +16,7 @@ authentication:
       required_scopes: [graphit.use]
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
-      redirect_url: https://broker.example.com/admin/auth/callback
+      redirect_url: https://broker.example.com/oauth/oidc/callback
       scopes: [openid, profile, email]
       subject_claim: sub
       name_claim: name
@@ -58,14 +58,17 @@ privileged role, not a different authentication path.
 
 ## Browser flow
 
-`GET /admin/auth/login` creates random state, nonce, PKCE verifier, and browser-binding values. The
+OIDC may start from `GET /admin/auth/login` for administration or from the OIDC choice on
+`GET /oauth/authorize` for Graphit Code. Both create random state, nonce, PKCE verifier, and
+browser-binding values. The
 binding is held in an `HttpOnly`, `SameSite=Lax` cookie whose per-flow name permits concurrent
 logins. Only HMAC-protected state and binding are stored in SQL, using
 `authentication.token_pepper` and domains distinct from session and password domains. The callback
 requires both values and consumes the flow once; a missing/wrong binding does not consume valid
 state. It then exchanges the code using the
 configured confidential client, verifies the ID token and nonce, maps the same subject/attribute
-selectors, authorizes `session.read`, and creates a short-lived cookie session.
+selectors, then either creates a short-lived administration cookie session or resumes the pending
+Graphit Code authorization and returns a one-time code to its loopback callback.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
 

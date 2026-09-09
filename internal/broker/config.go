@@ -53,11 +53,18 @@ type ServerConfig struct {
 
 type AuthenticationConfig struct {
 	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
+	LocalLogin     LocalLoginConfig             `yaml:"local_login" json:"local_login"`
 	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
 	LocalMFA       LocalMFAConfig               `yaml:"local_mfa" json:"local_mfa"`
 	LocalTokens    LocalTokenConfig             `yaml:"local_tokens" json:"local_tokens"`
 	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
 }
+
+type LocalLoginConfig struct {
+	Enabled *bool `yaml:"enabled" json:"enabled"`
+}
+
+func (c LocalLoginConfig) isEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 type LocalMFAConfig struct {
 	Required     *bool         `yaml:"required" json:"required"`
@@ -110,10 +117,8 @@ type AdministrationConfig struct {
 }
 
 type GraphitCLIConfig struct {
-	ProviderName    string `yaml:"provider_name" json:"provider_name"`
-	ProfileName     string `yaml:"profile_name" json:"profile_name"`
-	OIDCClientID    string `yaml:"oidc_client_id" json:"oidc_client_id"`
-	OIDCRedirectURI string `yaml:"oidc_redirect_uri" json:"oidc_redirect_uri,omitempty"`
+	ProviderName string `yaml:"provider_name" json:"provider_name"`
+	ProfileName  string `yaml:"profile_name" json:"profile_name"`
 }
 
 func (c OIDCIssuerConfig) loginConfigured() bool {
@@ -308,6 +313,10 @@ func (c *Config) defaults() {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
 	c.Authentication.LocalRateLimit.setDefaults()
+	if c.Authentication.LocalLogin.Enabled == nil {
+		enabled := c.Administration.Enabled
+		c.Authentication.LocalLogin.Enabled = &enabled
+	}
 	c.Authentication.LocalMFA.setDefaults()
 	c.Authentication.LocalTokens.setDefaults()
 	if c.Administration.SessionTTL == 0 {
@@ -607,20 +616,17 @@ func (c Config) Validate() error {
 	if loginProviders > 1 {
 		return errors.New("authentication.oidc must configure at most one browser login client")
 	}
-	if c.Administration.Enabled {
+	if c.Administration.Enabled || c.Authentication.LocalLogin.isEnabled() || loginProviders > 0 {
 		if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
-			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when administration is enabled", tokenPepperMinimumBytes)
+			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when browser authentication is enabled", tokenPepperMinimumBytes)
 		}
+	}
+	if c.Administration.Enabled {
 		if c.Administration.SessionTTL < 5*time.Minute || c.Administration.SessionTTL > 7*24*time.Hour {
 			return errors.New("administration.session_ttl must be between 5m and 168h")
 		}
 		if !safeSegment(c.Administration.CLI.ProviderName) || !safeSegment(c.Administration.CLI.ProfileName) {
 			return errors.New("administration.cli provider_name and profile_name must be safe names")
-		}
-		if c.Administration.CLI.OIDCRedirectURI != "" {
-			if err := validateGraphitCLIRedirect(c.Administration.CLI.OIDCRedirectURI); err != nil {
-				return err
-			}
 		}
 	}
 	if !filepath.IsAbs(c.Models.Directory) {
@@ -813,19 +819,6 @@ func validateHTTPSOrLoopbackURL(raw, name string) error {
 		return nil
 	}
 	return fmt.Errorf("%s must use HTTPS except on loopback", name)
-}
-
-func validateGraphitCLIRedirect(raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Scheme != "http" || u.Port() == "" {
-		return errors.New("Graphit CLI OIDC redirect URI must be an HTTP loopback URL with an explicit port")
-	}
-	host := strings.ToLower(u.Hostname())
-	ip := net.ParseIP(host)
-	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return errors.New("Graphit CLI OIDC redirect URI must be an HTTP loopback URL with an explicit port")
-	}
-	return nil
 }
 
 func validateHTTPURL(raw, name string) error {

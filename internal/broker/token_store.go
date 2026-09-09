@@ -40,6 +40,7 @@ var (
 )
 
 type LocalTokenGrant struct {
+	Principal         Principal
 	Subject           string
 	LocalUserRevision int64
 	ClientID          string
@@ -91,12 +92,21 @@ func tokenDomain(raw string) (string, string, bool) {
 }
 
 func (s *ControlStore) SaveAuthorizationCode(ctx context.Context, raw string, grant AuthorizationCodeGrant) error {
+	principal, err := s.grantPrincipal(ctx, grant.LocalTokenGrant)
+	if err != nil {
+		return err
+	}
+	grant.Principal, grant.Subject, grant.LocalUserRevision = principal, principal.Subject, principal.LocalUserRevision
 	scopes, err := json.Marshal(cleanStrings(grant.Scopes))
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO oauth_authorization_codes(code_hash, subject, local_user_revision, client_id, redirect_uri, code_challenge, scopes_json, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		s.tokenHash(authorizationCodeDomain, raw), strings.TrimSpace(grant.Subject), grant.LocalUserRevision,
+	principalJSON, err := json.Marshal(principal)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, s.bind(`INSERT INTO oauth_authorization_codes(code_hash, subject, principal_json, local_user_revision, client_id, redirect_uri, code_challenge, scopes_json, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		s.tokenHash(authorizationCodeDomain, raw), strings.TrimSpace(grant.Subject), string(principalJSON), grant.LocalUserRevision,
 		strings.TrimSpace(grant.ClientID), grant.RedirectURI, grant.CodeChallenge, string(scopes),
 		grant.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
@@ -109,10 +119,10 @@ func (s *ControlStore) ConsumeAuthorizationCode(ctx context.Context, raw, client
 	}
 	defer tx.Rollback()
 	var grant LocalTokenGrant
-	var storedRedirect, challenge, scopesJSON, expires string
+	var storedRedirect, challenge, scopesJSON, principalJSON, expires string
 	hash := s.tokenHash(authorizationCodeDomain, raw)
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, local_user_revision, client_id, redirect_uri, code_challenge, scopes_json, expires_at FROM oauth_authorization_codes WHERE code_hash=?`), hash).
-		Scan(&grant.Subject, &grant.LocalUserRevision, &grant.ClientID, &storedRedirect, &challenge, &scopesJSON, &expires)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, principal_json, local_user_revision, client_id, redirect_uri, code_challenge, scopes_json, expires_at FROM oauth_authorization_codes WHERE code_hash=?`), hash).
+		Scan(&grant.Subject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &storedRedirect, &challenge, &scopesJSON, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
@@ -130,6 +140,9 @@ func (s *ControlStore) ConsumeAuthorizationCode(ctx context.Context, raw, client
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
 	if err := json.Unmarshal([]byte(scopesJSON), &grant.Scopes); err != nil {
+		return LocalTokenGrant{}, ErrUnauthenticated
+	}
+	if err := json.Unmarshal([]byte(principalJSON), &grant.Principal); err != nil || grant.Principal.Subject != grant.Subject {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
 	digest := sha256.Sum256([]byte(verifier))
@@ -224,6 +237,11 @@ func (s *ControlStore) PollDeviceAuthorization(ctx context.Context, rawDeviceCod
 }
 
 func (s *ControlStore) SaveTokenPair(ctx context.Context, accessRaw, accessID, refreshRaw, refreshID string, grant LocalTokenGrant) error {
+	principal, err := s.grantPrincipal(ctx, grant)
+	if err != nil {
+		return err
+	}
+	grant.Principal, grant.Subject, grant.LocalUserRevision = principal, principal.Subject, principal.LocalUserRevision
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -250,6 +268,7 @@ func (s *ControlStore) SaveServiceCredential(ctx context.Context, raw, id string
 	if err != nil || user.Kind != serviceIdentityKind || !user.Enabled || user.Revision != grant.LocalUserRevision {
 		return errors.New("service credential requires an enabled service identity")
 	}
+	grant.Principal = principalFromLocalUser(user, "service-credential")
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -270,8 +289,12 @@ func (s *ControlStore) insertLocalToken(ctx context.Context, tx *sql.Tx, raw, id
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO local_tokens(token_hash, token_id, token_kind, subject, client_id, audience, scopes_json, local_user_revision, family_id, expires_at, revoked_at, consumed_at, last_used_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		s.tokenHash(domain, raw), id, kind, grant.Subject, grant.ClientID, grant.Audience, string(scopes), grant.LocalUserRevision,
+	principalJSON, err := json.Marshal(grant.Principal)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO local_tokens(token_hash, token_id, token_kind, subject, principal_json, client_id, audience, scopes_json, local_user_revision, family_id, expires_at, revoked_at, consumed_at, last_used_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		s.tokenHash(domain, raw), id, kind, grant.Subject, string(principalJSON), grant.ClientID, grant.Audience, string(scopes), grant.LocalUserRevision,
 		grant.FamilyID, expires.UTC().Format(time.RFC3339Nano), "", "", "", now.UTC().Format(time.RFC3339Nano))
 	return err
 }
@@ -281,11 +304,11 @@ func (s *ControlStore) AuthenticateLocalToken(ctx context.Context, raw, audience
 	if !ok || expectedKind == localTokenKindRefresh {
 		return Principal{}, ErrUnauthenticated
 	}
-	var kind, subject, storedAudience, scopesJSON, expires, revoked string
+	var kind, subject, principalJSON, storedAudience, scopesJSON, expires, revoked string
 	var revision int64
 	hash := s.tokenHash(domain, raw)
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT token_kind, subject, audience, scopes_json, local_user_revision, expires_at, revoked_at FROM local_tokens WHERE token_hash=?`), hash).
-		Scan(&kind, &subject, &storedAudience, &scopesJSON, &revision, &expires, &revoked)
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT token_kind, subject, principal_json, audience, scopes_json, local_user_revision, expires_at, revoked_at FROM local_tokens WHERE token_hash=?`), hash).
+		Scan(&kind, &subject, &principalJSON, &storedAudience, &scopesJSON, &revision, &expires, &revoked)
 	if err != nil || kind != expectedKind || revoked != "" || storedAudience != strings.TrimSpace(audience) {
 		return Principal{}, ErrUnauthenticated
 	}
@@ -302,21 +325,29 @@ func (s *ControlStore) AuthenticateLocalToken(ctx context.Context, raw, audience
 			return Principal{}, ErrUnauthenticated
 		}
 	}
-	user, err := s.LocalUserBySubject(ctx, subject)
-	if err != nil || !user.Enabled || user.Revision != revision {
+	var principal Principal
+	if json.Unmarshal([]byte(principalJSON), &principal) != nil || principal.Subject != subject || principal.LocalUserRevision != revision {
 		return Principal{}, ErrUnauthenticated
 	}
-	if kind == localTokenKindService && user.Kind != serviceIdentityKind {
-		return Principal{}, ErrUnauthenticated
-	}
-	if kind == localTokenKindAccess && user.Kind != humanIdentityKind {
+	if principal.Issuer == localIdentityIssuer {
+		user, userErr := s.LocalUserBySubject(ctx, subject)
+		if userErr != nil || !user.Enabled || user.Revision != revision {
+			return Principal{}, ErrUnauthenticated
+		}
+		if kind == localTokenKindService && user.Kind != serviceIdentityKind {
+			return Principal{}, ErrUnauthenticated
+		}
+		if kind == localTokenKindAccess && user.Kind != humanIdentityKind {
+			return Principal{}, ErrUnauthenticated
+		}
+		principal = principalFromLocalUser(user, "local-token")
+		if kind == localTokenKindService {
+			principal.AuthMethod = "service-credential"
+		}
+	} else if kind != localTokenKindAccess || principal.AuthMethod != "oidc" || principal.Issuer == "" || principal.Username == "" || revision != 0 {
 		return Principal{}, ErrUnauthenticated
 	}
 	_, _ = s.db.ExecContext(ctx, s.bind(`UPDATE local_tokens SET last_used_at=? WHERE token_hash=?`), time.Now().UTC().Format(time.RFC3339Nano), hash)
-	principal := principalFromLocalUser(user, "local-token")
-	if kind == localTokenKindService {
-		principal.AuthMethod = "service-credential"
-	}
 	principal.Scopes = cleanStrings(scopes)
 	return principal, nil
 }
@@ -332,9 +363,9 @@ func (s *ControlStore) ConsumeRefreshToken(ctx context.Context, raw, clientID st
 	defer tx.Rollback()
 	hash := s.tokenHash(localRefreshTokenDomain, raw)
 	var grant LocalTokenGrant
-	var scopesJSON, expires, revoked, consumed string
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, local_user_revision, client_id, audience, scopes_json, family_id, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`), hash, localTokenKindRefresh).
-		Scan(&grant.Subject, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &scopesJSON, &grant.FamilyID, &expires, &revoked, &consumed)
+	var scopesJSON, principalJSON, expires, revoked, consumed string
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, principal_json, local_user_revision, client_id, audience, scopes_json, family_id, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`), hash, localTokenKindRefresh).
+		Scan(&grant.Subject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &scopesJSON, &grant.FamilyID, &expires, &revoked, &consumed)
 	if err != nil || grant.ClientID != strings.TrimSpace(clientID) || revoked != "" {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
@@ -364,7 +395,35 @@ func (s *ControlStore) ConsumeRefreshToken(ctx context.Context, raw, clientID st
 	if json.Unmarshal([]byte(scopesJSON), &grant.Scopes) != nil {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
+	if json.Unmarshal([]byte(principalJSON), &grant.Principal) != nil || grant.Principal.Subject != grant.Subject {
+		return LocalTokenGrant{}, ErrUnauthenticated
+	}
 	return grant, nil
+}
+
+func (s *ControlStore) grantPrincipal(ctx context.Context, grant LocalTokenGrant) (Principal, error) {
+	if grant.Principal.Subject != "" {
+		principal := grant.Principal
+		principal.Roles = cleanStrings(append(principal.Roles, userRole))
+		if principal.Issuer == "" || principal.Subject == "" || principal.Username == "" {
+			return Principal{}, errors.New("token principal is incomplete")
+		}
+		if principal.Issuer != localIdentityIssuer {
+			if principal.AuthMethod != "oidc" || principal.LocalUserRevision != 0 {
+				return Principal{}, errors.New("external token principal is invalid")
+			}
+			return principal, nil
+		}
+	}
+	user, err := s.LocalUserBySubject(ctx, strings.TrimSpace(grant.Subject))
+	if err != nil || !user.Enabled || user.Revision != grant.LocalUserRevision {
+		return Principal{}, errors.New("local token principal is no longer valid")
+	}
+	method := "local-token"
+	if user.Kind == serviceIdentityKind {
+		method = "service-credential"
+	}
+	return principalFromLocalUser(user, method), nil
 }
 
 func (s *ControlStore) RevokeRawToken(ctx context.Context, raw string) error {

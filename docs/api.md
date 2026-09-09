@@ -10,7 +10,7 @@ returns `403`, and disabled capabilities return `404`.
 - `GET /healthz` — process liveness.
 - `GET /readyz` — runtime/database readiness.
 - `GET /.well-known/graphit-broker` — public capability negotiation.
-- `GET /.well-known/oauth-authorization-server` — local CLI OAuth metadata when administration is enabled.
+- `GET /.well-known/oauth-authorization-server` — Graphit Code OAuth metadata when local or OIDC browser login is enabled.
 
 Example discovery:
 
@@ -20,7 +20,10 @@ Example discovery:
   "issuer": "https://broker.example",
   "authentication": {
     "schemes": ["anonymous", "bearer"],
-    "audiences": ["graphit-broker"]
+    "audiences": ["graphit-broker"],
+    "authorization_server": "https://broker.example/.well-known/oauth-authorization-server",
+    "client_id": "graphit-cli",
+    "login_methods": ["local", "oidc"]
   },
   "services": {
     "hub_access": {
@@ -190,17 +193,21 @@ with `[configured-secret]`. Local-user responses omit password hashes entirely; 
 the pepper. Role assignments use canonical `issuer|subject` values, and every authenticated
 principal has the effective default `user` role.
 
-## Local OAuth API
+## Graphit Code OAuth API
 
-- `GET/POST /oauth/authorize` — browser login for a local human identity and one-time Authorization Code issuance;
+- `GET/POST /oauth/authorize` — broker-owned login page, local/OIDC method selection, and one-time Authorization Code issuance;
+- `GET /oauth/oidc/callback` — completes an upstream OIDC login and resumes the Graphit Code authorization;
 - `POST /oauth/device/authorize` — create a device/user code pair for headless CLI login;
 - `GET/POST /oauth/device` — user-facing device approval;
 - `POST /oauth/token` — exchange an authorization code, approved device code, or rotating refresh token;
 - `POST /oauth/revoke` — revoke an access, refresh, or service token without revealing whether it existed.
+- `GET /oauth/userinfo` — resolve a broker-issued access token to its verified identity.
 
 OAuth POST bodies use `application/x-www-form-urlencoded`. The public CLI has no client secret.
 Authorization Code requires PKCE S256 and an exact configured path on an explicit loopback IP and
-port. Issued access tokens contain the `graphit.use` scope, are audience-bound and expire after ten
+port. Graphit Code discovers the authorization start URL and client contract from the Broker; it
+does not receive the upstream IdP configuration. Issued opaque access tokens contain the
+`graphit.use` scope, are audience-bound and expire after ten
 minutes by default. Requesting `offline_access` produces a refresh token with rotation and family
 reuse detection. Token responses are `Cache-Control: no-store`; SQL contains only domain-separated
 HMACs of raw codes and tokens.

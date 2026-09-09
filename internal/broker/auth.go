@@ -15,19 +15,19 @@ import (
 var ErrUnauthenticated = errors.New("authentication failed")
 
 type Principal struct {
-	Issuer            string
-	Subject           string
-	Name              string
-	Email             string
-	Username          string
-	Organization      string
-	Teams             []string
-	Scopes            []string
-	Roles             []string
-	RolesFromClaim    bool
-	RoleClaimSelector string
-	LocalUserRevision int64
-	AuthMethod        string
+	Issuer            string   `json:"issuer"`
+	Subject           string   `json:"subject"`
+	Name              string   `json:"name,omitempty"`
+	Email             string   `json:"email,omitempty"`
+	Username          string   `json:"username"`
+	Organization      string   `json:"organization,omitempty"`
+	Teams             []string `json:"teams,omitempty"`
+	Scopes            []string `json:"scopes,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
+	RolesFromClaim    bool     `json:"roles_from_claim,omitempty"`
+	RoleClaimSelector string   `json:"role_claim_selector,omitempty"`
+	LocalUserRevision int64    `json:"local_user_revision,omitempty"`
+	AuthMethod        string   `json:"auth_method"`
 }
 
 func (p Principal) CanonicalSubject() string { return p.Issuer + "|" + p.Subject }
@@ -61,6 +61,7 @@ type localTokenReader interface {
 
 type authenticator struct {
 	oidc          []oidcVerifier
+	oidcIssuers   map[string]struct{}
 	localTokens   localTokenReader
 	localAudience string
 }
@@ -71,7 +72,7 @@ func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens
 
 func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens localTokenReader, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
 	cfg.LocalTokens.setDefaults()
-	a := &authenticator{localTokens: localTokens, localAudience: cfg.LocalTokens.Audience}
+	a := &authenticator{localTokens: localTokens, localAudience: cfg.LocalTokens.Audience, oidcIssuers: make(map[string]struct{})}
 	providerContext := oidc.ClientContext(ctx, client)
 	for _, issuerCfg := range cfg.OIDC {
 		issuerURL := strings.TrimRight(issuerCfg.Issuer, "/")
@@ -87,6 +88,7 @@ func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens
 		// issuer and temporal validation by checking the token's complete aud claim.
 		verifier := provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
 		a.oidc = append(a.oidc, oidcVerifier{config: issuerCfg, verifier: verifier})
+		a.oidcIssuers[issuerURL] = struct{}{}
 	}
 	return a, nil
 }
@@ -99,7 +101,16 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 		if a.localTokens == nil {
 			return Principal{}, ErrUnauthenticated
 		}
-		return a.localTokens.AuthenticateLocalToken(ctx, raw, a.localAudience, []string{localAPIScope})
+		principal, err := a.localTokens.AuthenticateLocalToken(ctx, raw, a.localAudience, []string{localAPIScope})
+		if err != nil {
+			return Principal{}, err
+		}
+		if principal.AuthMethod == "oidc" {
+			if _, ok := a.oidcIssuers[strings.TrimRight(principal.Issuer, "/")]; !ok {
+				return Principal{}, ErrUnauthenticated
+			}
+		}
+		return principal, nil
 	}
 	for _, candidate := range a.oidc {
 		token, err := candidate.verifier.Verify(ctx, raw)

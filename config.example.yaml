@@ -20,6 +20,10 @@ authentication:
   # local OAuth grants/tokens, and service credentials with distinct cryptographic domains.
   # It is never stored in SQL.
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
+  # SQL-backed human login is enabled by default when administration is enabled. Set false for
+  # an OIDC-only broker, or set true explicitly when OAuth login is needed without administration.
+  local_login:
+    enabled: true
   # Failed local-password checks are limited per username. At most max_concurrent expensive
   # Argon2id checks run at once per broker process. Up to max_concurrent * saturation_multiplier
   # calls (running plus waiting) are admitted; calls beyond that return HTTP 429 with Retry-After.
@@ -53,10 +57,10 @@ authentication:
     - issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
       required_scopes: ["graphit.use"]
-      # The same issuer and claim mapping authenticate broker consumers and administrators.
+      # The same issuer and claim mapping authenticate broker consumers, Graphit Code, and administrators.
       client_id: "${BROKER_OIDC_CLIENT_ID:?set the confidential browser client ID}"
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
-      redirect_url: "${BROKER_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
+      redirect_url: "${BROKER_OIDC_REDIRECT_URL:?set the exact /oauth/oidc/callback URL}"
       scopes: ["openid", "profile", "email"]
       subject_claim: "sub"
       name_claim: "name"
@@ -83,9 +87,6 @@ administration:
   cli:
     provider_name: "organization-broker"
     profile_name: "organization-broker"
-    oidc_client_id: "graphit-cli"
-    # Optional. When omitted, Graphit listens on a free loopback port dynamically.
-    oidc_redirect_uri: ""
 
 # Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
 # /admin/, then create grants in Resource grants or through /admin/api/v1/grants.

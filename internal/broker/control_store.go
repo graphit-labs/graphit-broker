@@ -25,7 +25,7 @@ const (
 	humanIdentityKind       = "human"
 	serviceIdentityKind     = "service"
 	localIdentityIssuer     = "local"
-	schemaVersion           = 7
+	schemaVersion           = 8
 	tokenPepperMinimumBytes = 32
 	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
 	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
@@ -96,6 +96,8 @@ type AdminSession struct {
 type OIDCFlow struct {
 	Nonce        string
 	PKCEVerifier string
+	Purpose      string
+	Continuation string
 	ExpiresAt    time.Time
 }
 
@@ -163,13 +165,13 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS admin_sessions (token_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, csrf_token VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_claim_roles (token_hash VARCHAR(64) PRIMARY KEY, claim_selector VARCHAR(4096) NOT NULL, roles_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, browser_binding_hash VARCHAR(64) NOT NULL, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, browser_binding_hash VARCHAR(64) NOT NULL, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, purpose VARCHAR(32) NOT NULL, continuation_json TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS local_users (username VARCHAR(128) PRIMARY KEY, subject VARCHAR(512) NOT NULL UNIQUE, identity_kind VARCHAR(16) NOT NULL, password_hash VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, enabled SMALLINT NOT NULL, password_change_required SMALLINT NOT NULL, revision BIGINT NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS local_mfa (subject VARCHAR(512) PRIMARY KEY, secret_ciphertext TEXT NOT NULL, last_totp_step BIGINT NOT NULL, confirmed_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS local_mfa_recovery_codes (subject VARCHAR(512) NOT NULL, code_hash VARCHAR(64) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, code_hash), FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS local_auth_challenges (challenge_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, purpose VARCHAR(32) NOT NULL, binding_hash VARCHAR(64) NOT NULL, stage VARCHAR(32) NOT NULL, secret_ciphertext TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS local_tokens (token_hash VARCHAR(64) PRIMARY KEY, token_id VARCHAR(128) NOT NULL UNIQUE, token_kind VARCHAR(16) NOT NULL, subject VARCHAR(512) NOT NULL, client_id VARCHAR(128) NOT NULL, audience VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, family_id VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, revoked_at VARCHAR(40) NOT NULL, consumed_at VARCHAR(40) NOT NULL, last_used_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS oauth_authorization_codes (code_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, client_id VARCHAR(128) NOT NULL, redirect_uri VARCHAR(2048) NOT NULL, code_challenge VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS local_tokens (token_hash VARCHAR(64) PRIMARY KEY, token_id VARCHAR(128) NOT NULL UNIQUE, token_kind VARCHAR(16) NOT NULL, subject VARCHAR(512) NOT NULL, principal_json TEXT NOT NULL, client_id VARCHAR(128) NOT NULL, audience VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, family_id VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, revoked_at VARCHAR(40) NOT NULL, consumed_at VARCHAR(40) NOT NULL, last_used_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oauth_authorization_codes (code_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, principal_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, client_id VARCHAR(128) NOT NULL, redirect_uri VARCHAR(2048) NOT NULL, code_challenge VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS oauth_device_codes (device_hash VARCHAR(64) PRIMARY KEY, user_hash VARCHAR(64) NOT NULL UNIQUE, client_id VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, status VARCHAR(16) NOT NULL, interval_seconds BIGINT NOT NULL, last_poll_at VARCHAR(40) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
@@ -522,6 +524,14 @@ func (s *ControlStore) LocalUserCount(ctx context.Context) (int, error) {
 	var count int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM local_users`).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count local users: %w", err)
+	}
+	return count, nil
+}
+
+func (s *ControlStore) EnabledLocalHumanCount(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM local_users WHERE identity_kind=? AND enabled=?`), humanIdentityKind, 1).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count enabled local human users: %w", err)
 	}
 	return count, nil
 }
@@ -1033,7 +1043,7 @@ func (s *ControlStore) tokenHash(domain, raw string) string {
 }
 
 func (s *ControlStore) SaveFlow(ctx context.Context, rawState, rawBrowserBinding string, flow OIDCFlow) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, browser_binding_hash, nonce, pkce_verifier, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?)`), s.tokenHash(oidcFlowTokenDomain, rawState), s.tokenHash(oidcFlowBindingDomain, rawBrowserBinding), flow.Nonce, flow.PKCEVerifier, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, browser_binding_hash, nonce, pkce_verifier, purpose, continuation_json, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`), s.tokenHash(oidcFlowTokenDomain, rawState), s.tokenHash(oidcFlowBindingDomain, rawBrowserBinding), flow.Nonce, flow.PKCEVerifier, flow.Purpose, flow.Continuation, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
@@ -1047,7 +1057,7 @@ func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState, rawBrowserBind
 	var expires string
 	key := s.tokenHash(oidcFlowTokenDomain, rawState)
 	binding := s.tokenHash(oidcFlowBindingDomain, rawBrowserBinding)
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT nonce, pkce_verifier, expires_at FROM oidc_flows WHERE state_hash=? AND browser_binding_hash=?`), key, binding).Scan(&flow.Nonce, &flow.PKCEVerifier, &expires); err != nil {
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT nonce, pkce_verifier, purpose, continuation_json, expires_at FROM oidc_flows WHERE state_hash=? AND browser_binding_hash=?`), key, binding).Scan(&flow.Nonce, &flow.PKCEVerifier, &flow.Purpose, &flow.Continuation, &expires); err != nil {
 		return OIDCFlow{}, err
 	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oidc_flows WHERE state_hash=? AND browser_binding_hash=?`), key, binding)

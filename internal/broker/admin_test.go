@@ -56,6 +56,7 @@ func (f *fakeAdminOIDC) Exchange(_ context.Context, code, verifier, nonce string
 
 type testAdminAuthenticator struct {
 	local      Authenticator
+	store      *ControlStore
 	identities map[string]AdminIdentity
 }
 
@@ -64,6 +65,9 @@ func (a testAdminAuthenticator) Authenticate(ctx context.Context, raw string) (P
 		return Principal{Issuer: identity.Issuer, Subject: identity.Subject, Username: identity.Username,
 			Organization: identity.Organization, Teams: identity.Teams, Roles: identity.Roles,
 			RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}, nil
+	}
+	if strings.HasPrefix(raw, localAccessTokenPrefix) && a.store != nil {
+		return a.store.AuthenticateLocalToken(ctx, raw, "graphit-broker", []string{localAPIScope})
 	}
 	return a.local.Authenticate(ctx, raw)
 }
@@ -100,20 +104,20 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	}
 	_ = login.Body.Close()
 
-	invalid, err := client.Get(httpServer.URL + "/admin/auth/callback?state=not-the-state&code=valid-code")
+	invalid, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=not-the-state&code=valid-code")
 	if err != nil || invalid.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("invalid state status=%s err=%v", statusText(invalid), err)
 	}
 	_ = invalid.Body.Close()
 
 	foreignClient := noRedirectClient()
-	foreign, err := foreignClient.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	foreign, err := foreignClient.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
 	if err != nil || foreign.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("callback without browser binding status=%s err=%v", statusText(foreign), err)
 	}
 	_ = foreign.Body.Close()
 
-	callback, err := client.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
 	if err != nil || callback.StatusCode != http.StatusSeeOther {
 		t.Fatalf("callback status=%s err=%v", statusText(callback), err)
 	}
@@ -146,7 +150,7 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	failedLogin, _ := client.Get(httpServer.URL + "/admin/auth/login")
 	_ = failedLogin.Body.Close()
 	provider.exchangeErr = errors.New("synthetic token endpoint failure")
-	failedCallback, err := client.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	failedCallback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
 	if err != nil || failedCallback.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("failed exchange callback status=%s err=%v", statusText(failedCallback), err)
 	}
@@ -200,7 +204,7 @@ func TestAdminOIDCAllowsConcurrentBrowserFlows(t *testing.T) {
 		t.Fatalf("flows were not independent: states=%v provider=%v", states, provider.flows)
 	}
 	for _, state := range states {
-		callback, err := client.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(state) + "&code=valid-code")
+		callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(state) + "&code=valid-code")
 		if err != nil || callback.StatusCode != http.StatusSeeOther {
 			t.Fatalf("callback state=%q status=%s err=%v", state, statusText(callback), err)
 		}
@@ -384,7 +388,7 @@ func TestUserRoleListsOnlyAccessibleProjectsAndProviderCommand(t *testing.T) {
 	}
 }
 
-func TestOIDCProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
+func TestBrokerProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
@@ -396,18 +400,13 @@ func TestOIDCProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
 		RequiredScopes: []string{"graphit.use"}, UsernameClaim: "preferred_username",
 		OrganizationClaim: "organization.id", TeamsClaim: "groups",
 	}}
-	state.config.Administration.CLI = GraphitCLIConfig{ProviderName: "company", ProfileName: "alice-company",
-		OIDCClientID: "graphit-cli", OIDCRedirectURI: "http://127.0.0.1:8765/callback"}
+	state.config.Administration.CLI = GraphitCLIConfig{ProviderName: "company", ProfileName: "alice-company"}
 	service.state.Store(&state)
 
 	command := service.graphitProviderCommand(AdminSession{Issuer: "https://identity.example", Subject: "alice"})
 	for _, expected := range []string{
-		"graphit --non-interactive provider add 'company' --type oidc",
-		"--issuer 'https://identity.example'", "--client-id 'graphit-cli'", "--token-auth-method none",
-		"--redirect-uri 'http://127.0.0.1:8765/callback'", "--scopes 'graphit.use,offline_access,openid,profile'",
-		"--username-claim 'preferred_username'", "--organization-claim 'organization.id'", "--teams-claim 'groups'",
-		"--broker-endpoint 'https://broker.example.com'", "--broker-token-strategy relay",
-		"--broker-audience 'graphit-broker'", "--embedding-mode broker --rerank-mode broker",
+		"graphit --non-interactive provider add 'company' --type broker",
+		"--broker-endpoint 'https://broker.example.com'",
 		"graphit login --provider 'company' --profile 'alice-company'",
 	} {
 		if !strings.Contains(command, expected) {
@@ -480,7 +479,7 @@ func TestLocalPasswordIsRejectedAsBearerAndCanCreateUISession(t *testing.T) {
 	if len(body.Projects) != 1 || body.Projects[0].ID != "project-local" {
 		t.Fatalf("local projects=%#v", body.Projects)
 	}
-	if !strings.Contains(body.ProviderCommand, "--type local") || strings.Contains(body.ProviderCommand, "GRAPHIT_BROKER_KEY") || strings.Contains(body.ProviderCommand, "consumer-secret") {
+	if !strings.Contains(body.ProviderCommand, "--type broker") || strings.Contains(body.ProviderCommand, "GRAPHIT_BROKER_KEY") || strings.Contains(body.ProviderCommand, "consumer-secret") {
 		t.Fatalf("local provider command=%q", body.ProviderCommand)
 	}
 }
@@ -857,7 +856,7 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	cfg := testServerConfig(embeddingURL, "http://127.0.0.1:1")
 	cfg.Authentication = AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{
 		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"}, SubjectClaim: "sub", UsernameClaim: "preferred_username",
-		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/admin/auth/callback", Scopes: []string{"openid", "profile", "email"},
+		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/oauth/oidc/callback", Scopes: []string{"openid", "profile", "email"},
 	}}}
 	requireMFA := false
 	cfg.Authentication.LocalMFA.Required = &requireMFA
@@ -892,7 +891,7 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 		control.Close()
 		t.Fatal(err)
 	}
-	authenticator := testAdminAuthenticator{local: localAuthenticator, identities: provider.identities}
+	authenticator := testAdminAuthenticator{local: localAuthenticator, store: control, identities: provider.identities}
 	service := newServerWithDependencies(cfg, authenticator, NewAIService(cfg.Services), nil, control, control, provider)
 	localPasswords, err := newLocalPasswordAuthenticator(context.Background(), cfg.Authentication, control)
 	if err != nil {

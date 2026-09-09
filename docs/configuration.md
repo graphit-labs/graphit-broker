@@ -46,8 +46,17 @@ Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides a
 
 `authentication.token_pepper` is the single deployment secret used with domain separation for
 local password preprocessing, administration sessions, OIDC state, local OAuth grants, access and
-refresh tokens, and service credentials. It must contain at least 32
-bytes whenever administration is enabled and is never stored in SQL.
+refresh tokens, and service credentials. It must contain at least 32 bytes whenever administration,
+local login, or browser OIDC login is enabled and is never stored in SQL.
+
+Local browser login is deployment-owned. It defaults to the value of `administration.enabled`, but
+can be enabled independently for Graphit Code login or disabled while keeping OIDC login:
+
+```yaml
+authentication:
+  local_login:
+    enabled: true
+```
 
 Local-password failures use a fixed-window limiter. Every field is optional and defaults as shown:
 
@@ -84,7 +93,7 @@ username lockout before starting Argon2id. Successful checks and saturation reje
 consume the per-username quota. Blocked or saturated HTTP requests return `429` with `Retry-After`.
 All limits and durations must be positive, and their product must fit in an integer.
 
-Local CLI and automation credentials use these defaults:
+Graphit Code OAuth and automation credentials use these defaults:
 
 ```yaml
 authentication:
@@ -116,7 +125,7 @@ browser login. At most one entry may configure the browser-client fields:
 | `required_scopes` | no | Every listed scope must be present |
 | `client_id` | browser login | Confidential client ID used by the authorization-code flow |
 | `client_secret` | no | Confidential client secret, normally injected from a secret manager |
-| `redirect_url` | browser login | Exact `/admin/auth/callback` URL; HTTP is allowed only on loopback |
+| `redirect_url` | browser login | Exact `/oauth/oidc/callback` URL; HTTP is allowed only on loopback |
 | `scopes` | no | Browser scopes; defaults to `openid profile email` |
 | `subject_claim` | yes | Stable identity selector; defaults to `sub` |
 | `name_claim` | no | Display-name selector; defaults to `name` |
@@ -155,9 +164,10 @@ the verifier. Changing a user's password, username, attributes, or enabled state
 revision and invalidates existing local browser sessions, access/refresh tokens, pending grants,
 and service credentials. Role changes are resolved from SQL on the next request.
 
-A password is accepted only by the administrative login, local authorization page, or device
+A password is accepted only by the administrative login, broker-owned authorization page, or device
 verification page. It is never accepted in `Authorization`. Desktop CLI login uses Authorization
-Code with PKCE; headless login uses Device Authorization. Both produce opaque broker tokens whose
+Code with PKCE through the Broker-owned method chooser; headless login uses local Device
+Authorization. Local and upstream OIDC browser logins both produce opaque broker tokens whose
 raw values are never stored in SQL. Automation uses a credential attached to a `service` identity.
 All local tokens are audience- and scope-bound, expire, can be revoked, and stop authenticating
 when the owning identity revision changes. Omitting the header creates an anonymous principal,
@@ -174,7 +184,7 @@ authentication:
       required_scopes: [graphit.use]
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
-      redirect_url: https://broker.example.com/admin/auth/callback
+      redirect_url: https://broker.example.com/oauth/oidc/callback
       scopes: [openid, profile, email]
       subject_claim: sub
       name_claim: name
@@ -190,8 +200,6 @@ administration:
   cli:
     provider_name: organization-broker
     profile_name: organization-broker
-    oidc_client_id: graphit-cli
-    oidc_redirect_uri: ""
 ```
 
 There is no administration-specific OIDC provider. The same issuer and claim mappings validate
@@ -206,9 +214,10 @@ canonical subject. Every authenticated identity additionally receives the built-
 unknown claimed roles grant nothing. Local users always resolve their additional roles from SQL.
 There is no superadmin bypass.
 
-`administration.cli` supplies the non-secret public/native client details used to render complete
-`graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick
-a free loopback port; when set, it must be an HTTP loopback URL with an explicit port.
+`administration.cli` supplies only the names used to render complete `graphit provider add --type
+broker` and `graphit login` snippets. The public client ID and callback path come from
+`authentication.local_tokens`; Graphit Code discovers both from the Broker and picks a free
+loopback port.
 
 Administration cookies are `HttpOnly` and `SameSite=Lax`. `administration.cookie_secure` defaults
 to `true`; set it to `false` only for an explicitly configured loopback HTTP development server.

@@ -50,7 +50,7 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	defer server.Close()
 	issuer = server.URL
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, server.Client())
-	provider, err := NewAdminIdentityProvider(ctx, OIDCIssuerConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/admin/auth/callback",
+	provider, err := NewAdminIdentityProvider(ctx, OIDCIssuerConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/oauth/oidc/callback",
 		SubjectClaim: "$.identity.id", NameClaim: "$.profile.display_name", EmailClaim: "$.profile.email", UsernameClaim: "$.profile.email", RoleClaim: "$.realm_access.roles[*]"})
 	if err != nil {
 		t.Fatal(err)

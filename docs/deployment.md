@@ -26,7 +26,7 @@ docker compose up -d
 ```
 
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
-correctly and register the public `/admin/auth/callback` URL exactly with the IdP.
+correctly and register the public `/oauth/oidc/callback` URL exactly with the IdP.
 
 ## Database selection
 

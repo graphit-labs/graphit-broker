@@ -9,7 +9,7 @@ users, roles, assignments, and resource grants are mutable SQL state.
 
 Configure the browser client on one `authentication.oidc` entry. That same entry supplies issuer,
 subject, username, organization, teams, and role mappings for bearer validation and browser login.
-Register the exact redirect URI `https://BROKER/admin/auth/callback`, authorization-code flow,
+Register the exact redirect URI `https://BROKER/oauth/oidc/callback`, authorization-code flow,
 PKCE-capable endpoints, the selected scopes, and a confidential client secret. HTTP callbacks are
 accepted only on loopback.
 
@@ -28,6 +28,8 @@ authentication:
     required: true
     issuer: Graphit Broker
     challenge_ttl: 10m
+  local_login:
+    enabled: true
   local_tokens:
     audience: graphit-broker
     cli_client_id: graphit-cli
@@ -40,7 +42,7 @@ authentication:
       required_scopes: [graphit.use]
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
-      redirect_url: https://broker.example.com/admin/auth/callback
+      redirect_url: https://broker.example.com/oauth/oidc/callback
       subject_claim: sub
       username_claim: preferred_username
       role_claim: "$.realm_access.roles[*]"
@@ -150,13 +152,17 @@ The raw `gb_sc_...` credential appears only in the successful create response. S
 domain-separated HMAC plus metadata, expiry, revocation, and last-use timestamps. Updating,
 disabling, or deleting the service identity invalidates all credentials through its revision.
 
-## Local CLI authorization
+## Graphit Code authorization
 
-Local passwords are never accepted as Bearer credentials. A desktop CLI uses
-`GET/POST /oauth/authorize` and exchanges the one-time code at `POST /oauth/token`; the broker
+Local passwords and upstream IdP tokens are never passed to Graphit Code as Bearer credentials.
+A desktop client discovers the authorization URL, opens the Broker-owned
+`GET/POST /oauth/authorize` page, and exchanges the one-time code at `POST /oauth/token`. That page
+offers local and OIDC login only when each method is configured and available. The Broker completes
+either method and issues its own opaque tokens; Graphit Code never needs the upstream issuer or
+client secret. The broker
 requires PKCE S256, the configured public client ID, an exact callback path, and an explicit
 `127.0.0.1` or `::1` port. A headless CLI starts at `POST /oauth/device/authorize`, shows the returned
-user code, and polls `/oauth/token` only after the user approves it at `/oauth/device`.
+user code, and polls `/oauth/token` only after the user approves it locally at `/oauth/device`.
 
 Access tokens default to ten minutes. Requesting `offline_access` also returns a rotating refresh
 token. Reuse of an already rotated refresh token revokes the whole token family. Clients revoke a

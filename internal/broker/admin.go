@@ -24,6 +24,8 @@ const (
 	adminCookieName  = "graphit_admin_session"
 	configuredSecret = "[configured-secret]"
 	oidcFlowTTL      = 10 * time.Minute
+	oidcPurposeAdmin = "admin"
+	oidcPurposeOAuth = "oauth"
 )
 
 type adminContextKey string
@@ -68,7 +70,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires := time.Now().Add(oidcFlowTTL)
-	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, ExpiresAt: expires}); err != nil {
+	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, Purpose: oidcPurposeAdmin, ExpiresAt: expires}); err != nil {
 		writeError(w, http.StatusInternalServerError, "login_failed", "could not persist OIDC login", requestID(r.Context()))
 		return
 	}
@@ -88,19 +90,33 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, s.oidcFlowCookie(rawState, "", time.Unix(1, 0)))
-	if oidcError := strings.TrimSpace(r.URL.Query().Get("error")); oidcError != "" {
-		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected administration login", requestID(r.Context()))
-		return
-	}
 	flow, err := s.control.ConsumeFlow(r.Context(), rawState, flowCookie.Value)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login state is invalid or expired", requestID(r.Context()))
 		return
 	}
+	if oidcError := strings.TrimSpace(r.URL.Query().Get("error")); oidcError != "" {
+		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected login", requestID(r.Context()))
+		return
+	}
 	state := s.runtime()
 	identity, err := state.adminOIDC.Exchange(r.Context(), r.URL.Query().Get("code"), flow.PKCEVerifier, flow.Nonce)
 	if err != nil {
+		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "invalid_identity", "OIDC identity is invalid", requestID(r.Context()))
+		return
+	}
+	if flow.Purpose == oidcPurposeOAuth {
+		s.finishOIDCAuthorization(w, r, flow, identity)
+		return
+	}
+	if flow.Purpose != oidcPurposeAdmin {
+		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login purpose is invalid", requestID(r.Context()))
 		return
 	}
 	session := AdminSession{Issuer: identity.Issuer, Subject: identity.Subject,
@@ -118,7 +134,7 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || s.runtime().localAuth == nil {
+	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 		return
 	}
@@ -167,7 +183,7 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminLocalLoginContinue(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || s.runtime().localAuth == nil {
+	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 		return
 	}
@@ -311,8 +327,8 @@ func cookieMaxAge(expires time.Time) int {
 func (s *Server) adminLoginOptions(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
 	localCount := 0
-	if s.control != nil {
-		localCount, _ = s.control.LocalUserCount(r.Context())
+	if s.control != nil && state.config.Authentication.LocalLogin.isEnabled() {
+		localCount, _ = s.control.EnabledLocalHumanCount(r.Context())
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]bool{
@@ -401,9 +417,8 @@ func (s *Server) adminProjects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) graphitProviderCommand(session AdminSession) string {
+func (s *Server) graphitProviderCommand(_ AdminSession) string {
 	cfg := s.runtime().config
-	localToken := session.Issuer == localIdentityIssuer
 	endpoint := strings.TrimRight(strings.TrimSpace(cfg.Server.PublicURL), "/")
 	if endpoint == "" {
 		endpoint = "<BROKER_URL>"
@@ -416,58 +431,8 @@ func (s *Server) graphitProviderCommand(session AdminSession) string {
 	if profileName == "" {
 		profileName = providerName
 	}
-	base := "graphit --non-interactive provider add " + shellArgument(providerName)
-	if localToken {
-		command := base + " --type local --broker-endpoint " + shellArgument(endpoint) +
-			" --client-id " + shellArgument(cfg.Authentication.LocalTokens.CLIClientID) +
-			" --scopes " + shellArgument(localAPIScope+","+offlineAccessScope) +
-			" --embedding-mode broker --rerank-mode broker\n\n" +
-			"graphit login --provider " + shellArgument(providerName) + " --profile " + shellArgument(profileName)
-		return command
-	}
-	if len(cfg.Authentication.OIDC) == 0 {
-		return base + " --type local \\\n  --broker-endpoint " + shellArgument(endpoint) + " \\\n  --embedding-mode broker --rerank-mode broker"
-	}
-	issuer := cfg.Authentication.OIDC[0]
-	for _, candidate := range cfg.Authentication.OIDC {
-		if strings.TrimRight(candidate.Issuer, "/") == strings.TrimRight(session.Issuer, "/") {
-			issuer = candidate
-			break
-		}
-	}
-	scopes := cleanStrings(append([]string{"openid", "profile", "offline_access"}, issuer.RequiredScopes...))
-	clientID := strings.TrimSpace(cfg.Administration.CLI.OIDCClientID)
-	if clientID == "" {
-		clientID = "<GRAPHIT_OIDC_CLIENT_ID>"
-	}
-	parts := []string{
-		base + " --type oidc",
-		"  --issuer " + shellArgument(strings.TrimRight(issuer.Issuer, "/")),
-		"  --client-id " + shellArgument(clientID),
-		"  --token-auth-method none",
-		"  --scopes " + shellArgument(strings.Join(scopes, ",")),
-	}
-	if cfg.Administration.CLI.OIDCRedirectURI != "" {
-		parts = append(parts, "  --redirect-uri "+shellArgument(cfg.Administration.CLI.OIDCRedirectURI))
-	}
-	if issuer.UsernameClaim != "" {
-		parts = append(parts, "  --username-claim "+shellArgument(issuer.UsernameClaim))
-	}
-	if issuer.OrganizationClaim != "" {
-		parts = append(parts, "  --organization-claim "+shellArgument(issuer.OrganizationClaim))
-	}
-	if issuer.TeamsClaim != "" {
-		parts = append(parts, "  --teams-claim "+shellArgument(issuer.TeamsClaim))
-	}
-	parts = append(parts,
-		"  --broker-endpoint "+shellArgument(endpoint),
-		"  --broker-token-strategy relay",
-	)
-	if len(issuer.Audiences) > 0 {
-		parts = append(parts, "  --broker-audience "+shellArgument(issuer.Audiences[0]))
-	}
-	parts = append(parts, "  --embedding-mode broker --rerank-mode broker\n\ngraphit login --provider "+shellArgument(providerName)+" --profile "+shellArgument(profileName))
-	return strings.Join(parts, " \\\n")
+	return "graphit --non-interactive provider add " + shellArgument(providerName) + " --type broker \\\n  --broker-endpoint " + shellArgument(endpoint) + "\n\n" +
+		"graphit login --provider " + shellArgument(providerName) + " --profile " + shellArgument(profileName)
 }
 
 func shellArgument(value string) string {

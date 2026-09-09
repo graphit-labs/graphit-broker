@@ -155,13 +155,11 @@ authentication:
       teams_claim: $.groups[*]
       client_id: broker-admin
       client_secret: secret
-      redirect_url: http://localhost:8080/admin/auth/callback
+      redirect_url: http://localhost:8080/oauth/oidc/callback
       role_claim: $.realm_access.roles[*]
 administration:
   enabled: true
   session_ttl: 1h
-  cli:
-    oidc_client_id: graphit-cli
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
@@ -171,14 +169,13 @@ administration:
 	if cfg.Administration.CLI.ProviderName != "organization-broker" || issuer.UsernameClaim != "preferred_username" || issuer.TeamsClaim != "$.groups[*]" || issuer.RoleClaim != "$.realm_access.roles[*]" || issuer.SubjectClaim != "sub" || issuer.NameClaim != "name" || issuer.EmailClaim != "email" {
 		t.Fatalf("authentication defaults=%#v", cfg.Authentication)
 	}
-	issuer.RedirectURL = "http://broker.example.com/admin/auth/callback"
+	issuer.RedirectURL = "http://broker.example.com/oauth/oidc/callback"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS except on loopback") {
 		t.Fatalf("remote HTTP callback validation=%v", err)
 	}
-	issuer.RedirectURL = "http://localhost:8080/admin/auth/callback"
-	cfg.Administration.CLI.OIDCRedirectURI = "https://identity.example.com/callback"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTP loopback") {
-		t.Fatalf("CLI callback validation=%v", err)
+	issuer.RedirectURL = "http://localhost:8080/oauth/oidc/callback"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("loopback OIDC callback validation=%v", err)
 	}
 }
 
@@ -252,7 +249,7 @@ func TestRepositoryConfigurationExamplesDecodeWithInjectedSecrets(t *testing.T) 
 		"BROKER_AUTH_TOKEN_PEPPER":  testPasswordPepper,
 		"BROKER_OIDC_CLIENT_ID":     "broker-admin",
 		"BROKER_OIDC_CLIENT_SECRET": "oidc-secret",
-		"BROKER_OIDC_REDIRECT_URL":  "https://broker.example.com/admin/auth/callback",
+		"BROKER_OIDC_REDIRECT_URL":  "https://broker.example.com/oauth/oidc/callback",
 		"OPENAI_API_KEY":            "openai-secret", "COHERE_API_KEY": "cohere-secret",
 		"PRIMARY_S3_ACCESS_KEY_ID": "primary-access", "PRIMARY_S3_SECRET_ACCESS_KEY": "primary-secret",
 		"PUBLIC_S3_ACCESS_KEY_ID": "public-access", "PUBLIC_S3_SECRET_ACCESS_KEY": "public-secret",

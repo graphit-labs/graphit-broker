@@ -3,6 +3,7 @@ package broker
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"html/template"
 	"net"
@@ -20,9 +21,9 @@ const localLoginForms = `{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 {{else if eq .Status "mfa-enrollment"}}<p>Set up MFA in Google Authenticator or another TOTP application, then enter the displayed code.</p><img src="{{.QRCodeDataURL}}" width="256" height="256" alt="TOTP enrollment QR code"><p>Manual key: <code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication code <input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><button type="submit">Confirm MFA</button></form>
 {{else if eq .Status "mfa"}}<p>Enter a six-digit authenticator code or one unused recovery code.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication or recovery code <input name="code" autocomplete="one-time-code" required></label><button type="submit">Verify</button></form>
 {{else if .RecoveryCodes}}<h2>Save your recovery codes</h2><p>Each code works once. They will not be shown again.</p><ul>{{range .RecoveryCodes}}<li><code>{{.}}</code></li>{{end}}</ul>{{if .Redirect}}<p><a href="{{.Redirect}}">Continue to Graphit CLI</a></p>{{else}}<p>Device authorized. You may close this page.</p>{{end}}
-{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{else}}<form method="post"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{end}}{{end}}`
+	{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{else if .Local}}<form method="post"><input type="hidden" name="login_method" value="local"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Sign in locally</button></form>{{end}}{{end}}`
 
-var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Graphit CLI</title></head><body><main><h1>Authorize Graphit CLI</h1><p>Sign in with a local human account. Your password is used only for this login and is never issued as an API credential.</p>` + localLoginForms + `</main></body></html>`))
+var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Graphit</title></head><body><main><h1>Sign in to Graphit</h1><p>Choose an authentication method managed by this Graphit Broker.</p>{{if .OIDC}}<section><h2>Organization account</h2><form method="post"><button type="submit" name="login_method" value="oidc">Continue with OpenID Connect</button></form></section>{{end}}{{if or .Local .Status .RecoveryCodes}}<section><h2>Local account</h2><p>Your password is used only for this login and is never issued as an API credential.</p>` + localLoginForms + `</section>{{end}}</main></body></html>`))
 
 var deviceVerificationPage = template.Must(template.New("device").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize device</title></head><body><main><h1>Authorize device</h1>{{if .Approved}}<p>Device authorized. You may close this page.</p>{{else}}<p>Enter the code shown by the CLI and sign in with a local human account.</p>` + localLoginForms + `{{end}}</main></body></html>`))
 
@@ -31,27 +32,33 @@ type localLoginPageData struct {
 	QRCodeDataURL                                             template.URL
 	RecoveryCodes                                             []string
 	Device, Approved                                          bool
+	Local, OIDC                                               bool
 }
 
 func (s *Server) oauthMetadata(w http.ResponseWriter, r *http.Request) {
 	issuer := s.publicURL(r)
+	methods, _ := s.oauthLoginMethods(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                issuer,
 		"authorization_endpoint":                issuer + "/oauth/authorize",
 		"token_endpoint":                        issuer + "/oauth/token",
 		"device_authorization_endpoint":         issuer + "/oauth/device/authorize",
 		"revocation_endpoint":                   issuer + "/oauth/revoke",
+		"userinfo_endpoint":                     issuer + "/oauth/userinfo",
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token", deviceGrantType},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
 		"scopes_supported":                      []string{localAPIScope, offlineAccessScope},
+		"client_id":                             s.runtime().config.Authentication.LocalTokens.CLIClientID,
+		"redirect_uri_path":                     s.runtime().config.Authentication.LocalTokens.CLIRedirectPath,
+		"login_methods_supported":               methods,
 	})
 }
 
 func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || s.runtime().localPasswords == nil {
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local authorization is unavailable")
+	if s.control == nil {
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization is unavailable")
 		return
 	}
 	params, err := s.localAuthorizationRequest(r)
@@ -59,8 +66,18 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	methods, err := s.oauthLoginMethods(r)
+	if err != nil {
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization methods are unavailable")
+		return
+	}
+	localEnabled, oidcEnabled := containsString(methods, "local"), containsString(methods, "oidc")
+	if !localEnabled && !oidcEnabled {
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no authentication method is available")
+		return
+	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, localAuthorizationPage, localLoginPageData{})
+		s.writeOAuthHTML(w, localAuthorizationPage, localLoginPageData{Local: localEnabled, OIDC: oidcEnabled})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -68,64 +85,77 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid authorization form")
 		return
 	}
+	if r.PostForm.Get("login_method") == "oidc" {
+		if !oidcEnabled {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OIDC login is unavailable")
+			return
+		}
+		s.startOAuthOIDC(w, r, params)
+		return
+	}
+	if !localEnabled {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "local login is unavailable")
+		return
+	}
 	binding := params.binding()
 	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeOAuth, binding)
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
-		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, loginPageData(step, "Too many authentication attempts. Try again later."))
+		data := loginPageData(step, "Too many authentication attempts. Try again later.")
+		data.Local, data.OIDC = localEnabled, oidcEnabled
+		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, data)
 		return
 	}
 	if authErr != nil {
 		var inputError *localAuthInputError
 		switch {
 		case errors.Is(authErr, ErrUnauthenticated):
-			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, loginPageData(step, "Invalid local credentials."))
+			data := loginPageData(step, "Invalid local credentials.")
+			data.Local, data.OIDC = localEnabled, oidcEnabled
+			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
-			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, loginPageData(step, authErr.Error()))
+			data := loginPageData(step, authErr.Error())
+			data.Local, data.OIDC = localEnabled, oidcEnabled
+			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.As(authErr, &inputError):
-			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, loginPageData(step, inputError.Error()))
+			data := loginPageData(step, inputError.Error())
+			data.Local, data.OIDC = localEnabled, oidcEnabled
+			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, data)
 		default:
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete local authorization")
 		}
 		return
 	}
 	if step.Status != "complete" {
-		s.writeOAuthHTML(w, localAuthorizationPage, loginPageData(step, ""))
-		return
-	}
-	principal := step.Principal
-	code, err := randomURLToken(32)
-	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not create authorization code")
-		return
-	}
-	expires := time.Now().Add(s.runtime().config.Authentication.LocalTokens.AuthorizationTTL)
-	grant := AuthorizationCodeGrant{LocalTokenGrant: LocalTokenGrant{Subject: principal.Subject, LocalUserRevision: principal.LocalUserRevision,
-		ClientID: params.clientID, Audience: s.runtime().config.Authentication.LocalTokens.Audience, Scopes: params.scopes},
-		RedirectURI: params.redirectURI, CodeChallenge: params.codeChallenge}
-	grant.ExpiresAt = expires
-	if err := s.control.SaveAuthorizationCode(r.Context(), code, grant); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist authorization code")
-		return
-	}
-	redirect, _ := url.Parse(params.redirectURI)
-	query := redirect.Query()
-	query.Set("code", code)
-	query.Set("state", params.state)
-	redirect.RawQuery = query.Encode()
-	w.Header().Set("Cache-Control", "no-store")
-	if len(step.RecoveryCodes) > 0 {
 		data := loginPageData(step, "")
-		data.Redirect = redirect.String()
+		data.Local, data.OIDC = localEnabled, oidcEnabled
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
-	http.Redirect(w, r, redirect.String(), http.StatusFound)
+	redirect, err := s.issueOAuthAuthorizationCode(r, params, step.Principal)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist authorization code")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if len(step.RecoveryCodes) > 0 {
+		data := loginPageData(step, "")
+		data.Redirect = redirect
+		data.Local, data.OIDC = localEnabled, oidcEnabled
+		s.writeOAuthHTML(w, localAuthorizationPage, data)
+		return
+	}
+	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
 type localAuthorizationParams struct {
 	clientID, redirectURI, codeChallenge, state string
 	scopes                                      []string
+}
+
+type oauthOIDCContinuation struct {
+	ClientID, RedirectURI, CodeChallenge, State string
+	Scopes                                      []string
 }
 
 func (p localAuthorizationParams) binding() string {
@@ -155,6 +185,133 @@ func (s *Server) localAuthorizationRequest(r *http.Request) (localAuthorizationP
 	var err error
 	params.scopes, err = requestedLocalScopes(query.Get("scope"))
 	return params, err
+}
+
+func (s *Server) oauthLoginMethods(r *http.Request) ([]string, error) {
+	methods := []string{}
+	state := s.runtime()
+	if state.config.Authentication.LocalLogin.isEnabled() && state.localAuth != nil && s.control != nil {
+		count, err := s.control.EnabledLocalHumanCount(r.Context())
+		if err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			methods = append(methods, "local")
+		}
+	}
+	if state.adminOIDC != nil {
+		methods = append(methods, "oidc")
+	}
+	return methods, nil
+}
+
+func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, params localAuthorizationParams) {
+	rawState, err := randomURLToken(32)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		return
+	}
+	nonce, err := randomURLToken(32)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		return
+	}
+	verifier, err := randomURLToken(48)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		return
+	}
+	browserBinding, err := randomURLToken(32)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		return
+	}
+	continuation, err := json.Marshal(oauthOIDCContinuation{ClientID: params.clientID, RedirectURI: params.redirectURI, CodeChallenge: params.codeChallenge, State: params.state, Scopes: params.scopes})
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		return
+	}
+	expires := time.Now().Add(oidcFlowTTL)
+	flow := OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, Purpose: oidcPurposeOAuth, Continuation: string(continuation), ExpiresAt: expires}
+	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, flow); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist OIDC login")
+		return
+	}
+	http.SetCookie(w, s.oidcFlowCookie(rawState, browserBinding, expires))
+	http.Redirect(w, r, s.runtime().adminOIDC.AuthorizationURL(rawState, nonce, verifier), http.StatusFound)
+}
+
+func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request, flow OIDCFlow, identity AdminIdentity) {
+	params, err := s.paramsFromOIDCFlow(flow)
+	if err != nil {
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_request", "OIDC authorization continuation is invalid")
+		return
+	}
+	principal := Principal{Issuer: identity.Issuer, Subject: identity.Subject, Name: identity.Name, Email: identity.Email,
+		Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams, Roles: identity.Roles,
+		RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}
+	redirect, err := s.issueOAuthAuthorizationCode(r, params, principal)
+	if err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist authorization code")
+		return
+	}
+	http.Redirect(w, r, redirect, http.StatusFound)
+}
+
+func (s *Server) paramsFromOIDCFlow(flow OIDCFlow) (localAuthorizationParams, error) {
+	var saved oauthOIDCContinuation
+	if flow.Purpose != oidcPurposeOAuth || json.Unmarshal([]byte(flow.Continuation), &saved) != nil {
+		return localAuthorizationParams{}, errors.New("invalid OIDC continuation")
+	}
+	params := localAuthorizationParams{clientID: saved.ClientID, redirectURI: saved.RedirectURI, codeChallenge: saved.CodeChallenge, state: saved.State, scopes: cleanStrings(saved.Scopes)}
+	cfg := s.runtime().config.Authentication.LocalTokens
+	if params.clientID != cfg.CLIClientID || validateLoopbackRedirect(params.redirectURI, cfg.CLIRedirectPath) != nil || !validPKCEChallenge(params.codeChallenge) || params.state == "" || len(params.state) > 512 {
+		return localAuthorizationParams{}, errors.New("invalid OIDC continuation")
+	}
+	if _, err := requestedLocalScopes(strings.Join(params.scopes, " ")); err != nil {
+		return localAuthorizationParams{}, err
+	}
+	return params, nil
+}
+
+func (s *Server) issueOAuthAuthorizationCode(r *http.Request, params localAuthorizationParams, principal Principal) (string, error) {
+	code, err := randomURLToken(32)
+	if err != nil {
+		return "", err
+	}
+	grant := AuthorizationCodeGrant{LocalTokenGrant: LocalTokenGrant{Principal: principal, Subject: principal.Subject, LocalUserRevision: principal.LocalUserRevision,
+		ClientID: params.clientID, Audience: s.runtime().config.Authentication.LocalTokens.Audience, Scopes: params.scopes},
+		RedirectURI: params.redirectURI, CodeChallenge: params.codeChallenge}
+	grant.ExpiresAt = time.Now().Add(s.runtime().config.Authentication.LocalTokens.AuthorizationTTL)
+	if err := s.control.SaveAuthorizationCode(r.Context(), code, grant); err != nil {
+		return "", err
+	}
+	redirect, err := url.Parse(params.redirectURI)
+	if err != nil {
+		return "", err
+	}
+	query := redirect.Query()
+	query.Set("code", code)
+	query.Set("state", params.state)
+	redirect.RawQuery = query.Encode()
+	return redirect.String(), nil
+}
+
+func (s *Server) redirectOAuthFailure(w http.ResponseWriter, r *http.Request, flow OIDCFlow, code string) bool {
+	params, err := s.paramsFromOIDCFlow(flow)
+	if err != nil {
+		return false
+	}
+	redirect, err := url.Parse(params.redirectURI)
+	if err != nil {
+		return false
+	}
+	query := redirect.Query()
+	query.Set("error", code)
+	query.Set("state", params.state)
+	redirect.RawQuery = query.Encode()
+	http.Redirect(w, r, redirect.String(), http.StatusFound)
+	return true
 }
 
 func validateLoopbackRedirect(raw, expectedPath string) error {
@@ -201,6 +358,10 @@ func requestedLocalScopes(raw string) ([]string, error) {
 }
 
 func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
+	if !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local device authorization is unavailable")
+		return
+	}
 	if !requireForm(w, r) {
 		return
 	}
@@ -239,12 +400,12 @@ func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || s.runtime().localPasswords == nil {
+	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localPasswords == nil {
 		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local authorization is unavailable")
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, deviceVerificationPage, localLoginPageData{Device: true, UserCode: r.URL.Query().Get("user_code")})
+		s.writeOAuthHTML(w, deviceVerificationPage, localLoginPageData{Device: true, Local: true, UserCode: r.URL.Query().Get("user_code")})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -257,7 +418,7 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
 		data := loginPageData(step, "Too many authentication attempts. Try again later.")
-		data.Device, data.UserCode = true, userCode
+		data.Device, data.Local, data.UserCode = true, true, userCode
 		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, deviceVerificationPage, data)
 		return
 	}
@@ -274,13 +435,13 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 			message, status = inputError.Error(), http.StatusBadRequest
 		}
 		data := loginPageData(step, message)
-		data.Device, data.UserCode = true, userCode
+		data.Device, data.Local, data.UserCode = true, true, userCode
 		s.writeOAuthHTMLStatus(w, status, deviceVerificationPage, data)
 		return
 	}
 	if step.Status != "complete" {
 		data := loginPageData(step, "")
-		data.Device, data.UserCode = true, userCode
+		data.Device, data.Local, data.UserCode = true, true, userCode
 		s.writeOAuthHTML(w, deviceVerificationPage, data)
 		return
 	}
@@ -292,7 +453,7 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 	}
 	if len(step.RecoveryCodes) > 0 {
 		data := loginPageData(step, "")
-		data.Device, data.UserCode = true, userCode
+		data.Device, data.Local, data.UserCode = true, true, userCode
 		s.writeOAuthHTML(w, deviceVerificationPage, data)
 		return
 	}
@@ -380,11 +541,19 @@ func validPKCEVerifier(value string) bool {
 }
 
 func (s *Server) oauthIssueTokenPair(w http.ResponseWriter, r *http.Request, grant LocalTokenGrant) {
-	user, err := s.control.LocalUserBySubject(r.Context(), grant.Subject)
-	if err != nil || !user.Enabled || user.Kind != humanIdentityKind || user.Revision != grant.LocalUserRevision {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "local identity is no longer valid")
+	principal, err := s.control.grantPrincipal(r.Context(), grant)
+	if err != nil || (principal.Issuer == localIdentityIssuer && principal.AuthMethod == "service-credential") {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "identity is no longer valid")
 		return
 	}
+	if principal.Issuer != localIdentityIssuer {
+		issuer, found := s.oidcConfigForIssuer(principal.Issuer)
+		if !found || !issuer.loginConfigured() || strings.TrimSpace(issuer.RoleClaim) != strings.TrimSpace(principal.RoleClaimSelector) {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "OIDC identity configuration changed; sign in again")
+			return
+		}
+	}
+	grant.Principal, grant.Subject, grant.LocalUserRevision = principal, principal.Subject, principal.LocalUserRevision
 	cfg := s.runtime().config.Authentication.LocalTokens
 	accessSecret, err := randomURLToken(32)
 	if err != nil {
@@ -428,6 +597,8 @@ func (s *Server) oauthIssueTokenPair(w http.ResponseWriter, r *http.Request, gra
 		return
 	}
 	response := map[string]any{"access_token": accessRaw, "token_type": "Bearer", "expires_in": int64(cfg.AccessTTL / time.Second), "scope": strings.Join(cleanStrings(grant.Scopes), " ")}
+	response["identity"] = map[string]any{"issuer": principal.Issuer, "subject": principal.Subject, "name": principal.Name, "email": principal.Email,
+		"username": principal.Username, "organization": principal.Organization, "teams": cleanStrings(principal.Teams), "roles": cleanStrings(principal.Roles)}
 	if refreshRaw != "" {
 		response["refresh_token"] = refreshRaw
 	}
@@ -446,6 +617,18 @@ func (s *Server) oauthRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) oauthUserinfo(w http.ResponseWriter, r *http.Request) {
+	principal := principalFromContext(r.Context())
+	if principal.IsAnonymous() {
+		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "a valid broker access token is required")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"issuer": principal.Issuer, "subject": principal.Subject, "name": principal.Name,
+		"email": principal.Email, "username": principal.Username, "organization": principal.Organization,
+		"teams": cleanStrings(principal.Teams), "roles": cleanStrings(principal.Roles)})
 }
 
 func requireForm(w http.ResponseWriter, r *http.Request) bool {
