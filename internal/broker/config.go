@@ -54,14 +54,28 @@ type ServerConfig struct {
 type AuthenticationConfig struct {
 	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
 	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
+	LocalTokens    LocalTokenConfig             `yaml:"local_tokens" json:"local_tokens"`
 	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
 }
 
+type LocalTokenConfig struct {
+	Audience           string        `yaml:"audience" json:"audience"`
+	CLIClientID        string        `yaml:"cli_client_id" json:"cli_client_id"`
+	CLIRedirectPath    string        `yaml:"cli_redirect_path" json:"cli_redirect_path"`
+	AccessTTL          time.Duration `yaml:"access_ttl" json:"access_ttl"`
+	RefreshTTL         time.Duration `yaml:"refresh_ttl" json:"refresh_ttl"`
+	AuthorizationTTL   time.Duration `yaml:"authorization_code_ttl" json:"authorization_code_ttl"`
+	DeviceTTL          time.Duration `yaml:"device_code_ttl" json:"device_code_ttl"`
+	DevicePollInterval time.Duration `yaml:"device_poll_interval" json:"device_poll_interval"`
+	ServiceMaxTTL      time.Duration `yaml:"service_credential_max_ttl" json:"service_credential_max_ttl"`
+}
+
 type LocalAuthenticationRateLimit struct {
-	MaxFailures   int           `yaml:"max_failures" json:"max_failures"`
-	Window        time.Duration `yaml:"window" json:"window"`
-	Lockout       time.Duration `yaml:"lockout" json:"lockout"`
-	MaxConcurrent int           `yaml:"max_concurrent" json:"max_concurrent"`
+	MaxFailures          int           `yaml:"max_failures" json:"max_failures"`
+	Window               time.Duration `yaml:"window" json:"window"`
+	Lockout              time.Duration `yaml:"lockout" json:"lockout"`
+	MaxConcurrent        int           `yaml:"max_concurrent" json:"max_concurrent"`
+	SaturationMultiplier int           `yaml:"saturation_multiplier" json:"saturation_multiplier"`
 }
 
 type OIDCIssuerConfig struct {
@@ -82,9 +96,10 @@ type OIDCIssuerConfig struct {
 }
 
 type AdministrationConfig struct {
-	Enabled    bool             `yaml:"enabled" json:"enabled"`
-	SessionTTL time.Duration    `yaml:"session_ttl" json:"session_ttl"`
-	CLI        GraphitCLIConfig `yaml:"cli" json:"cli"`
+	Enabled      bool             `yaml:"enabled" json:"enabled"`
+	SessionTTL   time.Duration    `yaml:"session_ttl" json:"session_ttl"`
+	CookieSecure *bool            `yaml:"cookie_secure" json:"cookie_secure"`
+	CLI          GraphitCLIConfig `yaml:"cli" json:"cli"`
 }
 
 type GraphitCLIConfig struct {
@@ -286,8 +301,13 @@ func (c *Config) defaults() {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
 	c.Authentication.LocalRateLimit.setDefaults()
+	c.Authentication.LocalTokens.setDefaults()
 	if c.Administration.SessionTTL == 0 {
 		c.Administration.SessionTTL = 8 * time.Hour
+	}
+	if c.Administration.CookieSecure == nil {
+		secure := true
+		c.Administration.CookieSecure = &secure
 	}
 	if c.Administration.CLI.ProviderName == "" {
 		c.Administration.CLI.ProviderName = "organization-broker"
@@ -366,6 +386,64 @@ func (c *Config) defaults() {
 	c.Services.Rerank.Cache.setDefaults()
 }
 
+func (c *LocalTokenConfig) setDefaults() {
+	if strings.TrimSpace(c.Audience) == "" {
+		c.Audience = "graphit-broker"
+	}
+	if strings.TrimSpace(c.CLIClientID) == "" {
+		c.CLIClientID = "graphit-cli"
+	}
+	if strings.TrimSpace(c.CLIRedirectPath) == "" {
+		c.CLIRedirectPath = "/oauth/callback"
+	}
+	if c.AccessTTL == 0 {
+		c.AccessTTL = 10 * time.Minute
+	}
+	if c.RefreshTTL == 0 {
+		c.RefreshTTL = 30 * 24 * time.Hour
+	}
+	if c.AuthorizationTTL == 0 {
+		c.AuthorizationTTL = time.Minute
+	}
+	if c.DeviceTTL == 0 {
+		c.DeviceTTL = 10 * time.Minute
+	}
+	if c.DevicePollInterval == 0 {
+		c.DevicePollInterval = 5 * time.Second
+	}
+	if c.ServiceMaxTTL == 0 {
+		c.ServiceMaxTTL = 365 * 24 * time.Hour
+	}
+}
+
+func (c LocalTokenConfig) validate() error {
+	if !safeSegment(c.Audience) || !safeSegment(c.CLIClientID) {
+		return errors.New("authentication.local_tokens audience and cli_client_id must be safe names")
+	}
+	if !strings.HasPrefix(c.CLIRedirectPath, "/") || strings.ContainsAny(c.CLIRedirectPath, "?#") {
+		return errors.New("authentication.local_tokens.cli_redirect_path must be an absolute path without query or fragment")
+	}
+	if c.AccessTTL < time.Minute || c.AccessTTL > time.Hour {
+		return errors.New("authentication.local_tokens.access_ttl must be between 1m and 1h")
+	}
+	if c.RefreshTTL < c.AccessTTL || c.RefreshTTL > 90*24*time.Hour {
+		return errors.New("authentication.local_tokens.refresh_ttl must be between access_ttl and 2160h")
+	}
+	if c.AuthorizationTTL < 30*time.Second || c.AuthorizationTTL > 10*time.Minute {
+		return errors.New("authentication.local_tokens.authorization_code_ttl must be between 30s and 10m")
+	}
+	if c.DeviceTTL < 5*time.Minute || c.DeviceTTL > 30*time.Minute {
+		return errors.New("authentication.local_tokens.device_code_ttl must be between 5m and 30m")
+	}
+	if c.DevicePollInterval < time.Second || c.DevicePollInterval > 30*time.Second {
+		return errors.New("authentication.local_tokens.device_poll_interval must be between 1s and 30s")
+	}
+	if c.ServiceMaxTTL < time.Hour || c.ServiceMaxTTL > 5*365*24*time.Hour {
+		return errors.New("authentication.local_tokens.service_credential_max_ttl must be between 1h and 43800h")
+	}
+	return nil
+}
+
 func (c *LocalAuthenticationRateLimit) setDefaults() {
 	if c.MaxFailures == 0 {
 		c.MaxFailures = 5
@@ -379,6 +457,9 @@ func (c *LocalAuthenticationRateLimit) setDefaults() {
 	if c.MaxConcurrent == 0 {
 		c.MaxConcurrent = 2
 	}
+	if c.SaturationMultiplier == 0 {
+		c.SaturationMultiplier = 4
+	}
 }
 
 func (c LocalAuthenticationRateLimit) validate() error {
@@ -390,6 +471,12 @@ func (c LocalAuthenticationRateLimit) validate() error {
 	}
 	if c.MaxConcurrent <= 0 {
 		return errors.New("authentication.local_rate_limit.max_concurrent must be positive")
+	}
+	if c.SaturationMultiplier <= 0 {
+		return errors.New("authentication.local_rate_limit.saturation_multiplier must be positive")
+	}
+	if c.MaxConcurrent > int(^uint(0)>>1)/c.SaturationMultiplier {
+		return errors.New("authentication.local_rate_limit concurrency saturation capacity overflows int")
 	}
 	return nil
 }
@@ -442,6 +529,9 @@ func (c Config) Validate() error {
 		return errors.New("database.conn_max_lifetime must be positive")
 	}
 	if err := c.Authentication.LocalRateLimit.validate(); err != nil {
+		return err
+	}
+	if err := c.Authentication.LocalTokens.validate(); err != nil {
 		return err
 	}
 	loginProviders := 0

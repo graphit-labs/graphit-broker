@@ -191,7 +191,7 @@ func TestControlStoreRejectsPreviousSchemaWithoutMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE schema_meta (id SMALLINT PRIMARY KEY, version BIGINT NOT NULL); INSERT INTO schema_meta(id, version) VALUES(1, 4)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE schema_meta (id SMALLINT PRIMARY KEY, version BIGINT NOT NULL); INSERT INTO schema_meta(id, version) VALUES(1, 5)`); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()

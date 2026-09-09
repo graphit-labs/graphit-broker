@@ -33,11 +33,34 @@ services:
 	if cfg.Server.Address != ":8080" || cfg.Services.Embeddings.MaxBatch != 256 {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
-	if cfg.Authentication.LocalRateLimit.MaxFailures != 5 || cfg.Authentication.LocalRateLimit.Window != time.Minute || cfg.Authentication.LocalRateLimit.Lockout != 5*time.Minute || cfg.Authentication.LocalRateLimit.MaxConcurrent != 2 {
+	if cfg.Authentication.LocalRateLimit.MaxFailures != 5 || cfg.Authentication.LocalRateLimit.Window != time.Minute || cfg.Authentication.LocalRateLimit.Lockout != 5*time.Minute || cfg.Authentication.LocalRateLimit.MaxConcurrent != 2 || cfg.Authentication.LocalRateLimit.SaturationMultiplier != 4 {
 		t.Fatalf("local authentication rate limit defaults=%#v", cfg.Authentication.LocalRateLimit)
 	}
 	if cfg.Authentication.TokenPepper != testPasswordPepper {
 		t.Fatal("environment value was not expanded")
+	}
+	if cfg.Administration.CookieSecure == nil || !*cfg.Administration.CookieSecure {
+		t.Fatalf("administration.cookie_secure default=%v", cfg.Administration.CookieSecure)
+	}
+	localTokens := cfg.Authentication.LocalTokens
+	if localTokens.Audience != "graphit-broker" || localTokens.CLIClientID != "graphit-cli" || localTokens.CLIRedirectPath != "/oauth/callback" || localTokens.AccessTTL != 10*time.Minute || localTokens.RefreshTTL != 30*24*time.Hour {
+		t.Fatalf("local token defaults=%#v", localTokens)
+	}
+}
+
+func TestAdministrationCookieSecureCanBeExplicitlyDisabled(t *testing.T) {
+	cfg, err := DecodeConfig(strings.NewReader(`
+authentication:
+  token_pepper: 0123456789abcdef0123456789abcdef
+administration:
+  enabled: true
+  cookie_secure: false
+`), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Administration.CookieSecure == nil || *cfg.Administration.CookieSecure {
+		t.Fatalf("administration.cookie_secure=%v", cfg.Administration.CookieSecure)
 	}
 }
 
@@ -49,19 +72,22 @@ authentication:
     window: 2m
     lockout: 10m
     max_concurrent: 3
+    saturation_multiplier: 5
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Authentication.LocalRateLimit != (LocalAuthenticationRateLimit{MaxFailures: 7, Window: 2 * time.Minute, Lockout: 10 * time.Minute, MaxConcurrent: 3}) {
+	if cfg.Authentication.LocalRateLimit != (LocalAuthenticationRateLimit{MaxFailures: 7, Window: 2 * time.Minute, Lockout: 10 * time.Minute, MaxConcurrent: 3, SaturationMultiplier: 5}) {
 		t.Fatalf("custom rate limit=%#v", cfg.Authentication.LocalRateLimit)
 	}
 	for name, limit := range map[string]LocalAuthenticationRateLimit{
-		"negative maximum":     {MaxFailures: -1, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: 2},
-		"negative window":      {MaxFailures: 5, Window: -time.Minute, Lockout: time.Minute, MaxConcurrent: 2},
-		"negative lockout":     {MaxFailures: 5, Window: time.Minute, Lockout: -time.Minute, MaxConcurrent: 2},
-		"negative concurrency": {MaxFailures: 5, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: -1},
+		"negative maximum":     {MaxFailures: -1, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: 2, SaturationMultiplier: 4},
+		"negative window":      {MaxFailures: 5, Window: -time.Minute, Lockout: time.Minute, MaxConcurrent: 2, SaturationMultiplier: 4},
+		"negative lockout":     {MaxFailures: 5, Window: time.Minute, Lockout: -time.Minute, MaxConcurrent: 2, SaturationMultiplier: 4},
+		"negative concurrency": {MaxFailures: 5, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: -1, SaturationMultiplier: 4},
+		"negative saturation":  {MaxFailures: 5, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: 2, SaturationMultiplier: -1},
+		"capacity overflow":    {MaxFailures: 5, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: int(^uint(0) >> 1), SaturationMultiplier: 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := cfg

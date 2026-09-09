@@ -28,6 +28,7 @@ authentication:
 administration:
   enabled: true
   session_ttl: 8h
+  cookie_secure: true
 ```
 
 `issuer`, `audiences`, required scopes, and signature/temporal checks protect bearer tokens.
@@ -65,6 +66,8 @@ requires both values and consumes the flow once; a missing/wrong binding does no
 state. It then exchanges the code using the
 configured confidential client, verifies the ID token and nonce, maps the same subject/attribute
 selectors, authorizes `session.read`, and creates a short-lived cookie session.
+Both flow and session cookies are `Secure` by default. An explicit
+`administration.cookie_secure: false` is available only for loopback HTTP development.
 
 ## Graphit relay and token exchange
 

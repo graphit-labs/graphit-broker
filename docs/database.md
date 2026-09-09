@@ -1,15 +1,23 @@
 # Database backends
 
 The broker has one SQL database selected by the deployment. It stores local users and Argon2id PHC
-verifiers, resource grants and revision, system roles and assignments, OIDC login state, and
-sessions. It never stores `config.yml`, the expanded configuration, the authentication pepper, or
-other deployment secrets. Local sessions store the user's revision so identity/password/state
+verifiers, resource grants and revision, system roles and assignments, OIDC login state,
+administration sessions, local OAuth grants/tokens, and service credentials. It never stores
+`config.yml`, the expanded configuration, the authentication pepper, raw passwords, or raw token
+and code values. It stores domain-separated HMACs for those random credentials and their
+subject/client/audience/scope/expiry/revocation metadata, but no other deployment secrets. Local
+sessions store the user's revision so identity/password/state
 changes force reauthentication. In-memory AI result caches and generated pre-signed URLs are not
 persisted.
 
 OIDC login rows contain separate HMAC-SHA-256 values for the state and the browser-binding secret;
 the raw values are never stored. Both HMACs use `authentication.token_pepper` with distinct
 cryptographic domains, and a callback consumes a row only when both values match.
+
+Authorization codes and device codes are short-lived and one-time. Access and refresh tokens are
+bound to the owning local identity revision. Refresh-token rows retain their family identifier so
+reuse can revoke every related token. Service credential rows retain a non-secret ID, expiry,
+revocation, and last-use timestamps for administration without exposing the secret again.
 
 ## Common configuration
 

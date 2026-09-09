@@ -54,12 +54,15 @@ flows, then scale.
 - AI API keys are rotated at the provider/secret manager, followed by a deployment restart.
 - Local passwords use SQL Argon2id verifiers and the deployment-wide
   `authentication.token_pepper`. Change individual passwords in the Local users UI. Pepper rotation
-  invalidates every local password and administration session and requires a coordinated recovery.
+  invalidates every local password, administration session, local access/refresh token, and service
+  credential and requires a coordinated recovery.
 - Grant revocation is immediate on the next request and increments the revision.
 
 ## Incident response
 
-For a leaked end-user token, revoke/expire it at the IdP and remove affected grants if necessary.
+For a leaked OIDC token, revoke/expire it at the IdP. For a leaked local access, refresh, or service
+token, call `/oauth/revoke` or revoke the service credential in administration; changing or
+disabling the owning local identity also invalidates it.
 For a leaked S3 or AI key, rotate it at the upstream, update deployment secrets, and restart. For
 database exposure, invalidate live admin sessions, reset local passwords, and restore trusted
 users/grants/roles. Deployment secrets are not stored in SQL; rotate the authentication pepper if compromise may include both SQL

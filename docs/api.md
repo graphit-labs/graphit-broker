@@ -10,6 +10,7 @@ returns `403`, and disabled capabilities return `404`.
 - `GET /healthz` — process liveness.
 - `GET /readyz` — runtime/database readiness.
 - `GET /.well-known/graphit-broker` — public capability negotiation.
+- `GET /.well-known/oauth-authorization-server` — local CLI OAuth metadata when administration is enabled.
 
 Example discovery:
 
@@ -147,14 +148,17 @@ The response never contains bucket, region, base prefix, access key, or secret k
 Administration accepts a secure session cookie created by OIDC or by validating an existing
 username-selected SQL local-user password at `POST /admin/auth/local` with JSON fields
 `username` and `password`. State changes require the session CSRF
-token. A valid broker bearer is accepted directly through the same authenticator. Protected routes are:
+token. The password is used only to create a session and is never accepted as a Bearer credential.
+A valid OIDC, local access, or service Bearer is accepted directly through the token authenticator.
+Protected routes are:
 
 The password is a sensitive request-body value: send it only over HTTPS from the UI or another
 client that does not place it in process arguments, shell history, URLs, or logs. The response does
 not echo it. Local passwords contain at least 15 Unicode characters. Invalid credentials return
 `401`; after the configured per-username failure threshold, local authentication returns `429`
-with `Retry-After` until the lockout expires. Saturation of the configured concurrent Argon2id
-checks also returns `429` without recording a password failure.
+with `Retry-After` until the lockout expires. Authentication saturation is reached when running and
+waiting local calls equal `max_concurrent * saturation_multiplier`; further calls return `429`
+without starting Argon2id or recording a password failure.
 
 | Route | Action | Purpose |
 |---|---|---|
@@ -171,6 +175,8 @@ checks also returns `429` without recording a password failure.
 | `GET/POST/DELETE /admin/api/v1/role-assignments` | role action | manage exact-sub assignments |
 | `GET/POST /admin/api/v1/local-users` | `users.read` / `users.write` | list or create SQL local users |
 | `PUT/DELETE /admin/api/v1/local-users/{username}` | `users.write` | update or remove a local user |
+| `GET/POST /admin/api/v1/local-users/{username}/credentials` | `users.read` / `users.write` | list or issue credentials for a service identity |
+| `DELETE /admin/api/v1/local-users/{username}/credentials/{id}` | `users.write` | revoke a service credential |
 
 `GET /admin/api/v1/login-options` is public and reports whether OIDC and local-password login are
 available; it contains no credentials or identity data.
@@ -179,6 +185,21 @@ The configuration response replaces `authentication.token_pepper` and every OIDC
 with `[configured-secret]`. Local-user responses omit password hashes entirely; no response exposes
 the pepper. Role assignments use canonical `issuer|subject` values, and every authenticated
 principal has the effective default `user` role.
+
+## Local OAuth API
+
+- `GET/POST /oauth/authorize` — browser login for a local human identity and one-time Authorization Code issuance;
+- `POST /oauth/device/authorize` — create a device/user code pair for headless CLI login;
+- `GET/POST /oauth/device` — user-facing device approval;
+- `POST /oauth/token` — exchange an authorization code, approved device code, or rotating refresh token;
+- `POST /oauth/revoke` — revoke an access, refresh, or service token without revealing whether it existed.
+
+OAuth POST bodies use `application/x-www-form-urlencoded`. The public CLI has no client secret.
+Authorization Code requires PKCE S256 and an exact configured path on an explicit loopback IP and
+port. Issued access tokens contain the `graphit.use` scope, are audience-bound and expire after ten
+minutes by default. Requesting `offline_access` produces a refresh token with rotation and family
+reuse detection. Token responses are `Cache-Control: no-store`; SQL contains only domain-separated
+HMACs of raw codes and tokens.
 
 Grant writes require `If-Match` with the current ETag. A stale revision returns `409`; a missing
 precondition returns `428`. There is no configuration write endpoint; update deployment

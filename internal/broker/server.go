@@ -18,12 +18,13 @@ import (
 )
 
 type runtimeState struct {
-	config        Config
-	authenticator Authenticator
-	acl           *ACL
-	ai            *AIService
-	presigner     PresignService
-	adminOIDC     AdminIdentityProvider
+	config         Config
+	authenticator  Authenticator
+	localPasswords *localPasswordAuthenticator
+	acl            *ACL
+	ai             *AIService
+	presigner      PresignService
+	adminOIDC      AdminIdentityProvider
 }
 
 type Server struct {
@@ -61,8 +62,18 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 }
 
 func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
+	cfg.Authentication.LocalTokens.setDefaults()
+	if cfg.Administration.CookieSecure == nil {
+		secure := true
+		cfg.Administration.CookieSecure = &secure
+	}
 	localUsers, _ := grants.(localUserReader)
-	authenticator, err := NewAuthenticator(ctx, cfg.Authentication, localUsers)
+	localTokens, _ := grants.(localTokenReader)
+	authenticator, err := NewAuthenticator(ctx, cfg.Authentication, localTokens)
+	if err != nil {
+		return nil, err
+	}
+	localPasswords, err := newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +94,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		return nil, err
 	}
 	cfg.Services = ai.EffectiveServices()
-	return &runtimeState{config: cfg, authenticator: authenticator,
+	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords,
 		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
@@ -104,6 +115,16 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
+	if runtime.config.Administration.Enabled {
+		mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.oauthMetadata)
+		mux.HandleFunc("GET /oauth/authorize", s.oauthAuthorize)
+		mux.HandleFunc("POST /oauth/authorize", s.oauthAuthorize)
+		mux.HandleFunc("POST /oauth/device/authorize", s.oauthDeviceAuthorize)
+		mux.HandleFunc("GET /oauth/device", s.oauthDeviceVerification)
+		mux.HandleFunc("POST /oauth/device", s.oauthDeviceVerification)
+		mux.HandleFunc("POST /oauth/token", s.oauthToken)
+		mux.HandleFunc("POST /oauth/revoke", s.oauthRevoke)
+	}
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
 	mux.Handle("POST /v1/s3/presign", s.resolvePrincipal(http.HandlerFunc(s.s3Presign)))
@@ -136,6 +157,9 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.Handle("POST /admin/api/v1/local-users", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUsers)))
 		mux.Handle("PUT /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
 		mux.Handle("DELETE /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
+		mux.Handle("GET /admin/api/v1/local-users/{username}/credentials", s.requireAdministration("users.read", http.HandlerFunc(s.adminServiceCredentials)))
+		mux.Handle("POST /admin/api/v1/local-users/{username}/credentials", s.requireAdministration("users.write", http.HandlerFunc(s.adminServiceCredentials)))
+		mux.Handle("DELETE /admin/api/v1/local-users/{username}/credentials/{credential}", s.requireAdministration("users.write", http.HandlerFunc(s.adminServiceCredential)))
 	}
 	s.handler = s.observability(mux)
 	return s
@@ -198,12 +222,16 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		services["s3_presign"] = map[string]any{"protocol": "graphit-s3-presign-v1", "path": "/v1/s3/presign",
 			"authorization_revision": authorizationRevision, "default_expires_in": int64(cfg.PresignExpiry / time.Second), "max_expires_in": int64(cfg.MaxPresignExpiry / time.Second)}
 	}
-	audiences := []string{}
+	audiences := []string{state.config.Authentication.LocalTokens.Audience}
 	for _, issuer := range state.config.Authentication.OIDC {
 		audiences = append(audiences, issuer.Audiences...)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": state.config.Server.PublicURL,
-		"authentication": map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}, "services": services})
+	authentication := map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}
+	if state.config.Administration.Enabled {
+		authentication["authorization_server"] = s.publicURL(r) + "/.well-known/oauth-authorization-server"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.publicURL(r),
+		"authentication": authentication, "services": services})
 }
 
 type hubProjectSelector struct {

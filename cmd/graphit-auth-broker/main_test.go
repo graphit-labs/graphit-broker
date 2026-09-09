@@ -73,8 +73,8 @@ func TestBootstrapLocalAdminCreatesOnlyTheFirstAdministrator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := authenticator.Authenticate(context.Background(), "admin:administrator-secret"); err != nil {
-		t.Fatalf("bootstrapped administrator did not authenticate: %v", err)
+	if _, err := authenticator.Authenticate(context.Background(), "admin:administrator-secret"); err == nil {
+		t.Fatal("bootstrapped administrator password was accepted as a bearer credential")
 	}
 }
 

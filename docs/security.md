@@ -20,25 +20,40 @@ mutable username. Invalid credentials return `401` and are not treated as anonym
 
 SQL-backed local passwords are HMAC-prehashed with the single external
 `authentication.token_pepper` and then verified against salted Argon2id PHC verifiers. The pepper
-is not embedded in SQL or the PHC. A credential selects the username first, so each request performs
-at most one expensive KDF. System-generated
-OIDC state and administration session tokens are stored as HMAC-SHA-256 values using an external
-deployment pepper and separate domains. Anonymous access requires an explicit `anonymous` grant.
+is not embedded in SQL or the PHC. Password verification occurs only at the local administrative,
+Authorization Code, or Device Authorization login boundary and performs at most one expensive KDF.
+A password is never accepted by the API Bearer authenticator. System-generated OIDC state,
+administration sessions, local OAuth grants/tokens, and service credentials are stored as
+HMAC-SHA-256 values using an external deployment pepper and separate domains. Anonymous access
+requires an explicit `anonymous` grant.
 
 Local passwords contain at least 15 Unicode characters and have no composition rules. Failed
 checks are rate-limited per username; unknown/disabled usernames follow the same dummy-verification
 and failure-accounting path. Five failures in one minute cause a five-minute lockout by default.
 There is deliberately no cross-username failure lockout. At most two Argon2id checks execute
-concurrently per process by default, bounding memory and CPU cost; saturation is rejected before
-the KDF and does not count as a password failure. Successful checks do not consume failure quota.
+concurrently per process by default, bounding memory and CPU cost. A bounded admission queue holds
+at most `max_concurrent * saturation_multiplier` running and waiting calls—eight with the defaults
+of two and four. Further calls are rejected before the KDF and do not count as password failures.
+Queued calls recheck per-username lockout before KDF work. Successful checks do not consume failure
+quota.
+
+Local desktop login requires Authorization Code with PKCE S256 and an exact loopback callback path;
+headless login requires an approved, expiring device code. Access tokens are opaque, audience- and
+scope-bound, and expire after ten minutes by default. Optional refresh tokens rotate on each use;
+reuse revokes the whole family. Automation uses passwordless service identities with independent,
+expiring credentials that can be listed by metadata and revoked individually. All local tokens are
+bound to the current identity revision, so password/attribute changes, disablement, or deletion
+invalidates them. A short-lived access token remains replayable if stolen during its lifetime;
+HTTPS and secret-safe clients remain mandatory. DPoP and mTLS are not claimed by this implementation.
 
 Password preprocessing uses a dedicated domain and
 `HMAC-SHA-256(pepper, domain || 0x00 || password)`;
 Argon2id then receives that fixed-size result and a random per-verifier salt. A pepper must contain
 at least 32 bytes. An ENV/secret-manager reference separates it from the SQL verifier. If both SQL
 and deployment secrets leak, treat local passwords as exposed to offline guessing. Rotating the
-pepper invalidates all local passwords and live administration sessions; set new passwords through
-a controlled recovery procedure.
+pepper invalidates all local passwords, administration sessions, local OAuth grants/tokens, and
+service credentials; set new passwords and issue new credentials through a controlled recovery
+procedure.
 
 For HTTP MCP, Graphit first validates the end-user token for its MCP audience and preserves that
 bearer in request context. The broker validates it again. When Graphit uses RFC 8693 exchange, the
@@ -59,7 +74,8 @@ There is no superadmin bypass: the one-time CLI bootstrap inserts a normal local
 assignment in SQL.
 
 Browser OIDC login additionally binds each state to a 256-bit secret held in an `HttpOnly`,
-`SameSite=Lax` per-flow cookie. SQL stores only a domain-separated HMAC of that binding. A callback
+`SameSite=Lax` per-flow cookie. Administration cookies are `Secure` by default; disabling that
+attribute requires explicit development configuration. SQL stores only a domain-separated HMAC of that binding. A callback
 without the matching browser cookie fails without consuming the valid state, which prevents login
 CSRF/session swapping and permits independent concurrent login flows.
 
@@ -69,8 +85,9 @@ When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source.
 
 ## Data at rest
 
-The SQL database contains local identities and Argon2id PHCs, roles, grants, HMAC-protected OIDC flow state, and
-HMAC-protected live session keys. It does not contain `config.yml`, resolved OIDC/upstream/S3
+The SQL database contains local identities and Argon2id PHCs, roles, grants, and HMAC-protected OIDC
+state, local OAuth grants/tokens, service credentials, and live session keys. It does not contain
+raw passwords, raw codes/tokens, `config.yml`, or resolved OIDC/upstream/S3
 secrets, plaintext passwords, or the authentication pepper. Encrypt storage/backups and restrict database/network access. SQLite parent/file modes are
 `0700`/`0600`; PostgreSQL/MySQL access must be protected by database roles and TLS/network policy.
 

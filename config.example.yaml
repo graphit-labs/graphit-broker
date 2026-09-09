@@ -16,17 +16,33 @@ server:
   max_request_bytes: 4194304
 
 authentication:
-  # One deployment pepper protects local password preprocessing, browser sessions, and OIDC state
-  # with distinct cryptographic domains. It is never stored in SQL.
+  # One deployment pepper protects local password preprocessing, browser sessions, OIDC state,
+  # local OAuth grants/tokens, and service credentials with distinct cryptographic domains.
+  # It is never stored in SQL.
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
   # Failed local-password checks are limited per username. At most max_concurrent expensive
-  # Argon2id checks run at once per broker process. A blocked or saturated request returns HTTP 429
-  # with Retry-After; successful checks do not consume the failure quota.
+  # Argon2id checks run at once per broker process. Up to max_concurrent * saturation_multiplier
+  # calls (running plus waiting) are admitted; calls beyond that return HTTP 429 with Retry-After.
+  # Successful and saturation-rejected checks do not consume the failure quota.
   local_rate_limit:
     max_failures: 5
     window: 1m
     lockout: 5m
     max_concurrent: 2
+    saturation_multiplier: 4
+  # Local human passwords are accepted only by browser/device login. The broker then issues
+  # opaque, HMAC-protected credentials with the lifetimes below. Desktop callbacks must use the
+  # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.
+  local_tokens:
+    audience: "graphit-broker"
+    cli_client_id: "graphit-cli"
+    cli_redirect_path: "/oauth/callback"
+    access_ttl: 10m
+    refresh_ttl: 720h
+    authorization_code_ttl: 1m
+    device_code_ttl: 10m
+    device_poll_interval: 5s
+    service_credential_max_ttl: 8760h
   oidc:
     - issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
@@ -55,6 +71,8 @@ authentication:
 administration:
   enabled: true
   session_ttl: 8h
+  # Disable only for an explicit local HTTP development deployment.
+  cookie_secure: true
   # Public/native Graphit CLI client used only to render exact provider/login snippets in the UI.
   cli:
     provider_name: "organization-broker"

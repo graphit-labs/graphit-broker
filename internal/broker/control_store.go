@@ -22,8 +22,10 @@ var (
 const (
 	adminRole               = "admin"
 	userRole                = "user"
+	humanIdentityKind       = "human"
+	serviceIdentityKind     = "service"
 	localIdentityIssuer     = "local"
-	schemaVersion           = 5
+	schemaVersion           = 6
 	tokenPepperMinimumBytes = 32
 	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
 	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
@@ -53,6 +55,7 @@ type Role struct {
 type LocalUser struct {
 	Username     string    `json:"username"`
 	Subject      string    `json:"subject"`
+	Kind         string    `json:"kind"`
 	Name         string    `json:"name,omitempty"`
 	Email        string    `json:"email,omitempty"`
 	Organization string    `json:"organization,omitempty"`
@@ -158,7 +161,10 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_claim_roles (token_hash VARCHAR(64) PRIMARY KEY, claim_selector VARCHAR(4096) NOT NULL, roles_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, browser_binding_hash VARCHAR(64) NOT NULL, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS local_users (username VARCHAR(128) PRIMARY KEY, subject VARCHAR(512) NOT NULL UNIQUE, password_hash VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, enabled SMALLINT NOT NULL, revision BIGINT NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS local_users (username VARCHAR(128) PRIMARY KEY, subject VARCHAR(512) NOT NULL UNIQUE, identity_kind VARCHAR(16) NOT NULL, password_hash VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, enabled SMALLINT NOT NULL, revision BIGINT NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS local_tokens (token_hash VARCHAR(64) PRIMARY KEY, token_id VARCHAR(128) NOT NULL UNIQUE, token_kind VARCHAR(16) NOT NULL, subject VARCHAR(512) NOT NULL, client_id VARCHAR(128) NOT NULL, audience VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, family_id VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, revoked_at VARCHAR(40) NOT NULL, consumed_at VARCHAR(40) NOT NULL, last_used_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS oauth_authorization_codes (code_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, client_id VARCHAR(128) NOT NULL, redirect_uri VARCHAR(2048) NOT NULL, code_challenge VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS oauth_device_codes (device_hash VARCHAR(64) PRIMARY KEY, user_hash VARCHAR(64) NOT NULL UNIQUE, client_id VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, status VARCHAR(16) NOT NULL, interval_seconds BIGINT NOT NULL, last_poll_at VARCHAR(40) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS grant_capabilities (grant_id VARCHAR(128) NOT NULL, value VARCHAR(128) NOT NULL, PRIMARY KEY(grant_id, value), FOREIGN KEY(grant_id) REFERENCES resource_grants(id) ON DELETE CASCADE)`,
@@ -467,13 +473,22 @@ func localUserCanonicalSubject(subject string) string {
 }
 
 func validateLocalUser(user LocalUser, passwordRequired bool) error {
+	if user.Kind == "" {
+		user.Kind = humanIdentityKind
+	}
+	if user.Kind != humanIdentityKind && user.Kind != serviceIdentityKind {
+		return errors.New("local user kind must be human or service")
+	}
 	if !safeSegment(user.Username) {
 		return errors.New("local user username must be a safe non-empty identifier")
 	}
 	if strings.TrimSpace(user.Subject) == "" || len(user.Subject) > 512 {
 		return errors.New("local user subject is required and must not exceed 512 bytes")
 	}
-	if passwordRequired || user.PasswordHash != "" {
+	if user.Kind == serviceIdentityKind && user.PasswordHash != "" {
+		return errors.New("service identities must not have a password")
+	}
+	if user.Kind == humanIdentityKind && (passwordRequired || user.PasswordHash != "") {
 		if _, err := parsePasswordVerifier(user.PasswordHash); err != nil {
 			return fmt.Errorf("local user password hash: %w", err)
 		}
@@ -506,7 +521,7 @@ func (s *ControlStore) LocalUserCount(ctx context.Context) (int, error) {
 }
 
 func (s *ControlStore) LocalUsers(ctx context.Context) ([]LocalUser, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT username, subject, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users ORDER BY username`)
+	rows, err := s.db.QueryContext(ctx, `SELECT username, subject, identity_kind, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -542,7 +557,7 @@ func scanLocalUser(row rowScanner, withPassword bool) (LocalUser, error) {
 	var user LocalUser
 	var teams, created, updated string
 	var enabled int
-	values := []any{&user.Username, &user.Subject}
+	values := []any{&user.Username, &user.Subject, &user.Kind}
 	if withPassword {
 		values = append(values, &user.PasswordHash)
 	}
@@ -561,7 +576,23 @@ func scanLocalUser(row rowScanner, withPassword bool) (LocalUser, error) {
 }
 
 func (s *ControlStore) LocalUserByUsername(ctx context.Context, username string) (LocalUser, error) {
-	row := s.db.QueryRowContext(ctx, s.bind(`SELECT username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users WHERE username=?`), strings.TrimSpace(username))
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT username, subject, identity_kind, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users WHERE username=?`), strings.TrimSpace(username))
+	user, err := scanLocalUser(row, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LocalUser{}, ErrLocalUserNotFound
+	}
+	if err != nil {
+		return LocalUser{}, err
+	}
+	user.Roles, err = s.SubjectRoles(ctx, localUserCanonicalSubject(user.Subject))
+	if err != nil {
+		return LocalUser{}, err
+	}
+	return user, nil
+}
+
+func (s *ControlStore) LocalUserBySubject(ctx context.Context, subject string) (LocalUser, error) {
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT username, subject, identity_kind, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users WHERE subject=?`), strings.TrimSpace(subject))
 	user, err := scanLocalUser(row, true)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LocalUser{}, ErrLocalUserNotFound
@@ -577,7 +608,7 @@ func (s *ControlStore) LocalUserByUsername(ctx context.Context, username string)
 }
 
 func (s *ControlStore) BootstrapLocalAdmin(ctx context.Context, passwordHash string) error {
-	user := LocalUser{Username: "admin", Subject: "admin", Name: "Local Administrator", PasswordHash: passwordHash, Enabled: true, Roles: []string{adminRole}}
+	user := LocalUser{Username: "admin", Subject: "admin", Kind: humanIdentityKind, Name: "Local Administrator", PasswordHash: passwordHash, Enabled: true, Roles: []string{adminRole}}
 	if err := validateLocalUser(user, true); err != nil {
 		return err
 	}
@@ -595,7 +626,7 @@ func (s *ControlStore) BootstrapLocalAdmin(ctx context.Context, passwordHash str
 		return ErrLocalUsersExist
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, user.Subject, user.PasswordHash, user.Name, "", "", string(teams), 1, 1, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, identity_kind, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, user.Subject, user.Kind, user.PasswordHash, user.Name, "", "", string(teams), 1, 1, now, now); err != nil {
 		return fmt.Errorf("create local administrator: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO role_assignments(subject, role, created_at) VALUES(?, ?, ?)`), localUserCanonicalSubject(user.Subject), adminRole, now); err != nil {
@@ -605,6 +636,9 @@ func (s *ControlStore) BootstrapLocalAdmin(ctx context.Context, passwordHash str
 }
 
 func (s *ControlStore) CreateLocalUser(ctx context.Context, user LocalUser) error {
+	if user.Kind == "" {
+		user.Kind = humanIdentityKind
+	}
 	if err := validateLocalUser(user, true); err != nil {
 		return err
 	}
@@ -619,7 +653,7 @@ func (s *ControlStore) CreateLocalUser(ctx context.Context, user LocalUser) erro
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, strings.TrimSpace(user.Subject), user.PasswordHash, user.Name, user.Email, user.Organization, string(teams), boolInt(user.Enabled), 1, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, identity_kind, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, strings.TrimSpace(user.Subject), user.Kind, user.PasswordHash, user.Name, user.Email, user.Organization, string(teams), boolInt(user.Enabled), 1, now, now); err != nil {
 		return fmt.Errorf("create local user: %w", err)
 	}
 	for _, role := range roles {
@@ -638,15 +672,21 @@ func boolInt(value bool) int {
 }
 
 func (s *ControlStore) UpdateLocalUser(ctx context.Context, currentUsername string, user LocalUser) error {
-	if err := validateLocalUser(user, false); err != nil {
-		return err
-	}
 	existing, err := s.LocalUserByUsername(ctx, currentUsername)
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(user.Subject) != existing.Subject {
 		return errors.New("local user subject is immutable")
+	}
+	if user.Kind == "" {
+		user.Kind = existing.Kind
+	}
+	if user.Kind != existing.Kind {
+		return errors.New("local user kind is immutable")
+	}
+	if err := validateLocalUser(user, false); err != nil {
+		return err
 	}
 	if user.PasswordHash == "" {
 		user.PasswordHash = existing.PasswordHash
@@ -685,6 +725,18 @@ func (s *ControlStore) UpdateLocalUser(ctx context.Context, currentUsername stri
 			return fmt.Errorf("assign local user role %q: %w", role, err)
 		}
 	}
+	// Any identity mutation increments the revision and immediately revokes all
+	// credentials issued for the prior identity state. This also keeps the
+	// administrative credential inventory consistent with authentication.
+	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE local_tokens SET revoked_at=? WHERE subject=? AND revoked_at=?`), now, existing.Subject, ""); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oauth_authorization_codes WHERE subject=?`), existing.Subject); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oauth_device_codes WHERE subject=?`), existing.Subject); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -707,6 +759,9 @@ func (s *ControlStore) DeleteLocalUser(ctx context.Context, username string) err
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM role_assignments WHERE subject=?`), canonical); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oauth_device_codes WHERE subject=?`), user.Subject); err != nil {
 		return err
 	}
 	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM local_users WHERE username=?`), strings.TrimSpace(username))
@@ -1085,6 +1140,15 @@ func (s *ControlStore) Cleanup(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM oidc_flows WHERE expires_at <= ?`), now); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM admin_sessions WHERE expires_at <= ?`), now)
-	return err
+	for _, statement := range []string{
+		`DELETE FROM admin_sessions WHERE expires_at <= ?`,
+		`DELETE FROM oauth_authorization_codes WHERE expires_at <= ?`,
+		`DELETE FROM oauth_device_codes WHERE expires_at <= ?`,
+		`DELETE FROM local_tokens WHERE expires_at <= ?`,
+	} {
+		if _, err := s.db.ExecContext(ctx, s.bind(statement), now); err != nil {
+			return err
+		}
+	}
+	return nil
 }

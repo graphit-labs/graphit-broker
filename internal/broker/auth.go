@@ -55,48 +55,23 @@ type localUserReader interface {
 	LocalUserByUsername(context.Context, string) (LocalUser, error)
 }
 
+type localTokenReader interface {
+	AuthenticateLocalToken(context.Context, string, string, []string) (Principal, error)
+}
+
 type authenticator struct {
 	oidc          []oidcVerifier
-	localUsers    localUserReader
-	tokenPepper   []byte
-	dummy         passwordVerifier
-	passwordWork  chan struct{}
-	rateLimiter   *localPasswordRateLimiter
-	passwordCheck func(context.Context, passwordVerifier, []byte, string) bool
+	localTokens   localTokenReader
+	localAudience string
 }
 
-func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader) (Authenticator, error) {
-	return newAuthenticator(ctx, cfg, localUsers, false, http.DefaultClient)
+func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens localTokenReader) (Authenticator, error) {
+	return newAuthenticator(ctx, cfg, localTokens, false, http.DefaultClient)
 }
 
-func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
-	cfg.LocalRateLimit.setDefaults()
-	if err := cfg.LocalRateLimit.validate(); err != nil {
-		return nil, err
-	}
-	a := &authenticator{localUsers: localUsers, tokenPepper: []byte(cfg.TokenPepper), passwordWork: make(chan struct{}, cfg.LocalRateLimit.MaxConcurrent),
-		rateLimiter: newLocalPasswordRateLimiter(cfg.LocalRateLimit, []byte(cfg.TokenPepper))}
-	a.passwordCheck = verifyPassword
-	if len(cfg.TokenPepper) >= tokenPepperMinimumBytes {
-		dummyHash, err := HashPassword([]byte("graphit-broker-unknown-local-user"), []byte(cfg.TokenPepper))
-		if err != nil {
-			return nil, fmt.Errorf("initialize local password verifier: %w", err)
-		}
-		a.dummy, err = parsePasswordVerifier(dummyHash)
-		if err != nil {
-			return nil, fmt.Errorf("parse local password verifier: %w", err)
-		}
-	} else if counter, ok := localUsers.(interface {
-		LocalUserCount(context.Context) (int, error)
-	}); ok {
-		count, err := counter.LocalUserCount(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("count local users: %w", err)
-		}
-		if count > 0 {
-			return nil, fmt.Errorf("authentication token pepper must contain at least %d bytes when local users exist", tokenPepperMinimumBytes)
-		}
-	}
+func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens localTokenReader, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
+	cfg.LocalTokens.setDefaults()
+	a := &authenticator{localTokens: localTokens, localAudience: cfg.LocalTokens.Audience}
 	providerContext := oidc.ClientContext(ctx, client)
 	for _, issuerCfg := range cfg.OIDC {
 		issuerURL := strings.TrimRight(issuerCfg.Issuer, "/")
@@ -120,35 +95,11 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 	if strings.TrimSpace(raw) == "" {
 		return Principal{}, ErrUnauthenticated
 	}
-	if username, password, ok := localPasswordCredential(raw); ok {
-		var user LocalUser
-		var err error
-		if a.localUsers != nil {
-			user, err = a.localUsers.LocalUserByUsername(ctx, username)
+	if strings.HasPrefix(raw, localAccessTokenPrefix) || strings.HasPrefix(raw, serviceCredentialPrefix) {
+		if a.localTokens == nil {
+			return Principal{}, ErrUnauthenticated
 		}
-		if err == nil && user.Enabled {
-			verifier, parseErr := parsePasswordVerifier(user.PasswordHash)
-			if parseErr == nil {
-				authenticated, checkErr := a.checkLocalPassword(ctx, username, verifier, password)
-				if checkErr != nil {
-					return Principal{}, checkErr
-				}
-				if authenticated {
-					return Principal{Issuer: localIdentityIssuer, Subject: user.Subject, Name: user.Name, Email: user.Email,
-						Username: user.Username, Organization: user.Organization, Teams: cleanStrings(user.Teams), Roles: user.Roles,
-						LocalUserRevision: user.Revision, AuthMethod: "local"}, nil
-				}
-				return Principal{}, ErrUnauthenticated
-			}
-		}
-		if a.dummy.hash != nil {
-			// Unknown and disabled local users still pay one Argon2id verification to reduce
-			// account-name enumeration without multiplying work by the number of users.
-			if _, checkErr := a.checkLocalPassword(ctx, username, a.dummy, password); checkErr != nil {
-				return Principal{}, checkErr
-			}
-		}
-		return Principal{}, ErrUnauthenticated
+		return a.localTokens.AuthenticateLocalToken(ctx, raw, a.localAudience, []string{localAPIScope})
 	}
 	for _, candidate := range a.oidc {
 		token, err := candidate.verifier.Verify(ctx, raw)
@@ -161,40 +112,6 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 		}
 	}
 	return Principal{}, ErrUnauthenticated
-}
-
-func (a *authenticator) checkLocalPassword(ctx context.Context, username string, verifier passwordVerifier, password string) (bool, error) {
-	if err := a.rateLimiter.allow(username); err != nil {
-		return false, err
-	}
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	default:
-	}
-	select {
-	case a.passwordWork <- struct{}{}:
-		defer func() { <-a.passwordWork }()
-	default:
-		return false, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
-	}
-	authenticated := a.passwordCheck(ctx, verifier, a.tokenPepper, password)
-	a.rateLimiter.record(username, authenticated)
-	return authenticated, nil
-}
-
-func verifyPassword(_ context.Context, verifier passwordVerifier, pepper []byte, password string) bool {
-	plaintext := []byte(password)
-	defer clear(plaintext)
-	return verifier.verify(plaintext, pepper)
-}
-
-func localPasswordCredential(raw string) (string, string, bool) {
-	separator := strings.IndexByte(raw, ':')
-	if separator <= 0 || separator == len(raw)-1 {
-		return "", "", false
-	}
-	return raw[:separator], raw[separator+1:], true
 }
 
 func principalFromIDToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (Principal, error) {

@@ -1,7 +1,8 @@
 # Graphit Broker
 
 Graphit Broker is the server-side identity, authorization, AI, and storage gateway for
-Graphit. It validates end-user OIDC access tokens or SQL-backed local-user credentials,
+Graphit. It validates end-user OIDC tokens, short-lived local access tokens, or revocable service
+credentials,
 evaluates deny-by-default resource grants from SQL, and exposes:
 
 - `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
@@ -11,7 +12,7 @@ evaluates deny-by-default resource grants from SQL, and exposes:
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
   Cohere/Voyage/Jina adapters, or embedding-simulated OpenAI and Google Gemini adapters;
 - `/admin/` — the OIDC/local-password UI for read-only configuration, resource grants, system roles,
-  role assignments, and local-user lifecycle.
+  role assignments, local-identity lifecycle, and service credentials.
 
 Only the broker knows AI API keys, upstream models, S3 credentials, bucket, region, endpoint,
 base prefixes, and route selection. Graphit receives no cloud credential and requests a fresh URL
@@ -28,9 +29,9 @@ or anonymous access.
 
 `config.yaml`, after environment expansion, is the sole configuration authority. Changes are
 applied by deployment/restart and the administration API exposes only a redacted read-only view.
-SQL stores local users and Argon2id verifiers, normalized resource grants, grant revision, system
-roles and assignments, OIDC login flows, and sessions—but never the configuration document, pepper,
-or resolved deployment secrets. SQLite is
+SQL stores local identities and Argon2id verifiers, normalized resource grants, grant revision,
+system roles and assignments, login flows, sessions, and HMAC-protected local tokens—but never raw
+passwords/tokens, the configuration document, pepper, or resolved deployment secrets. SQLite is
 the default single-node deployment; PostgreSQL and MySQL use the same domain model.
 
 Resource grants are created through the UI or administration API. A new database has no grants and
@@ -43,8 +44,13 @@ Local identities live in SQL. Set `authentication.token_pepper` from a secret ma
 `graphit-broker --config config.yaml --bootstrap-admin` (or `--bootstrap-admin-stdin`) once on an
 empty database. The command reads only the password, creates the fixed first username `admin`, and
 refuses to overwrite any existing local user. Passwords require at least 15 Unicode characters;
-failed checks are rate-limited per username, and concurrent Argon2id work is bounded. See [configuration](docs/configuration.md) and
+failed checks are rate-limited per username, and concurrent Argon2id work plus its bounded admission
+queue are configurable. See [configuration](docs/configuration.md) and
 [administration bootstrap](docs/administration.md).
+
+Passwords are accepted only at browser/device login and are never reusable API Bearers. Desktop
+CLI login uses Authorization Code with PKCE, headless login uses Device Authorization, and
+automation uses passwordless service identities with independently expiring/revocable credentials.
 
 RBAC applies throughout the broker. Every authenticated OIDC or local principal receives the
 built-in `user` role by default; `admin` and custom roles add system actions. Resource grants remain

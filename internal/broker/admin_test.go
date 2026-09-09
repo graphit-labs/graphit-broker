@@ -218,13 +218,21 @@ func TestOIDCFlowCookieSecurityAttributes(t *testing.T) {
 	if !loopback.HttpOnly || loopback.SameSite != http.SameSiteLaxMode || loopback.Secure || loopback.Path != "/" || loopback.MaxAge <= 0 {
 		t.Fatalf("loopback flow cookie=%#v", loopback)
 	}
+	loopbackSession := service.adminCookie("session", expires)
+	if loopbackSession.Secure || !loopbackSession.HttpOnly || loopbackSession.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("loopback session cookie=%#v", loopbackSession)
+	}
 
 	state := *service.runtime()
-	state.config.Authentication.OIDC[0].RedirectURL = "https://broker.example/admin/auth/callback"
+	state.config.Administration.CookieSecure = nil
 	service.state.Store(&state)
 	production := service.oidcFlowCookie("state-a", "binding", expires)
 	if !strings.HasPrefix(production.Name, "__Host-graphit_oidc_flow_") || !production.Secure || !production.HttpOnly || production.Path != "/" || production.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("production flow cookie=%#v", production)
+	}
+	productionSession := service.adminCookie("session", expires)
+	if !productionSession.Secure || !productionSession.HttpOnly || productionSession.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("production session cookie=%#v", productionSession)
 	}
 }
 
@@ -405,7 +413,7 @@ func TestOIDCProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
 	}
 }
 
-func TestLocalUserCanAuthenticateByBearerAndCreateUISession(t *testing.T) {
+func TestLocalPasswordIsRejectedAsBearerAndCanCreateUISession(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
@@ -421,13 +429,13 @@ func TestLocalUserCanAuthenticateByBearerAndCreateUISession(t *testing.T) {
 		t.Fatal(err)
 	}
 	bearerProjects := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/projects", "consumer:consumer-secret", "")
-	if bearerProjects.StatusCode != http.StatusOK {
-		t.Fatalf("local bearer projects status=%d", bearerProjects.StatusCode)
+	if bearerProjects.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("password bearer projects status=%d", bearerProjects.StatusCode)
 	}
 	_ = bearerProjects.Body.Close()
 	bearerConfig := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "consumer:consumer-secret", "")
-	if bearerConfig.StatusCode != http.StatusForbidden {
-		t.Fatalf("local bearer configuration status=%d", bearerConfig.StatusCode)
+	if bearerConfig.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("password bearer configuration status=%d", bearerConfig.StatusCode)
 	}
 	_ = bearerConfig.Body.Close()
 
@@ -469,7 +477,7 @@ func TestLocalUserCanAuthenticateByBearerAndCreateUISession(t *testing.T) {
 	if len(body.Projects) != 1 || body.Projects[0].ID != "project-local" {
 		t.Fatalf("local projects=%#v", body.Projects)
 	}
-	if !strings.Contains(body.ProviderCommand, "--type local") || !strings.Contains(body.ProviderCommand, `--broker-key "$GRAPHIT_BROKER_KEY"`) || strings.Contains(body.ProviderCommand, "consumer-secret") {
+	if !strings.Contains(body.ProviderCommand, "--type local") || strings.Contains(body.ProviderCommand, "GRAPHIT_BROKER_KEY") || strings.Contains(body.ProviderCommand, "consumer-secret") {
 		t.Fatalf("local provider command=%q", body.ProviderCommand)
 	}
 }
@@ -492,8 +500,8 @@ func TestAdminLocalLoginReturnsRetryAfterAfterDefaultFailureLimit(t *testing.T) 
 	}
 	direct := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "consumer:consumer-secret", "")
 	defer direct.Body.Close()
-	if direct.StatusCode != http.StatusTooManyRequests || direct.Header.Get("Retry-After") == "" {
-		t.Fatalf("shared bearer rate limit status=%d retry-after=%q", direct.StatusCode, direct.Header.Get("Retry-After"))
+	if direct.StatusCode != http.StatusUnauthorized || direct.Header.Get("Retry-After") != "" {
+		t.Fatalf("password bearer status=%d retry-after=%q", direct.StatusCode, direct.Header.Get("Retry-After"))
 	}
 }
 
@@ -788,7 +796,9 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	cfg.Services.Embeddings.Upstream.APIKey = "embedding-secret"
 	cfg.Services.Rerank.Upstream.APIKey = "rerank-secret"
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
-	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour}
+	cookieSecure := false
+	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour, CookieSecure: &cookieSecure}
+	cfg.Authentication.LocalTokens.setDefaults()
 	provider := &fakeAdminOIDC{identities: map[string]AdminIdentity{
 		"root-token": {Issuer: "https://identity.example", Subject: "root-subject", Name: "Root", Email: "root@example.test",
 			Username: "root", Organization: "acme", Teams: []string{"platform"}},
@@ -812,6 +822,14 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	}
 	authenticator := testAdminAuthenticator{local: localAuthenticator, identities: provider.identities}
 	service := newServerWithDependencies(cfg, authenticator, NewAIService(cfg.Services), nil, control, control, provider)
+	localPasswords, err := newLocalPasswordAuthenticator(context.Background(), cfg.Authentication, control)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
+	runtime := *service.runtime()
+	runtime.localPasswords = localPasswords
+	service.state.Store(&runtime)
 	if err := service.control.AssignRole(context.Background(), "https://identity.example|root-subject", adminRole); err != nil {
 		service.Close()
 		t.Fatal(err)

@@ -5,7 +5,7 @@ description: 'Durable memory: project and user preferences, corrections, decisio
 
 # Graphit Memory
 
-Graphit memory is the durable source for preferences, corrections, decisions, constraints, and non-obvious project knowledge. IDE-native/model memory is not a substitute.
+Graphit memory is the durable source for preferences, corrections, decisions, constraints, and non-obvious project knowledge. Agent-native/model memory is not a substitute.
 
 The adapter hook loads mandatory project and user memories at session start and reinjects the Graphit invariant at the strongest lifecycle points the host exposes. Do not repeat `graphit_memory_mandatory` unless the hook explicitly reports fallback or the user changes project/scope.
 

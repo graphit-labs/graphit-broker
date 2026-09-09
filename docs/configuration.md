@@ -45,7 +45,8 @@ Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides a
 ## Authentication
 
 `authentication.token_pepper` is the single deployment secret used with domain separation for
-local password preprocessing, administration sessions, and OIDC state. It must contain at least 32
+local password preprocessing, administration sessions, OIDC state, local OAuth grants, access and
+refresh tokens, and service credentials. It must contain at least 32
 bytes whenever administration is enabled and is never stored in SQL.
 
 Local-password failures use a fixed-window limiter. Every field is optional and defaults as shown:
@@ -57,13 +58,39 @@ authentication:
     window: 1m
     lockout: 5m
     max_concurrent: 2
+    saturation_multiplier: 4
 ```
 
 Five failures for one username within the window block that username for five minutes. There is no
 failure counter or lockout across usernames. At most two expensive Argon2id checks run concurrently
-per broker process; a request arriving while those slots are occupied is rejected before the KDF.
-Successful checks do not consume the per-username quota. Blocked or saturated HTTP requests return
-`429` with `Retry-After`. All limits and durations must be positive.
+per broker process. The saturation limit is `max_concurrent * saturation_multiplier` and includes
+both running and waiting calls: the defaults admit eight calls, execute two, queue up to six, and
+reject the ninth before the KDF. A queued call respects request cancellation and rechecks the
+username lockout before starting Argon2id. Successful checks and saturation rejection do not
+consume the per-username quota. Blocked or saturated HTTP requests return `429` with `Retry-After`.
+All limits and durations must be positive, and their product must fit in an integer.
+
+Local CLI and automation credentials use these defaults:
+
+```yaml
+authentication:
+  local_tokens:
+    audience: graphit-broker
+    cli_client_id: graphit-cli
+    cli_redirect_path: /oauth/callback
+    access_ttl: 10m
+    refresh_ttl: 720h
+    authorization_code_ttl: 1m
+    device_code_ttl: 10m
+    device_poll_interval: 5s
+    service_credential_max_ttl: 8760h
+```
+
+Desktop authorization accepts only an HTTP `127.0.0.1` or `::1` redirect with an explicit dynamic
+port and the configured exact path. PKCE method `S256` is mandatory. Access tokens are short-lived;
+refresh tokens are issued only when `offline_access` is requested, rotate on every use, retain one
+absolute lifetime, and revoke their family when reuse is detected. Service credential expiration
+is mandatory and may not exceed `service_credential_max_ttl`.
 
 `authentication.oidc` is the shared list of trusted issuers for consumer bearer validation and
 browser login. At most one entry may configure the browser-client fields:
@@ -104,20 +131,23 @@ JSONPath fails configuration validation. The canonical identity is the verified 
 value selected by `subject_claim`, formatted `issuer|subject`. Username remains a separate mutable
 login/display attribute and is never used as the stable RBAC key.
 
-Local users are not configuration. They are stored in the selected SQL backend and managed through
+Local identities are not configuration. They are stored in the selected SQL backend and managed through
 `/admin/api/v1/local-users` or the Local users screen. Each record has a unique username, immutable
-stable subject, Argon2id PHC, optional identity attributes, enabled state, revision, and explicit
-role assignments. A local password must contain at least 15 Unicode characters; there are no
+stable subject, `human` or `service` kind, optional identity attributes, enabled state, revision,
+and explicit role assignments. Human identities have an Argon2id PHC; service identities cannot
+have passwords and instead use separately revocable credentials. A local password must contain at least 15 Unicode characters; there are no
 character-class composition rules. The external pepper is `authentication.token_pepper`; it is never stored beside
 the verifier. Changing a user's password, username, attributes, or enabled state increments its
-revision and invalidates existing local browser sessions. Role changes are resolved from SQL on the
-next request.
+revision and invalidates existing local browser sessions, access/refresh tokens, pending grants,
+and service credentials. Role changes are resolved from SQL on the next request.
 
-A local client sends `Authorization: Bearer <username>:<password>`. The server selects at most one
-SQL row by username and performs exactly one peppered Argon2id verification; an unknown or disabled
-username pays one dummy verification. Failed checks feed the same per-username limiter used by
-browser login, and both paths share the configured concurrent-work ceiling. Omitting the header creates an anonymous principal, which can
-work only when an explicit `anonymous` resource grant matches.
+A password is accepted only by the administrative login, local authorization page, or device
+verification page. It is never accepted in `Authorization`. Desktop CLI login uses Authorization
+Code with PKCE; headless login uses Device Authorization. Both produce opaque broker tokens whose
+raw values are never stored in SQL. Automation uses a credential attached to a `service` identity.
+All local tokens are audience- and scope-bound, expire, can be revoked, and stop authenticating
+when the owning identity revision changes. Omitting the header creates an anonymous principal,
+which can work only when an explicit `anonymous` resource grant matches.
 
 ## Administration
 
@@ -142,6 +172,7 @@ authentication:
 administration:
   enabled: true
   session_ttl: 8h
+  cookie_secure: true
   cli:
     provider_name: organization-broker
     profile_name: organization-broker
@@ -164,6 +195,9 @@ There is no superadmin bypass.
 `administration.cli` supplies the non-secret public/native client details used to render complete
 `graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick
 a free loopback port; when set, it must be an HTTP loopback URL with an explicit port.
+
+Administration cookies are `HttpOnly` and `SameSite=Lax`. `administration.cookie_secure` defaults
+to `true`; set it to `false` only for an explicitly configured loopback HTTP development server.
 
 An enabled local user enters the UI with its SQL username and plaintext password. The password is
 validated once and exchanged for a short-lived, `HttpOnly`, CSRF-protected session; only the

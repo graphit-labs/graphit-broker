@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -141,16 +140,16 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
 		return
 	}
-	credential := request.Username + ":" + request.Password
+	password := request.Password
 	request.Password = ""
 	state := s.runtime()
-	principal, err := state.authenticator.Authenticate(r.Context(), credential)
-	credential = ""
+	principal, err := state.localPasswords.Authenticate(r.Context(), request.Username, password)
+	password = ""
 	if retryAfter, limited := authenticationRetryAfter(err); limited {
 		writeAuthenticationRateLimit(w, r, retryAfter)
 		return
 	}
-	if err != nil || principal.AuthMethod != "local" {
+	if err != nil || principal.AuthMethod != "local-password" {
 		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
 		return
 	}
@@ -234,10 +233,8 @@ func (s *Server) oidcFlowCookieName(rawState string) string {
 }
 
 func (s *Server) secureAdminCookies() bool {
-	login, _ := browserLoginOIDC(s.runtime().config.Authentication.OIDC)
-	redirect, _ := url.Parse(login.RedirectURL)
-	publicURL, _ := url.Parse(s.runtime().config.Server.PublicURL)
-	return (redirect != nil && redirect.Scheme == "https") || (publicURL != nil && publicURL.Scheme == "https")
+	configured := s.runtime().config.Administration.CookieSecure
+	return configured == nil || *configured
 }
 
 func cookieMaxAge(expires time.Time) int {
@@ -343,7 +340,6 @@ func (s *Server) adminProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) graphitProviderCommand(session AdminSession) string {
 	cfg := s.runtime().config
 	localToken := session.Issuer == localIdentityIssuer
-	username := session.Username
 	endpoint := strings.TrimRight(strings.TrimSpace(cfg.Server.PublicURL), "/")
 	if endpoint == "" {
 		endpoint = "<BROKER_URL>"
@@ -358,19 +354,11 @@ func (s *Server) graphitProviderCommand(session AdminSession) string {
 	}
 	base := "graphit --non-interactive provider add " + shellArgument(providerName)
 	if localToken {
-		if username == "" {
-			username = "<USERNAME>"
-		}
 		command := base + " --type local --broker-endpoint " + shellArgument(endpoint) +
+			" --client-id " + shellArgument(cfg.Authentication.LocalTokens.CLIClientID) +
+			" --scopes " + shellArgument(localAPIScope+","+offlineAccessScope) +
 			" --embedding-mode broker --rerank-mode broker\n\n" +
-			"graphit --non-interactive login --provider " + shellArgument(providerName) + " --profile " + shellArgument(profileName) + " --username " +
-			shellArgument(username) + " --broker-key \"$GRAPHIT_BROKER_KEY\""
-		if session.Organization != "" {
-			command += " --organization " + shellArgument(session.Organization)
-		}
-		for _, team := range session.Teams {
-			command += " --team " + shellArgument(team)
-		}
+			"graphit login --provider " + shellArgument(providerName) + " --profile " + shellArgument(profileName)
 		return command
 	}
 	if len(cfg.Authentication.OIDC) == 0 {
@@ -583,6 +571,7 @@ func (s *Server) adminAssignments(w http.ResponseWriter, r *http.Request) {
 type localUserRequest struct {
 	Username     string   `json:"username"`
 	Subject      string   `json:"subject"`
+	Kind         string   `json:"kind"`
 	Password     string   `json:"password"`
 	Name         string   `json:"name"`
 	Email        string   `json:"email"`
@@ -643,27 +632,117 @@ func (s *Server) adminLocalUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) localUserFromRequest(request localUserRequest, passwordRequired bool) (LocalUser, error) {
+	kind := strings.ToLower(strings.TrimSpace(request.Kind))
+	if kind == "" && passwordRequired {
+		kind = humanIdentityKind
+	}
 	password := []byte(request.Password)
 	request.Password = ""
 	defer clear(password)
 	var passwordHash string
 	var err error
+	if kind == serviceIdentityKind && len(password) > 0 {
+		return LocalUser{}, errors.New("service identities must not have a password")
+	}
 	if len(password) > 0 {
 		passwordHash, err = HashPassword(password, []byte(s.runtime().config.Authentication.TokenPepper))
 		if err != nil {
 			return LocalUser{}, err
 		}
-	} else if passwordRequired {
+	} else if passwordRequired && kind != serviceIdentityKind {
 		return LocalUser{}, errors.New("local user password is required")
 	}
 	enabled := true
 	if request.Enabled != nil {
 		enabled = *request.Enabled
 	}
-	return LocalUser{Username: strings.TrimSpace(request.Username), Subject: strings.TrimSpace(request.Subject),
+	return LocalUser{Username: strings.TrimSpace(request.Username), Subject: strings.TrimSpace(request.Subject), Kind: kind,
 		PasswordHash: passwordHash, Name: strings.TrimSpace(request.Name), Email: strings.TrimSpace(request.Email),
 		Organization: strings.TrimSpace(request.Organization), Teams: cleanStrings(request.Teams),
 		Roles: cleanStrings(request.Roles), Enabled: enabled}, nil
+}
+
+func (s *Server) adminServiceCredentials(w http.ResponseWriter, r *http.Request) {
+	user, err := s.control.LocalUserByUsername(r.Context(), strings.TrimSpace(r.PathValue("username")))
+	if err != nil || user.Kind != serviceIdentityKind {
+		writeError(w, http.StatusNotFound, "service_identity_not_found", "service identity does not exist", requestID(r.Context()))
+		return
+	}
+	if r.Method == http.MethodGet {
+		credentials, err := s.control.ServiceCredentials(r.Context(), user.Subject)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "credentials_read_failed", "could not list service credentials", requestID(r.Context()))
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		writeJSON(w, http.StatusOK, map[string]any{"credentials": credentials})
+		return
+	}
+	var request struct {
+		ClientID  string   `json:"client_id"`
+		Scopes    []string `json:"scopes"`
+		ExpiresIn int64    `json:"expires_in"`
+	}
+	if err := s.decodeRequest(w, r, &request); err != nil {
+		return
+	}
+	request.ClientID = strings.TrimSpace(request.ClientID)
+	if request.ClientID == "" {
+		request.ClientID = user.Username
+	}
+	if !safeSegment(request.ClientID) {
+		writeError(w, http.StatusBadRequest, "invalid_credential", "client_id must be a safe name", requestID(r.Context()))
+		return
+	}
+	request.Scopes = cleanStrings(request.Scopes)
+	if len(request.Scopes) == 0 {
+		request.Scopes = []string{localAPIScope}
+	}
+	if len(request.Scopes) != 1 || request.Scopes[0] != localAPIScope {
+		writeError(w, http.StatusBadRequest, "invalid_credential", "service credentials require the graphit.use scope", requestID(r.Context()))
+		return
+	}
+	if request.ExpiresIn == 0 {
+		request.ExpiresIn = int64(min(90*24*time.Hour, s.runtime().config.Authentication.LocalTokens.ServiceMaxTTL) / time.Second)
+	}
+	maxTTL := s.runtime().config.Authentication.LocalTokens.ServiceMaxTTL
+	if request.ExpiresIn < int64(time.Hour/time.Second) || request.ExpiresIn > int64(maxTTL/time.Second) {
+		writeError(w, http.StatusBadRequest, "invalid_credential", "service credential expiry is outside the configured range", requestID(r.Context()))
+		return
+	}
+	ttl := time.Duration(request.ExpiresIn) * time.Second
+	secret, err := randomURLToken(32)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential_create_failed", "could not create service credential", requestID(r.Context()))
+		return
+	}
+	id, err := randomURLToken(12)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential_create_failed", "could not create service credential", requestID(r.Context()))
+		return
+	}
+	raw := serviceCredentialPrefix + secret
+	grant := LocalTokenGrant{Subject: user.Subject, LocalUserRevision: user.Revision, ClientID: request.ClientID,
+		Audience: s.runtime().config.Authentication.LocalTokens.Audience, Scopes: request.Scopes, ExpiresAt: time.Now().Add(ttl)}
+	if err := s.control.SaveServiceCredential(r.Context(), raw, id, grant); err != nil {
+		writeError(w, http.StatusBadRequest, "credential_create_failed", err.Error(), requestID(r.Context()))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "token": raw, "token_type": "Bearer", "expires_at": grant.ExpiresAt, "scopes": request.Scopes})
+}
+
+func (s *Server) adminServiceCredential(w http.ResponseWriter, r *http.Request) {
+	user, err := s.control.LocalUserByUsername(r.Context(), strings.TrimSpace(r.PathValue("username")))
+	if err != nil || user.Kind != serviceIdentityKind {
+		writeError(w, http.StatusNotFound, "service_identity_not_found", "service identity does not exist", requestID(r.Context()))
+		return
+	}
+	if err := s.control.RevokeServiceCredential(r.Context(), user.Subject, r.PathValue("credential")); err != nil {
+		writeError(w, http.StatusBadRequest, "credential_revoke_failed", err.Error(), requestID(r.Context()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) requireAdministration(action string, next http.Handler) http.Handler {

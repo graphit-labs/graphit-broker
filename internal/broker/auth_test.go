@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -106,7 +107,7 @@ func TestTokenScopesAndClaimSelectorsSupportCommonIdPShapes(t *testing.T) {
 	}
 }
 
-func TestAuthenticatorAcceptsUsernameSelectedPepperedArgon2idPassword(t *testing.T) {
+func TestAuthenticatorRejectsPasswordBearerAndDedicatedLoginVerifiesPassword(t *testing.T) {
 	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
 	if err != nil {
 		t.Fatal(err)
@@ -122,28 +123,34 @@ func TestAuthenticatorAcceptsUsernameSelectedPepperedArgon2idPassword(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := a.Authenticate(context.Background(), "automation:automation-secret")
-	if err != nil || principal.AuthMethod != "local" || !containsString(principal.Roles, userRole) {
-		t.Fatalf("principal=%#v err=%v", principal, err)
+	for _, credential := range []string{"automation:automation-secret", "automation:wrong", "deployment:deployment-secret"} {
+		if _, err := a.Authenticate(context.Background(), credential); !errors.Is(err, ErrUnauthenticated) {
+			t.Fatalf("password bearer %q was accepted: %v", credential, err)
+		}
 	}
-	if _, err := a.Authenticate(context.Background(), "automation:wrong"); err == nil {
-		t.Fatal("wrong local password accepted")
-	}
-	if principal, err := a.Authenticate(context.Background(), "deployment:deployment-secret"); err != nil || principal.Subject != "deploy" {
-		t.Fatalf("second username principal=%#v err=%v", principal, err)
-	}
-	if _, err := a.Authenticate(context.Background(), "unknown:unknown-password"); err == nil {
-		t.Fatal("unknown local username accepted")
-	}
-	if _, err := a.Authenticate(context.Background(), "automation-secret"); err == nil {
-		t.Fatal("unnamed password accepted")
-	}
-	wrongPepper := AuthenticationConfig{TokenPepper: "different-password-pepper-01234567"}
-	other, err := newAuthenticator(context.Background(), wrongPepper, store, false, http.DefaultClient)
+	login, err := newLocalPasswordAuthenticator(context.Background(), AuthenticationConfig{TokenPepper: testPasswordPepper}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Authenticate(context.Background(), "automation:automation-secret"); err == nil {
+	principal, err := login.Authenticate(context.Background(), "automation", "automation-secret")
+	if err != nil || principal.AuthMethod != "local-password" || !containsString(principal.Roles, userRole) {
+		t.Fatalf("principal=%#v err=%v", principal, err)
+	}
+	if _, err := login.Authenticate(context.Background(), "automation", "wrong"); err == nil {
+		t.Fatal("wrong local password accepted")
+	}
+	if principal, err := login.Authenticate(context.Background(), "deployment", "deployment-secret"); err != nil || principal.Subject != "deploy" {
+		t.Fatalf("second username principal=%#v err=%v", principal, err)
+	}
+	if _, err := login.Authenticate(context.Background(), "unknown", "unknown-password"); err == nil {
+		t.Fatal("unknown local username accepted")
+	}
+	wrongPepper := AuthenticationConfig{TokenPepper: "different-password-pepper-01234567"}
+	other, err := newLocalPasswordAuthenticator(context.Background(), wrongPepper, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Authenticate(context.Background(), "automation", "automation-secret"); err == nil {
 		t.Fatal("password authenticated with a different pepper")
 	}
 }
@@ -157,7 +164,7 @@ func TestLocalAuthenticationPerformsAtMostOnePasswordCheck(t *testing.T) {
 	if err := store.CreateLocalUser(context.Background(), LocalUser{Username: "known", Subject: "known", PasswordHash: mustPasswordHash(t, "known-password!"), Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	a, err := newAuthenticator(context.Background(), AuthenticationConfig{TokenPepper: testPasswordPepper}, store, false, http.DefaultClient)
+	a, err := newLocalPasswordAuthenticator(context.Background(), AuthenticationConfig{TokenPepper: testPasswordPepper}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,13 +173,13 @@ func TestLocalAuthenticationPerformsAtMostOnePasswordCheck(t *testing.T) {
 		checks++
 		return false
 	}
-	for _, credential := range []string{"known:wrong", "unknown:wrong"} {
+	for _, username := range []string{"known", "unknown"} {
 		checks = 0
-		if _, err := a.Authenticate(context.Background(), credential); err == nil {
-			t.Fatalf("credential %q was accepted", credential)
+		if _, err := a.Authenticate(context.Background(), username, "wrong"); err == nil {
+			t.Fatalf("username %q was accepted", username)
 		}
 		if checks != 1 {
-			t.Fatalf("credential %q performed %d password checks", credential, checks)
+			t.Fatalf("username %q performed %d password checks", username, checks)
 		}
 	}
 }

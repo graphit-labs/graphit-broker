@@ -10,8 +10,9 @@ Hub resolution, S3 pre-sign, embedding, or rerank request.
 The broker derives the principal from exactly one source:
 
 - no `Authorization` header: anonymous principal;
-- a SQL local user: the username-selected, globally peppered Argon2id identity and its persisted
-  subject/username/organization/teams;
+- a local access or service token: its domain-separated HMAC, audience, `graphit.use` scope,
+  expiry/revocation state, and owning SQL identity revision are validated before current
+  subject/username/organization/teams are loaded;
 - an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured exact-key or
   RFC 9535 JSONPath claim selectors are validated before attributes are mapped.
 

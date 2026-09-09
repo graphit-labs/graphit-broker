@@ -23,6 +23,13 @@ authentication:
     window: 1m
     lockout: 5m
     max_concurrent: 2
+    saturation_multiplier: 4
+  local_tokens:
+    audience: graphit-broker
+    cli_client_id: graphit-cli
+    cli_redirect_path: /oauth/callback
+    access_ttl: 10m
+    refresh_ttl: 720h
   oidc:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
@@ -36,14 +43,16 @@ authentication:
 administration:
   enabled: true
   session_ttl: 8h
+  cookie_secure: true
 ```
 
 The browser flow uses state, nonce, PKCE, a browser-only 256-bit binding cookie, and a short-lived
 SQL flow record containing only HMACs of state and binding. A callback from another browser fails
-without consuming the original flow. OIDC and local login
-both issue `HttpOnly`, `SameSite=Lax` session cookies. State-changing cookie requests require the
-per-session `X-CSRF-Token`. Direct bearer requests use the normal broker authenticator and do not
-need CSRF.
+without consuming the original flow. OIDC and local login both issue `HttpOnly`, `SameSite=Lax`
+session cookies. They are `Secure` by default; only an explicit
+`administration.cookie_secure: false` disables that attribute for loopback HTTP development.
+State-changing cookie requests require the per-session `X-CSRF-Token`. Direct bearer requests use
+the normal broker authenticator and do not need CSRF.
 
 ## First local administrator
 
@@ -75,7 +84,8 @@ The UI shows sections according to effective role permissions:
 1. **Projects** lists projects allowed by current resource grants and renders Graphit CLI commands.
 2. **Configuration** shows the redacted deployment YAML read-only.
 3. **Resource grants** manages the deny-by-default project capability policy with revision fencing.
-4. **Local users** creates, edits, disables, renames, changes passwords/roles, and removes SQL users.
+4. **Local users** manages human identities and passwordless service identities, including
+   one-time display, listing, and revocation of service credentials.
 5. **Roles** manages role definitions and assignments to canonical `issuer|subject` identities.
 
 User responses never contain password PHCs or the deployment pepper. Subject is immutable; username
@@ -107,11 +117,34 @@ the verified principal's subject, username, organization, or teams.
 - `PUT /admin/api/v1/local-users/{username}`
 - `DELETE /admin/api/v1/local-users/{username}`
 
-Create requires `username`, immutable `subject`, and `password`; attributes, `roles`, and `enabled`
-are optional. Update is a complete identity-attribute replacement with an optional password (empty
+Create requires `username`, immutable `subject`, and `kind`. `kind: human` requires `password`;
+`kind: service` rejects passwords. Attributes, `roles`, and `enabled` are optional. Update is a
+complete identity-attribute replacement with an optional password for human identities (empty
 keeps the current verifier). The API hashes password input immediately with
 `authentication.token_pepper` and never returns it. New passwords require at least 15 Unicode
 characters and have no character-class composition rules.
+
+Service credentials are managed at:
+
+- `GET/POST /admin/api/v1/local-users/{username}/credentials`;
+- `DELETE /admin/api/v1/local-users/{username}/credentials/{credential}`.
+
+The raw `gb_sc_...` credential appears only in the successful create response. SQL stores only its
+domain-separated HMAC plus metadata, expiry, revocation, and last-use timestamps. Updating,
+disabling, or deleting the service identity invalidates all credentials through its revision.
+
+## Local CLI authorization
+
+Local passwords are never accepted as Bearer credentials. A desktop CLI uses
+`GET/POST /oauth/authorize` and exchanges the one-time code at `POST /oauth/token`; the broker
+requires PKCE S256, the configured public client ID, an exact callback path, and an explicit
+`127.0.0.1` or `::1` port. A headless CLI starts at `POST /oauth/device/authorize`, shows the returned
+user code, and polls `/oauth/token` only after the user approves it at `/oauth/device`.
+
+Access tokens default to ten minutes. Requesting `offline_access` also returns a rotating refresh
+token. Reuse of an already rotated refresh token revokes the whole token family. Clients revoke a
+token at `POST /oauth/revoke`. All these endpoints use form-encoded OAuth parameters, and discovery
+is published at `/.well-known/oauth-authorization-server`.
 
 ## Grant API workflow
 
