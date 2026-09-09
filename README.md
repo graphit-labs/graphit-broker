@@ -1,7 +1,7 @@
 # Graphit Broker
 
 Graphit Broker is the server-side identity, authorization, AI, and storage gateway for
-Graphit. It validates end-user OIDC access tokens or explicitly configured service API keys,
+Graphit. It validates end-user OIDC access tokens or SQL-backed local-user credentials,
 evaluates deny-by-default resource grants from SQL, and exposes:
 
 - `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
@@ -10,8 +10,8 @@ evaluates deny-by-default resource grants from SQL, and exposes:
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
   Cohere/Voyage/Jina adapters, or embedding-simulated OpenAI and Google Gemini adapters;
-- `/admin/` — an OIDC/local-password administration UI for read-only configuration, resource grants, roles,
-  and user-role assignments.
+- `/admin/` — the OIDC/local-password UI for read-only configuration, resource grants, system roles,
+  role assignments, and local-user lifecycle.
 
 Only the broker knows AI API keys, upstream models, S3 credentials, bucket, region, endpoint,
 base prefixes, and route selection. Graphit receives no cloud credential and requests a fresh URL
@@ -28,8 +28,9 @@ or anonymous access.
 
 `config.yaml`, after environment expansion, is the sole configuration authority. Changes are
 applied by deployment/restart and the administration API exposes only a redacted read-only view.
-SQL stores normalized resource grants, grant revision, administrative roles and assignments, OIDC
-login flows, and sessions—but never the configuration document or its resolved secrets. SQLite is
+SQL stores local users and Argon2id verifiers, normalized resource grants, grant revision, system
+roles and assignments, OIDC login flows, and sessions—but never the configuration document, pepper,
+or resolved deployment secrets. SQLite is
 the default single-node deployment; PostgreSQL and MySQL use the same domain model.
 
 Resource grants are created through the UI or administration API. A new database has no grants and
@@ -38,24 +39,26 @@ therefore denies every consumer operation.
 There is deliberately no migration, compatibility loader, dual read/write, or fallback path in
 this development version. Recreate the database when the schema version changes.
 
-Local identities use a unique `username`, a pepper of at least 32 bytes, and the matching Argon2id
-PHC. Generate that PHC with `graphit-broker --hash-password --password-pepper-env ENV_NAME`, or use
-`--hash-password-stdin` for automation; the password remains in TTY/stdin and only the pepper is
-read from the named environment variable. See [configuration](docs/configuration.md) and
+Local identities live in SQL. Set `authentication.token_pepper` from a secret manager, then run
+`graphit-broker --config config.yaml --bootstrap-admin` (or `--bootstrap-admin-stdin`) once on an
+empty database. The command reads only the password, creates the fixed first username `admin`, and
+refuses to overwrite any existing local user. Passwords require at least 15 Unicode characters;
+failed checks are rate-limited per username, and concurrent Argon2id work is bounded. See [configuration](docs/configuration.md) and
 [administration bootstrap](docs/administration.md).
 
-Administrative RBAC and resource authorization are separate:
+RBAC applies throughout the broker. Every authenticated OIDC or local principal receives the
+built-in `user` role by default; `admin` and custom roles add system actions. Resource grants remain
+the independent, deny-by-default authorization layer for project capabilities:
 
-- roles control who may operate the administration API; optional verified OIDC claim roles
-  override local subject assignments;
+- roles control system/UI actions; optional verified OIDC claim roles override SQL assignments;
 - resource grants control which verified consumer may use `hub`, `s3`, `embeddings`, and
   `rerank`, for which exact projects and S3 operations/routes/prefixes.
 
 ## Quick start with Docker
 
-Requirements: Docker 24+, either an OIDC web client or an `authentication.api_keys` identity for
-administration, a first local identity with `roles: [admin]` (or an OIDC `role_claim` that yields
-`admin`), a per-identity password pepper matching its generated Argon2id verifier, and the credentials for
+Requirements: Docker 24+, the unified OIDC client when browser login is used, an
+`authentication.token_pepper` of at least 32 bytes when administration/local users are enabled,
+a bootstrapped local administrator (or an OIDC role/assignment yielding `admin`), and credentials for
 any enabled upstream services. Local AI does not need provider credentials.
 
 ```bash

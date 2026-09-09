@@ -66,13 +66,12 @@ operator-managed library and suppresses extraction of the embedded runtime.
 
 ## Install and configure
 
-To generate an Argon2id verifier for a local identity, first inject a pepper of at least 32 bytes
-into an environment variable. The interactive mode requires a TTY, disables terminal echo, asks
-for confirmation, reads the pepper from the named variable, and writes only the verifier to stdout:
+Configure `authentication.token_pepper` with at least 32 secret-manager bytes. On an empty SQL
+database, create the first local administrator interactively. The command requires a TTY, disables
+terminal echo, asks for confirmation, and accepts no username or password argument:
 
 ```bash
-graphit-broker --hash-password \
-  --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
+graphit-broker --config /etc/graphit-broker/config.yaml --bootstrap-admin
 ```
 
 Unattended provisioning must use the explicit stdin mode. Feed it from a secret manager or a
@@ -80,15 +79,14 @@ permission-restricted mounted file; never put the plaintext password in argv or 
 variable:
 
 ```bash
-cat /run/secrets/broker-password | graphit-broker --hash-password-stdin \
-  --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
+cat /run/secrets/broker-password | \
+  graphit-broker --config /etc/graphit-broker/config.yaml --bootstrap-admin-stdin
 ```
 
-Treat the resulting verifier as sensitive configuration and inject it into the environment value
-referenced by `authentication.api_keys[].password_hash`. Configure that identity's `pepper` with
-the same environment value. The pepper value is never accepted as an argument or written to output.
-`--password-pepper-env` is mandatory in both hashing modes; an absent, empty, or shorter-than-32-byte
-value fails without producing a verifier. The flag carries only the variable name, never its value.
+The command hashes with the configured pepper, persists only the Argon2id verifier, creates fixed
+username/subject `admin`, assigns `admin`, and refuses passwords shorter than 15 Unicode
+characters or a database that already contains a local user. Further users and role changes belong
+to the administration UI/API.
 
 This example creates a dedicated service identity and persistent directories:
 

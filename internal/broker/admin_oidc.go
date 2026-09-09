@@ -30,20 +30,19 @@ type AdminIdentity struct {
 type AdminIdentityProvider interface {
 	AuthorizationURL(state, nonce, verifier string) string
 	Exchange(context.Context, string, string, string) (AdminIdentity, error)
-	Verify(context.Context, string) (AdminIdentity, error)
 }
 
 type oidcAdminProvider struct {
 	oauth      oauth2.Config
 	verifier   *oidc.IDTokenVerifier
 	httpClient *http.Client
-	config     AdminOIDCConfig
+	config     OIDCIssuerConfig
 }
 
-func NewAdminIdentityProvider(ctx context.Context, cfg AdminOIDCConfig) (AdminIdentityProvider, error) {
+func NewAdminIdentityProvider(ctx context.Context, cfg OIDCIssuerConfig) (AdminIdentityProvider, error) {
 	provider, err := oidc.NewProvider(ctx, strings.TrimRight(cfg.Issuer, "/"))
 	if err != nil {
-		return nil, fmt.Errorf("discover administration OIDC issuer: %w", err)
+		return nil, fmt.Errorf("discover OIDC issuer for browser login: %w", err)
 	}
 	scopes := cleanStrings(append([]string{oidc.ScopeOpenID}, cfg.Scopes...))
 	var httpClient *http.Client
@@ -72,29 +71,20 @@ func (p *oidcAdminProvider) Exchange(ctx context.Context, code, verifier, nonce 
 	ctx = p.withHTTPClient(ctx)
 	token, err := p.oauth.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", verifier))
 	if err != nil {
-		return AdminIdentity{}, fmt.Errorf("exchange administration OIDC code: %w", err)
+		return AdminIdentity{}, fmt.Errorf("exchange OIDC code: %w", err)
 	}
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
-		return AdminIdentity{}, errors.New("administration OIDC response omitted id_token")
+		return AdminIdentity{}, errors.New("OIDC response omitted id_token")
 	}
 	idToken, err := p.verifier.Verify(ctx, raw)
 	if err != nil {
-		return AdminIdentity{}, fmt.Errorf("verify administration ID token: %w", err)
+		return AdminIdentity{}, fmt.Errorf("verify OIDC ID token: %w", err)
 	}
 	if idToken.Nonce != nonce {
-		return AdminIdentity{}, errors.New("administration ID token nonce mismatch")
+		return AdminIdentity{}, errors.New("OIDC ID token nonce mismatch")
 	}
 	return adminIdentityFromToken(idToken, p.config)
-}
-
-func (p *oidcAdminProvider) Verify(ctx context.Context, raw string) (AdminIdentity, error) {
-	ctx = p.withHTTPClient(ctx)
-	token, err := p.verifier.Verify(ctx, strings.TrimSpace(raw))
-	if err != nil {
-		return AdminIdentity{}, err
-	}
-	return adminIdentityFromToken(token, p.config)
 }
 
 func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context {
@@ -104,13 +94,21 @@ func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context 
 	return context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 }
 
-func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIdentity, error) {
-	if token == nil || strings.TrimSpace(token.Subject) == "" {
-		return AdminIdentity{}, errors.New("administration ID token has no subject")
+func adminIdentityFromToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (AdminIdentity, error) {
+	if token == nil {
+		return AdminIdentity{}, errors.New("OIDC ID token is missing")
 	}
 	var claims map[string]any
 	if err := token.Claims(&claims); err != nil {
-		return AdminIdentity{}, fmt.Errorf("decode administration ID token claims: %w", err)
+		return AdminIdentity{}, fmt.Errorf("decode OIDC ID token claims: %w", err)
+	}
+	subjectClaim := strings.TrimSpace(cfg.SubjectClaim)
+	if subjectClaim == "" {
+		subjectClaim = "sub"
+	}
+	subject, err := claimString(claims, subjectClaim, true)
+	if err != nil {
+		return AdminIdentity{}, err
 	}
 	nameClaim := cfg.NameClaim
 	if strings.TrimSpace(nameClaim) == "" {
@@ -128,7 +126,7 @@ func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIden
 	if err != nil {
 		return AdminIdentity{}, err
 	}
-	username, err := claimString(claims, cfg.UsernameClaim, false)
+	username, err := claimString(claims, cfg.UsernameClaim, true)
 	if err != nil {
 		return AdminIdentity{}, err
 	}
@@ -145,16 +143,13 @@ func adminIdentityFromToken(token *oidc.IDToken, cfg AdminOIDCConfig) (AdminIden
 		return AdminIdentity{}, err
 	}
 	rolesFromClaim := strings.TrimSpace(cfg.RoleClaim) != ""
-	if rolesFromClaim && len(roles) == 0 {
-		return AdminIdentity{}, fmt.Errorf("role claim %q is missing or empty", cfg.RoleClaim)
-	}
 	for _, role := range roles {
 		if !safeSegment(role) {
 			return AdminIdentity{}, fmt.Errorf("role claim %q contains invalid role %q", cfg.RoleClaim, role)
 		}
 	}
-	return AdminIdentity{Issuer: token.Issuer, Subject: token.Subject, Name: name, Email: email,
-		Username: username, Organization: organization, Teams: teams, Roles: roles,
+	return AdminIdentity{Issuer: token.Issuer, Subject: subject, Name: name, Email: email,
+		Username: username, Organization: organization, Teams: teams, Roles: cleanStrings(append(roles, userRole)),
 		RolesFromClaim: rolesFromClaim, RoleClaimSelector: strings.TrimSpace(cfg.RoleClaim)}, nil
 }
 

@@ -124,13 +124,13 @@ Use:
 - a native/public Graphit login client using Authorization Code + PKCE;
 - a broker API audience/resource for consumer access;
 - optionally RFC 8693 token exchange when MCP and broker audiences differ;
-- a confidential broker administration web client, unless the UI is deliberately local-password-only.
+- confidential browser-client fields on the same broker OIDC issuer, unless the UI is deliberately local-password-only.
 
 Grant only required scopes and map stable claims. Claim mappings accept exact top-level keys or
-RFC 9535 JSONPath. If `administration.oidc.role_claim` is enabled, ensure every administrator token
-contains at least one broker role; those roles replace local database assignments. Bootstrap a new
-database with a local identity configured with `roles: [admin]`, a per-identity password pepper,
-and its matching Argon2id verifier if OIDC does not already yield it.
+RFC 9535 JSONPath. If `authentication.oidc[].role_claim` is enabled, its additional roles replace
+SQL assignments for that canonical identity; every authenticated principal still receives `user`.
+Bootstrap a new database with `--bootstrap-admin` after configuring the single
+`authentication.token_pepper` when OIDC does not already provide an administrator.
 
 ## Rollout
 

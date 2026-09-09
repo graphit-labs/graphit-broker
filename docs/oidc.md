@@ -1,155 +1,80 @@
 # OIDC integration
 
-When OIDC is configured, the broker uses two OIDC clients/trust paths:
+OIDC is configured once under `authentication.oidc`. The broker uses the same trusted issuer,
+claim selectors, and role semantics for consumer bearer tokens, direct administration bearer
+requests, and browser authorization-code login. Administration does not define a second OIDC
+provider.
 
-- consumer bearer validation for Graphit MCP, Hub, S3, embedding, and rerank requests;
-- a separate confidential web client for administration login.
-
-They may use the same issuer, but their client IDs, redirect behavior, audiences, and policies are
-independent.
-
-Administration OIDC is optional when the UI is intentionally local-only and at least one
-`authentication.api_keys` identity is configured. That mode does not change consumer OIDC
-validation.
-
-## Consumer issuer
-
-Create an API/resource in the identity provider for the broker, for example audience
-`graphit-broker`. Configure the issuer:
+## Configuration
 
 ```yaml
 authentication:
+  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
   oidc:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
+      client_id: graphit-broker
+      client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
+      redirect_url: https://broker.example.com/admin/auth/callback
+      scopes: [openid, profile, email]
+      subject_claim: sub
+      name_claim: name
+      email_claim: email
       username_claim: preferred_username
       organization_claim: "$.organization.id"
       teams_claim: "$.groups[*].name"
-```
-
-The broker discovers signing keys and verifies token signature, exact issuer, accepted audience,
-expiry, and every required scope. It then maps configured claim selectors. A selector can be an
-exact top-level key or an RFC 9535 JSONPath beginning with `$`; multi-value selectors can traverse
-arrays and select multiple string nodes. The `sub` claim is always
-required and canonical identity remains `iss|sub`; mapped fields cannot replace it.
-
-Access tokens must be JWTs verifiable through issuer discovery/JWKS. Opaque tokens are not
-introspected by this implementation. If an IdP issues opaque access tokens, configure it to issue a
-JWT for this API or place a standards-compliant token-exchange/security gateway in front.
-
-## End-user token from Graphit
-
-For a Graphit OIDC provider using direct relay:
-
-1. the user logs in through Graphit Authorization Code + PKCE;
-2. the IdP issues an access token for the shared MCP/broker audience;
-3. Streamable HTTP MCP validates that access token before running any tool;
-4. Graphit binds the verified username/teams and raw bearer to that request;
-5. every broker call forwards that request bearer;
-6. the broker independently verifies it and derives the principal again.
-
-No identity claim is copied from an untrusted request body. Two concurrent MCP users retain
-separate request contexts; neither uses the other user's active profile token.
-
-If MCP and broker require different audiences, configure Graphit's provider with RFC 8693 token
-exchange. Graphit sends the incoming MCP token as `subject_token` to the configured/discovered
-token endpoint, requests the broker audience/resource, and calls the broker with the returned
-short-lived bearer. Exchange tokens are cached by provider revision, source-token digest, and
-target resource only until shortly before expiry. Exchange failure fails closed; Graphit does not
-fall back to relaying a token with the wrong audience.
-
-The broker itself needs no special exchange endpoint: it receives and validates the final
-broker-audience bearer.
-
-## Required IdP values
-
-Collect:
-
-- exact issuer URL;
-- broker API audience;
-- optional required scope;
-- stable username claim;
-- optional organization and group/team claim selectors;
-- for Graphit login, native/public client ID, scopes, and redirect policy;
-- for token exchange, client authentication method and whether RFC 8693 is enabled for that client;
-- for administration, confidential web client ID/secret and exact callback.
-
-Test with two users belonging to different teams, an expired token, a token for another audience,
-an invalid signature, and a request with no token. Only the intended grants should resolve.
-
-## Administration OIDC
-
-```yaml
+      role_claim: "$.realm_access.roles[*]"
 administration:
   enabled: true
-  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?at least 32 random bytes}"
   session_ttl: 8h
-  oidc:
-    issuer: https://identity.example.com
-    client_id: graphit-broker-admin
-    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
-    redirect_url: https://broker.example.com/admin/auth/callback
-    scopes: [openid, profile, email]
-    name_claim: name
-    email_claim: email
-    username_claim: preferred_username
-    organization_claim: "$.organization.id"
-    teams_claim: "$.groups[*].name"
-    role_claim: "$.realm_access.roles[*]"
 ```
 
-Register the callback exactly. The browser flow uses code, state, nonce, and PKCE. The broker
-persists only HMAC-SHA-256 state/session token identifiers and server-side metadata. Bootstrap the
-first administrator with a local Argon2id identity whose configured roles contain `admin`, whose
-per-identity pepper matches the one used by the password-generation command, or make the OIDC
-`role_claim` yield the built-in `admin` role.
+`issuer`, `audiences`, required scopes, and signature/temporal checks protect bearer tokens.
+`client_id`, `client_secret`, `redirect_url`, and `scopes` enable browser login on at most one
+issuer entry. A deployment using only local browser login may omit those client fields.
 
-All administration identity mappings accept exact claim keys or RFC 9535 JSONPath. `name`, email,
-username, and organization must resolve to zero or one string (username is optional for the admin
-client); teams and roles may resolve a string, a string array, or multiple strings. A configured
-`role_claim` is required to return at least one role. Its values are authoritative and completely
-replace local database assignments for that OIDC subject; they are not merged. Role permissions
-still come from broker role definitions. Missing, empty, non-string, or syntactically invalid role
-selection fails closed. Local sessions use configured `authentication.api_keys[].roles` when
-present and otherwise use database assignments.
+## Claims and identity
 
-Examples for common token layouts:
+Claim selectors may be exact top-level keys or RFC 9535 JSONPath expressions beginning with `$`.
+`subject_claim` defaults to `sub`, but remains explicit in examples because subject and username
+have different jobs:
 
-```yaml
-# Exact top-level/namespaced keys
-username_claim: preferred_username
-teams_claim: https://claims.example.com/teams
+- subject is the stable authorization identity; canonical RBAC keys are `issuer|subject`;
+- username is a login/display/resource-grant attribute and may change without changing identity.
 
-# Nested objects and arrays
-organization_claim: "$.tenants[?@.primary == true].id"
-teams_claim: "$.groups[*].name"
-role_claim: "$.realm_access.roles[*]"
-```
+`name_claim` and `email_claim` default to `name` and `email`. `username_claim` is required.
+Organization and teams are optional. Invalid selectors or wrong selected types fail closed.
 
-Exact keys are tested before traversal, including keys containing dots. A non-JSONPath dotted value
-such as `organization.id` remains supported for compatibility when no exact key exists. Prefer
-JSONPath for new nested/array mappings. Invalid JSONPath is rejected by `--check-config` and normal
-startup.
+## Roles
 
-## Common provider notes
+RBAC is broker-wide. Every authenticated OIDC principal receives the built-in `user` role. Without
+`role_claim`, additional roles come from SQL assignments keyed by canonical subject. When
+`role_claim` is configured, its valid values are authoritative additional roles and SQL assignments
+for that identity do not participate. An absent/empty role claim therefore leaves only the default
+`user` role; malformed or unsafe role values are rejected. The `admin` role is an ordinary
+privileged role, not a different authentication path.
 
-- **Keycloak:** use separate clients/resources for Graphit native login and broker administration;
-  add protocol mappers for username, organization, and groups; enable standard token exchange when
-  using separate MCP and broker audiences.
-- **Auth0/Okta/Entra-compatible issuers:** create an API audience for the broker, add required
-  custom claims through supported actions/mappers, and ensure group claims fit token-size limits.
-- **Dex/self-hosted providers:** confirm discovery exposes JWKS and token endpoints and that issued
-  access tokens contain the configured audience.
+## Browser flow
 
-Exact console labels change by IdP. The invariant is standards-level: discoverable issuer, signed
-JWT access token, correct audience/scope, stable `sub`, and explicit claim mappings.
+`GET /admin/auth/login` creates random state, nonce, PKCE verifier, and browser-binding values. The
+binding is held in an `HttpOnly`, `SameSite=Lax` cookie whose per-flow name permits concurrent
+logins. Only HMAC-protected state and binding are stored in SQL, using
+`authentication.token_pepper` and domains distinct from session and password domains. The callback
+requires both values and consumes the flow once; a missing/wrong binding does not consume valid
+state. It then exchanges the code using the
+configured confidential client, verifies the ID token and nonce, maps the same subject/attribute
+selectors, authorizes `session.read`, and creates a short-lived cookie session.
 
-## Troubleshooting
+## Graphit relay and token exchange
 
-- `401`: bearer missing/malformed, issuer/audience/signature/expiry/scope invalid.
-- `403`: token valid, but no current resource grant matches.
-- Graphit exchange error: RFC 8693 disabled, client authentication wrong, target audience/resource
-  not permitted, or invalid subject token.
-- Admin callback rejected: redirect URI mismatch, code/state/nonce/PKCE failure, invalid/missing
-  role claim, or effective roles lack `session.read`.
+For HTTP MCP, Graphit may relay the end-user token when MCP and broker share an audience, or use RFC
+8693 exchange to obtain a broker-audience token. The broker independently verifies the final token
+against the configured issuer, audiences, scopes, and claim mappings. Exchange failure never falls
+back to relay or anonymous access.
+
+## Failure behavior
+
+The broker returns `401` for invalid signature, issuer, audience, expiry, required scope, subject,
+username, or claim shape. A valid identity without the action required by RBAC returns `403`.
+Anonymous behavior is considered only when no bearer credential was supplied.

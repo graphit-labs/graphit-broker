@@ -145,13 +145,16 @@ The response never contains bucket, region, base prefix, access key, or secret k
 ## Administration API
 
 Administration accepts a secure session cookie created by OIDC or by validating an existing
-username-selected `authentication.api_keys` password at `POST /admin/auth/local` with JSON fields
+username-selected SQL local-user password at `POST /admin/auth/local` with JSON fields
 `username` and `password`. State changes require the session CSRF
-token. A valid administration OIDC bearer is also accepted directly. Protected routes are:
+token. A valid broker bearer is accepted directly through the same authenticator. Protected routes are:
 
 The password is a sensitive request-body value: send it only over HTTPS from the UI or another
 client that does not place it in process arguments, shell history, URLs, or logs. The response does
-not echo it.
+not echo it. Local passwords contain at least 15 Unicode characters. Invalid credentials return
+`401`; after the configured per-username failure threshold, local authentication returns `429`
+with `Retry-After` until the lockout expires. Saturation of the configured concurrent Argon2id
+checks also returns `429` without recording a password failure.
 
 | Route | Action | Purpose |
 |---|---|---|
@@ -166,12 +169,16 @@ not echo it.
 | `GET /admin/api/v1/roles` | `roles.read` | roles and supported actions |
 | `PUT/DELETE /admin/api/v1/roles/{role}` | `roles.write` | manage role definition |
 | `GET/POST/DELETE /admin/api/v1/role-assignments` | role action | manage exact-sub assignments |
+| `GET/POST /admin/api/v1/local-users` | `users.read` / `users.write` | list or create SQL local users |
+| `PUT/DELETE /admin/api/v1/local-users/{username}` | `users.write` | update or remove a local user |
 
 `GET /admin/api/v1/login-options` is public and reports whether OIDC and local-password login are
 available; it contains no credentials or identity data.
 
-The configuration response replaces both `authentication.api_keys[].password_hash` and
-`authentication.api_keys[].pepper` with `[configured-secret]` and never reads either from SQL.
+The configuration response replaces `authentication.token_pepper` and every OIDC client secret
+with `[configured-secret]`. Local-user responses omit password hashes entirely; no response exposes
+the pepper. Role assignments use canonical `issuer|subject` values, and every authenticated
+principal has the effective default `user` role.
 
 Grant writes require `If-Match` with the current ETag. A stale revision returns `409`; a missing
 precondition returns `428`. There is no configuration write endpoint; update deployment

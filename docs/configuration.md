@@ -11,9 +11,9 @@ Run `graphit-broker --config config.yaml --check-config` to validate without ser
 
 The expanded YAML document is the sole configuration authority. It is never serialized into SQL.
 Change it through deployment/secret-management tooling and restart the broker to activate the new
-configuration. `/admin/api/v1/config` is a redacted read-only view. Resource grants, roles, role
-assignments, login flows, and sessions remain durable SQL state; resource grants are never
-configured in YAML.
+configuration. `/admin/api/v1/config` is a redacted read-only view. Local users, Argon2id
+verifiers, resource grants, roles, role assignments, login flows, and sessions remain durable SQL
+state; the pepper and resource grants are never persisted from YAML.
 
 ## Database
 
@@ -42,18 +42,48 @@ Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides a
 
 `public_url` must be HTTPS when set. Put the broker behind a TLS reverse proxy in production.
 
-## Consumer authentication
+## Authentication
 
-`authentication.oidc` is a list of trusted issuers:
+`authentication.token_pepper` is the single deployment secret used with domain separation for
+local password preprocessing, administration sessions, and OIDC state. It must contain at least 32
+bytes whenever administration is enabled and is never stored in SQL.
+
+Local-password failures use a fixed-window limiter. Every field is optional and defaults as shown:
+
+```yaml
+authentication:
+  local_rate_limit:
+    max_failures: 5
+    window: 1m
+    lockout: 5m
+    max_concurrent: 2
+```
+
+Five failures for one username within the window block that username for five minutes. There is no
+failure counter or lockout across usernames. At most two expensive Argon2id checks run concurrently
+per broker process; a request arriving while those slots are occupied is rejected before the KDF.
+Successful checks do not consume the per-username quota. Blocked or saturated HTTP requests return
+`429` with `Retry-After`. All limits and durations must be positive.
+
+`authentication.oidc` is the shared list of trusted issuers for consumer bearer validation and
+browser login. At most one entry may configure the browser-client fields:
 
 | Field | Required | Meaning |
 |---|---|---|
 | `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
 | `audiences` | yes | At least one accepted broker audience |
 | `required_scopes` | no | Every listed scope must be present |
+| `client_id` | browser login | Confidential client ID used by the authorization-code flow |
+| `client_secret` | no | Confidential client secret, normally injected from a secret manager |
+| `redirect_url` | browser login | Exact `/admin/auth/callback` URL; HTTP is allowed only on loopback |
+| `scopes` | no | Browser scopes; defaults to `openid profile email` |
+| `subject_claim` | yes | Stable identity selector; defaults to `sub` |
+| `name_claim` | no | Display-name selector; defaults to `name` |
+| `email_claim` | no | Email selector; defaults to `email` |
 | `username_claim` | yes | Verified single-string claim selector |
 | `organization_claim` | no | Verified single-string claim selector |
 | `teams_claim` | no | Verified multi-string claim selector |
+| `role_claim` | no | Authoritative additional system roles for this issuer |
 
 Every claim selector accepts either an exact top-level claim key or an
 [RFC 9535 JSONPath](https://www.rfc-editor.org/rfc/rfc9535.html) expression beginning with `$`.
@@ -70,128 +100,80 @@ teams_claim: "$.groups[*].name"
 
 Single-string mappings must select exactly one non-empty string. Multi-string mappings accept one
 string, one string array, or multiple selected strings and flatten/deduplicate the result. Invalid
-JSONPath fails configuration validation. The canonical identity remains the verified standard
-`iss` plus `sub`; protocol claims including `iss`, `sub`, `aud`, expiry, nonce, and scopes are not
-remappable selectors.
+JSONPath fails configuration validation. The canonical identity is the verified issuer plus the
+value selected by `subject_claim`, formatted `issuer|subject`. Username remains a separate mutable
+login/display attribute and is never used as the stable RBAC key.
 
-`authentication.api_keys` supports service/local identities backed by human-chosen passwords.
-Each item has a unique `username`, an Argon2id PHC `password_hash`, a pepper of at least 32 bytes,
-`subject`, optional `organization`, optional `teams`, and optional administration `roles`.
-Plaintext passwords, unsalted SHA-256 digests, and the former `name` selector are rejected. Generate
-a verifier interactively without terminal echo, naming the environment variable that holds the
-same pepper configured on the identity:
+Local users are not configuration. They are stored in the selected SQL backend and managed through
+`/admin/api/v1/local-users` or the Local users screen. Each record has a unique username, immutable
+stable subject, Argon2id PHC, optional identity attributes, enabled state, revision, and explicit
+role assignments. A local password must contain at least 15 Unicode characters; there are no
+character-class composition rules. The external pepper is `authentication.token_pepper`; it is never stored beside
+the verifier. Changing a user's password, username, attributes, or enabled state increments its
+revision and invalidates existing local browser sessions. Role changes are resolved from SQL on the
+next request.
 
-| Field | Required | Meaning |
-|---|---|---|
-| `username` | yes | Safe unique public selector sent before the password; it does not enter Argon2id |
-| `password_hash` | yes | Complete PHC emitted by the password-generation command |
-| `pepper` | yes | At least 32 bytes; external secret used to generate and verify this PHC |
-| `subject` | yes | Stable authorization subject |
-| `organization` | no | Organization attribute used by resource grants |
-| `teams` | no | Team attributes used by resource grants |
-| `roles` | no | Authoritative administration roles for this local identity |
-
-```bash
-graphit-broker --hash-password \
-  --password-pepper-env BROKER_BOOTSTRAP_PASSWORD_PEPPER
-```
-
-For automation, pass the secret only through standard input from a secret manager or mounted
-secret file. Do not put it in command arguments, shell text, or environment variables:
-
-```bash
-cat /run/secrets/broker-bootstrap-password | graphit-broker --hash-password-stdin \
-  --password-pepper-env BROKER_BOOTSTRAP_PASSWORD_PEPPER
-```
-
-Both commands combine the pepper with the password before Argon2id and write only the PHC verifier
-to standard output. Store that verifier in a secret manager/environment value referenced by
-`config.yml`; the plaintext and pepper are not embedded in the PHC. A literal YAML pepper is
-accepted under the operator's responsibility, but an environment/secret-manager reference is
-recommended. Losing or rotating the pepper requires generating a new `password_hash`.
-When a Docker Compose `.env` file carries the verifier, single-quote the complete PHC value so
-Compose does not interpolate its `$` characters.
-
-The construction is `HMAC-SHA-256(pepper, domain || 0x00 || password)`, followed by Argon2id with
-a new random salt. The PHC contains the Argon2id version, parameters, salt, and
-derived hash; it deliberately does not contain the pepper. The same pepper value must therefore be
-available to the generation command and to the corresponding `api_keys` entry. Each entry may use
-a different pepper. Changing username, password hash, pepper, or roles invalidates existing local
-administration sessions after restart.
-
-Consumer endpoints do not require OIDC when API keys are sufficient for the deployment. A broker
-may configure only local identities, only OIDC issuers, or both. A local client sends
-`Authorization: Bearer <username>:<password>`; the server selects that username and performs one
-peppered Argon2id verification. Omitting the
-`Authorization` header creates an anonymous principal rather than an authenticated identity, and
-that principal can do work only when an explicit `anonymous` resource grant matches.
+A local client sends `Authorization: Bearer <username>:<password>`. The server selects at most one
+SQL row by username and performs exactly one peppered Argon2id verification; an unknown or disabled
+username pays one dummy verification. Failed checks feed the same per-username limiter used by
+browser login, and both paths share the configured concurrent-work ceiling. Omitting the header creates an anonymous principal, which can
+work only when an explicit `anonymous` resource grant matches.
 
 ## Administration
 
 ```yaml
+authentication:
+  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      required_scopes: [graphit.use]
+      client_id: graphit-broker
+      client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
+      redirect_url: https://broker.example.com/admin/auth/callback
+      scopes: [openid, profile, email]
+      subject_claim: sub
+      name_claim: name
+      email_claim: email
+      username_claim: preferred_username
+      organization_claim: "$.organization.id"
+      teams_claim: "$.groups[*].name"
+      role_claim: "$.realm_access.roles[*]"
 administration:
   enabled: true
-  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?at least 32 random bytes}"
   session_ttl: 8h
   cli:
     provider_name: organization-broker
     profile_name: organization-broker
     oidc_client_id: graphit-cli
     oidc_redirect_uri: ""
-  oidc:
-    issuer: https://identity.example.com
-    client_id: graphit-broker-admin
-    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?required}"
-    redirect_url: https://broker.example.com/admin/auth/callback
-    scopes: [openid, profile, email]
-    name_claim: name
-    email_claim: email
-    username_claim: preferred_username
-    organization_claim: "$.organization.id"
-    teams_claim: "$.groups[*].name"
-    role_claim: "$.realm_access.roles[*]"
 ```
 
-When present, administration OIDC uses a separate confidential client. The callback may use HTTP
-only on a loopback host. OIDC may be omitted for a local-only UI backed by at least one
-`authentication.api_keys` identity. Session TTL must be between 5 minutes and 168 hours.
-`name_claim` and `email_claim` default to
-`name` and `email`. The username, organization, and team mappings let the projects UI evaluate the
-same `user`, `organization`, and `team` resource grants as consumer requests; when omitted, those
-three mappings inherit from a consumer OIDC issuer with the same issuer URL. All six mappings use
-the exact-key/JSONPath rules above.
+There is no administration-specific OIDC provider. The same issuer and claim mappings validate
+consumer bearers and populate browser identities; `client_id`, `client_secret`, `redirect_url`, and
+`scopes` merely enable the browser authorization-code flow on one issuer. A local-only UI may omit
+OIDC. Session TTL must be between 5 minutes and 168 hours.
 
-`administration.oidc.role_claim` is optional. When absent, UI permissions come from local SQL
-`role_assignments`. When configured, it must resolve to at least one role string and is
-authoritative for that OIDC identity: claimed roles replace, rather than merge with, every local
-role assignment for the same `sub`. Role names still refer to role definitions and permissions in
-SQL; an unknown claimed role grants nothing. Local UI identities use their configured `roles` when
-present; those roles are authoritative for that identity. Without configured roles, they use local
-database assignments. There is no superadmin bypass.
+`authentication.oidc[].role_claim` is optional. When absent, effective roles come from SQL
+`role_assignments`. When configured, its additional role values are authoritative for that OIDC
+identity and replace explicit SQL assignments for the same
+canonical subject. Every authenticated identity additionally receives the built-in `user` role;
+unknown claimed roles grant nothing. Local users always resolve their additional roles from SQL.
+There is no superadmin bypass.
 
 `administration.cli` supplies the non-secret public/native client details used to render complete
 `graphit provider add` and `graphit login` snippets. An empty `oidc_redirect_uri` lets Graphit pick
 a free loopback port; when set, it must be an HTTP loopback URL with an explicit port.
 
-An identity from `authentication.api_keys` enters the UI with its configured username and plaintext
-password. The password is validated once and exchanged for a short-lived, `HttpOnly`,
-CSRF-protected UI session; it is not persisted by the UI or database.
+An enabled local user enters the UI with its SQL username and plaintext password. The password is
+validated once and exchanged for a short-lived, `HttpOnly`, CSRF-protected session; only the
+Argon2id verifier is persisted.
 
-For a new database, create the first administrator entirely through deployment configuration:
-
-```yaml
-authentication:
-  api_keys:
-    - username: bootstrap-admin
-      password_hash: "${BROKER_BOOTSTRAP_PASSWORD_HASH:?required}"
-      pepper: "${BROKER_BOOTSTRAP_PASSWORD_PEPPER:?at least 32 bytes}"
-      subject: bootstrap-admin
-      roles: [admin]
-```
-
-Sign in locally, create any OIDC/database role assignments needed for normal operation, then remove
-or narrow the bootstrap identity in `config.yml` and restart. There is no special superadmin
-subject or authorization bypass.
+For a new database, run `graphit-broker --config config.yaml --bootstrap-admin`; automation may pipe
+the password to `--bootstrap-admin-stdin`. The command accepts no username or secret argument,
+creates the fixed local identity `admin` with roles `user` and `admin`, and refuses to modify a
+database containing any local user. Continue user and role management through the UI/API. There is
+no special superadmin subject or authorization bypass.
 
 ## Model catalog
 

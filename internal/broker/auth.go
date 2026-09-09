@@ -15,14 +15,19 @@ import (
 var ErrUnauthenticated = errors.New("authentication failed")
 
 type Principal struct {
-	Issuer       string
-	Subject      string
-	Username     string
-	Organization string
-	Teams        []string
-	Scopes       []string
-	Roles        []string
-	AuthMethod   string
+	Issuer            string
+	Subject           string
+	Name              string
+	Email             string
+	Username          string
+	Organization      string
+	Teams             []string
+	Scopes            []string
+	Roles             []string
+	RolesFromClaim    bool
+	RoleClaimSelector string
+	LocalUserRevision int64
+	AuthMethod        string
 }
 
 func (p Principal) CanonicalSubject() string { return p.Issuer + "|" + p.Subject }
@@ -46,25 +51,52 @@ type oidcVerifier struct {
 	verifier tokenVerifier
 }
 
-type apiKeyIdentity struct {
-	verifier  passwordVerifier
-	pepper    []byte
-	principal Principal
+type localUserReader interface {
+	LocalUserByUsername(context.Context, string) (LocalUser, error)
 }
 
 type authenticator struct {
-	oidc         []oidcVerifier
-	apiKeys      map[string]apiKeyIdentity
-	dummy        *apiKeyIdentity
-	passwordWork chan struct{}
+	oidc          []oidcVerifier
+	localUsers    localUserReader
+	tokenPepper   []byte
+	dummy         passwordVerifier
+	passwordWork  chan struct{}
+	rateLimiter   *localPasswordRateLimiter
+	passwordCheck func(context.Context, passwordVerifier, []byte, string) bool
 }
 
-func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig) (Authenticator, error) {
-	return newAuthenticator(ctx, cfg, false, http.DefaultClient)
+func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader) (Authenticator, error) {
+	return newAuthenticator(ctx, cfg, localUsers, false, http.DefaultClient)
 }
 
-func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
-	a := &authenticator{apiKeys: make(map[string]apiKeyIdentity, len(cfg.APIKeys)), passwordWork: make(chan struct{}, 1)}
+func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
+	cfg.LocalRateLimit.setDefaults()
+	if err := cfg.LocalRateLimit.validate(); err != nil {
+		return nil, err
+	}
+	a := &authenticator{localUsers: localUsers, tokenPepper: []byte(cfg.TokenPepper), passwordWork: make(chan struct{}, cfg.LocalRateLimit.MaxConcurrent),
+		rateLimiter: newLocalPasswordRateLimiter(cfg.LocalRateLimit, []byte(cfg.TokenPepper))}
+	a.passwordCheck = verifyPassword
+	if len(cfg.TokenPepper) >= tokenPepperMinimumBytes {
+		dummyHash, err := HashPassword([]byte("graphit-broker-unknown-local-user"), []byte(cfg.TokenPepper))
+		if err != nil {
+			return nil, fmt.Errorf("initialize local password verifier: %w", err)
+		}
+		a.dummy, err = parsePasswordVerifier(dummyHash)
+		if err != nil {
+			return nil, fmt.Errorf("parse local password verifier: %w", err)
+		}
+	} else if counter, ok := localUsers.(interface {
+		LocalUserCount(context.Context) (int, error)
+	}); ok {
+		count, err := counter.LocalUserCount(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("count local users: %w", err)
+		}
+		if count > 0 {
+			return nil, fmt.Errorf("authentication token pepper must contain at least %d bytes when local users exist", tokenPepperMinimumBytes)
+		}
+	}
 	providerContext := oidc.ClientContext(ctx, client)
 	for _, issuerCfg := range cfg.OIDC {
 		issuerURL := strings.TrimRight(issuerCfg.Issuer, "/")
@@ -81,26 +113,6 @@ func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, allowInsecu
 		verifier := provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
 		a.oidc = append(a.oidc, oidcVerifier{config: issuerCfg, verifier: verifier})
 	}
-	for _, key := range cfg.APIKeys {
-		verifier, err := parsePasswordVerifier(key.PasswordHash)
-		if err != nil {
-			return nil, fmt.Errorf("authentication API key %q password hash: %w", key.Username, err)
-		}
-		if len(key.Pepper) < passwordPepperMinimumBytes {
-			return nil, fmt.Errorf("authentication API key %q password pepper must contain at least %d bytes", key.Username, passwordPepperMinimumBytes)
-		}
-		if _, duplicate := a.apiKeys[key.Username]; duplicate {
-			return nil, fmt.Errorf("duplicate authentication API key username %q", key.Username)
-		}
-		identity := apiKeyIdentity{verifier: verifier, pepper: []byte(key.Pepper), principal: Principal{
-			Issuer: "apikey:" + key.Username, Subject: key.Subject, Username: key.Username,
-			Organization: key.Organization, Teams: cleanStrings(key.Teams), Roles: cleanStrings(key.Roles), AuthMethod: "api_key",
-		}}
-		a.apiKeys[key.Username] = identity
-		if a.dummy == nil {
-			a.dummy = &identity
-		}
-	}
 	return a, nil
 }
 
@@ -109,14 +121,32 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 		return Principal{}, ErrUnauthenticated
 	}
 	if username, password, ok := localPasswordCredential(raw); ok {
-		if key, exists := a.apiKeys[username]; exists {
-			if a.verifyPassword(ctx, key.verifier, key.pepper, password) {
-				return key.principal, nil
+		var user LocalUser
+		var err error
+		if a.localUsers != nil {
+			user, err = a.localUsers.LocalUserByUsername(ctx, username)
+		}
+		if err == nil && user.Enabled {
+			verifier, parseErr := parsePasswordVerifier(user.PasswordHash)
+			if parseErr == nil {
+				authenticated, checkErr := a.checkLocalPassword(ctx, username, verifier, password)
+				if checkErr != nil {
+					return Principal{}, checkErr
+				}
+				if authenticated {
+					return Principal{Issuer: localIdentityIssuer, Subject: user.Subject, Name: user.Name, Email: user.Email,
+						Username: user.Username, Organization: user.Organization, Teams: cleanStrings(user.Teams), Roles: user.Roles,
+						LocalUserRevision: user.Revision, AuthMethod: "local"}, nil
+				}
+				return Principal{}, ErrUnauthenticated
 			}
-		} else if a.dummy != nil {
-			// Unknown local names still pay one Argon2id verification to reduce account-name
-			// enumeration through response timing without multiplying work by configured identities.
-			a.verifyPassword(ctx, a.dummy.verifier, a.dummy.pepper, password)
+		}
+		if a.dummy.hash != nil {
+			// Unknown and disabled local users still pay one Argon2id verification to reduce
+			// account-name enumeration without multiplying work by the number of users.
+			if _, checkErr := a.checkLocalPassword(ctx, username, a.dummy, password); checkErr != nil {
+				return Principal{}, checkErr
+			}
 		}
 		return Principal{}, ErrUnauthenticated
 	}
@@ -133,15 +163,29 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 	return Principal{}, ErrUnauthenticated
 }
 
-func (a *authenticator) verifyPassword(ctx context.Context, verifier passwordVerifier, pepper []byte, password string) bool {
-	plaintext := []byte(password)
-	defer clear(plaintext)
+func (a *authenticator) checkLocalPassword(ctx context.Context, username string, verifier passwordVerifier, password string) (bool, error) {
+	if err := a.rateLimiter.allow(username); err != nil {
+		return false, err
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+	}
 	select {
 	case a.passwordWork <- struct{}{}:
 		defer func() { <-a.passwordWork }()
-	case <-ctx.Done():
-		return false
+	default:
+		return false, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
 	}
+	authenticated := a.passwordCheck(ctx, verifier, a.tokenPepper, password)
+	a.rateLimiter.record(username, authenticated)
+	return authenticated, nil
+}
+
+func verifyPassword(_ context.Context, verifier passwordVerifier, pepper []byte, password string) bool {
+	plaintext := []byte(password)
+	defer clear(plaintext)
 	return verifier.verify(plaintext, pepper)
 }
 
@@ -154,8 +198,8 @@ func localPasswordCredential(raw string) (string, string, bool) {
 }
 
 func principalFromIDToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (Principal, error) {
-	if token == nil || token.Subject == "" {
-		return Principal{}, errors.New("verified token has no subject")
+	if token == nil {
+		return Principal{}, errors.New("verified token is missing")
 	}
 	if !intersects(token.Audience, cfg.Audiences) {
 		return Principal{}, errors.New("token audience is not accepted")
@@ -164,7 +208,23 @@ func principalFromIDToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (Principal,
 	if err := token.Claims(&claims); err != nil {
 		return Principal{}, fmt.Errorf("decode verified claims: %w", err)
 	}
+	subjectClaim := strings.TrimSpace(cfg.SubjectClaim)
+	if subjectClaim == "" {
+		subjectClaim = "sub"
+	}
+	subject, err := claimString(claims, subjectClaim, true)
+	if err != nil {
+		return Principal{}, err
+	}
 	username, err := claimString(claims, cfg.UsernameClaim, true)
+	if err != nil {
+		return Principal{}, err
+	}
+	name, err := claimString(claims, cfg.NameClaim, false)
+	if err != nil {
+		return Principal{}, err
+	}
+	email, err := claimString(claims, cfg.EmailClaim, false)
 	if err != nil {
 		return Principal{}, err
 	}
@@ -176,14 +236,24 @@ func principalFromIDToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (Principal,
 	if err != nil {
 		return Principal{}, err
 	}
+	roles, err := claimStrings(claims, cfg.RoleClaim)
+	if err != nil {
+		return Principal{}, err
+	}
+	for _, role := range roles {
+		if !safeSegment(role) {
+			return Principal{}, fmt.Errorf("role claim %q contains invalid role %q", cfg.RoleClaim, role)
+		}
+	}
 	scopes := tokenScopes(claims)
 	for _, required := range cfg.RequiredScopes {
 		if !containsString(scopes, required) {
 			return Principal{}, fmt.Errorf("required scope %q is missing", required)
 		}
 	}
-	return Principal{Issuer: token.Issuer, Subject: token.Subject, Username: username,
-		Organization: organization, Teams: teams, Scopes: scopes, AuthMethod: "oidc"}, nil
+	return Principal{Issuer: token.Issuer, Subject: subject, Name: name, Email: email, Username: username,
+		Organization: organization, Teams: teams, Scopes: scopes, Roles: cleanStrings(append(roles, userRole)),
+		RolesFromClaim: strings.TrimSpace(cfg.RoleClaim) != "", RoleClaimSelector: strings.TrimSpace(cfg.RoleClaim), AuthMethod: "oidc"}, nil
 }
 
 func bearerToken(r *http.Request) string {

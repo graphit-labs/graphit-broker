@@ -10,11 +10,7 @@ import (
 func TestDecodeConfigExpandsRequiredEnvironmentAndDefaults(t *testing.T) {
 	input := `
 authentication:
-  api_keys:
-    - username: service
-      password_hash: "${PASSWORD_HASH:?PASSWORD_HASH is required}"
-      pepper: "${PASSWORD_PEPPER:?PASSWORD_PEPPER is required}"
-      subject: service
+  token_pepper: "${TOKEN_PEPPER:?TOKEN_PEPPER is required}"
 services:
   embeddings:
     enabled: true
@@ -26,10 +22,7 @@ services:
       model: internal-model
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
-		switch name {
-		case "PASSWORD_HASH":
-			return mustPasswordHash(t, "secret")
-		case "PASSWORD_PEPPER":
+		if name == "TOKEN_PEPPER" {
 			return testPasswordPepper
 		}
 		return ""
@@ -40,15 +33,50 @@ services:
 	if cfg.Server.Address != ":8080" || cfg.Services.Embeddings.MaxBatch != 256 {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
-	if cfg.Authentication.APIKeys[0].PasswordHash == "" {
+	if cfg.Authentication.LocalRateLimit.MaxFailures != 5 || cfg.Authentication.LocalRateLimit.Window != time.Minute || cfg.Authentication.LocalRateLimit.Lockout != 5*time.Minute || cfg.Authentication.LocalRateLimit.MaxConcurrent != 2 {
+		t.Fatalf("local authentication rate limit defaults=%#v", cfg.Authentication.LocalRateLimit)
+	}
+	if cfg.Authentication.TokenPepper != testPasswordPepper {
 		t.Fatal("environment value was not expanded")
+	}
+}
+
+func TestLocalAuthenticationRateLimitConfiguration(t *testing.T) {
+	input := `
+authentication:
+  local_rate_limit:
+    max_failures: 7
+    window: 2m
+    lockout: 10m
+    max_concurrent: 3
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Authentication.LocalRateLimit != (LocalAuthenticationRateLimit{MaxFailures: 7, Window: 2 * time.Minute, Lockout: 10 * time.Minute, MaxConcurrent: 3}) {
+		t.Fatalf("custom rate limit=%#v", cfg.Authentication.LocalRateLimit)
+	}
+	for name, limit := range map[string]LocalAuthenticationRateLimit{
+		"negative maximum":     {MaxFailures: -1, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: 2},
+		"negative window":      {MaxFailures: 5, Window: -time.Minute, Lockout: time.Minute, MaxConcurrent: 2},
+		"negative lockout":     {MaxFailures: 5, Window: time.Minute, Lockout: -time.Minute, MaxConcurrent: 2},
+		"negative concurrency": {MaxFailures: 5, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := cfg
+			invalid.Authentication.LocalRateLimit = limit
+			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local_rate_limit") {
+				t.Fatalf("invalid rate limit accepted: %#v error=%v", limit, err)
+			}
+		})
 	}
 }
 
 func TestDecodeConfigRejectsUnknownFieldsAndMissingEnvironment(t *testing.T) {
 	for name, input := range map[string]string{
 		"unknown":     "unknown: true\n",
-		"environment": "authentication:\n  api_keys:\n    - password_hash: '${PASSWORD_HASH:?required}'\n",
+		"environment": "authentication:\n  token_pepper: '${TOKEN_PEPPER:?required}'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
@@ -59,7 +87,7 @@ func TestDecodeConfigRejectsUnknownFieldsAndMissingEnvironment(t *testing.T) {
 }
 
 func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
-	cfg := Config{Authentication: AuthenticationConfig{OIDC: []OIDCIssuerConfig{{Issuer: "http://id.example", Audiences: []string{"broker"}, UsernameClaim: "sub"}}}}
+	cfg := Config{Authentication: AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: "http://id.example", Audiences: []string{"broker"}, SubjectClaim: "sub", UsernameClaim: "sub"}}}}
 	cfg.defaults()
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("Validate error = %v", err)
@@ -72,37 +100,37 @@ database:
   driver: sqlite
   dsn: /tmp/broker.db
 authentication:
+  token_pepper: 0123456789abcdef0123456789abcdef
   oidc:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
+      subject_claim: sub
       username_claim: preferred_username
       organization_claim: $.organization.id
       teams_claim: $.groups[*]
+      client_id: broker-admin
+      client_secret: secret
+      redirect_url: http://localhost:8080/admin/auth/callback
+      role_claim: $.realm_access.roles[*]
 administration:
   enabled: true
-  token_pepper: 0123456789abcdef0123456789abcdef
   session_ttl: 1h
   cli:
     oidc_client_id: graphit-cli
-  oidc:
-    issuer: https://identity.example.com
-    client_id: broker-admin
-    client_secret: secret
-    redirect_url: http://localhost:8080/admin/auth/callback
-    role_claim: $.realm_access.roles[*]
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Administration.CLI.ProviderName != "organization-broker" || cfg.Administration.OIDC.UsernameClaim != "preferred_username" || cfg.Administration.OIDC.TeamsClaim != "$.groups[*]" || cfg.Administration.OIDC.RoleClaim != "$.realm_access.roles[*]" || cfg.Administration.OIDC.NameClaim != "name" || cfg.Administration.OIDC.EmailClaim != "email" {
-		t.Fatalf("administration defaults=%#v", cfg.Administration)
+	issuer := &cfg.Authentication.OIDC[0]
+	if cfg.Administration.CLI.ProviderName != "organization-broker" || issuer.UsernameClaim != "preferred_username" || issuer.TeamsClaim != "$.groups[*]" || issuer.RoleClaim != "$.realm_access.roles[*]" || issuer.SubjectClaim != "sub" || issuer.NameClaim != "name" || issuer.EmailClaim != "email" {
+		t.Fatalf("authentication defaults=%#v", cfg.Authentication)
 	}
-	cfg.Administration.OIDC.RedirectURL = "http://broker.example.com/admin/auth/callback"
+	issuer.RedirectURL = "http://broker.example.com/admin/auth/callback"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS except on loopback") {
 		t.Fatalf("remote HTTP callback validation=%v", err)
 	}
-	cfg.Administration.OIDC.RedirectURL = "http://localhost:8080/admin/auth/callback"
+	issuer.RedirectURL = "http://localhost:8080/admin/auth/callback"
 	cfg.Administration.CLI.OIDCRedirectURI = "https://identity.example.com/callback"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTP loopback") {
 		t.Fatalf("CLI callback validation=%v", err)
@@ -112,6 +140,7 @@ administration:
 func TestConfigRejectsInvalidClaimJSONPath(t *testing.T) {
 	input := `
 authentication:
+  token_pepper: 0123456789abcdef0123456789abcdef
   oidc:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
@@ -123,114 +152,63 @@ authentication:
 	}
 }
 
-func TestAdministrationAllowsLocalAPIKeyWithoutOIDC(t *testing.T) {
+func TestAdministrationAllowsLocalUsersWithoutOIDC(t *testing.T) {
 	input := `
 database:
   driver: sqlite
   dsn: /tmp/broker.db
 authentication:
-  api_keys:
-    - username: root
-      password_hash: "${PASSWORD_HASH:?required}"
-      pepper: "${PASSWORD_PEPPER:?required}"
-      subject: local-root
-      roles: [admin]
+  token_pepper: 0123456789abcdef0123456789abcdef
 administration:
   enabled: true
-  token_pepper: 0123456789abcdef0123456789abcdef
   session_ttl: 1h
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
-		switch name {
-		case "PASSWORD_HASH":
-			return mustPasswordHash(t, "local-secret")
-		case "PASSWORD_PEPPER":
-			return testPasswordPepper
-		}
-		return ""
-	})
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Administration.OIDC.configured() || cfg.Administration.CLI.ProviderName != "organization-broker" {
+	if len(cfg.Authentication.OIDC) != 0 || cfg.Administration.CLI.ProviderName != "organization-broker" {
 		t.Fatalf("local administration config=%#v", cfg.Administration)
 	}
 }
 
-func TestAdministrationRequiresExternalTokenPepper(t *testing.T) {
+func TestAuthenticationRequiresExternalTokenPepper(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
-	cfg.Authentication.APIKeys = []APIKeyConfig{{Username: "admin", PasswordHash: mustPasswordHash(t, "password"), Pepper: testPasswordPepper, Subject: "admin", Roles: []string{adminRole}}}
 	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour}
 	cfg.defaults()
 	for _, pepper := range []string{"", "too-short"} {
-		cfg.Administration.TokenPepper = pepper
+		cfg.Authentication.TokenPepper = pepper
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "token_pepper") {
 			t.Fatalf("pepper %q validation=%v", pepper, err)
 		}
 	}
-	cfg.Administration.TokenPepper = testTokenPepper
+	cfg.Authentication.TokenPepper = testTokenPepper
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid pepper rejected: %v", err)
 	}
 }
 
-func TestConfigRejectsLegacyLocalCredentialFields(t *testing.T) {
-	for _, field := range []string{"token", "token_" + "sha256"} {
-		input := "authentication:\n  api_keys:\n    - username: local\n      " + field + ": secret\n      pepper: " + testPasswordPepper + "\n      subject: local\n"
-		if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
-			t.Fatalf("legacy field %s was accepted", field)
-		}
-	}
-}
-
-func TestConfigRequiresUniqueUsernameAndStrongPasswordPepper(t *testing.T) {
-	validHash := mustPasswordHash(t, "password")
+func TestConfigRejectsLegacyAuthenticationFields(t *testing.T) {
 	for name, input := range map[string]string{
-		"legacy name":        "authentication:\n  api_keys:\n    - name: local\n      username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: local\n",
-		"missing pepper":     "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      subject: local\n",
-		"short pepper":       "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: too-short\n      subject: local\n",
-		"duplicate username": "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: one\n    - username: local\n      password_hash: '" + validHash + "'\n      pepper: " + testPasswordPepper + "\n      subject: two\n",
+		"local users in config": "authentication:\n  token_pepper: " + testPasswordPepper + "\n  api_keys: []\n",
+		"administration OIDC":   "authentication:\n  token_pepper: " + testPasswordPepper + "\nadministration:\n  oidc:\n    issuer: https://identity.example\n",
+		"administration pepper": "authentication:\n  token_pepper: " + testPasswordPepper + "\nadministration:\n  token_pepper: " + testPasswordPepper + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
-				t.Fatal("invalid local identity configuration was accepted")
-			}
-		})
-	}
-}
-
-func TestConfigAcceptsLiteralOrEnvironmentPasswordPepper(t *testing.T) {
-	hash := mustPasswordHash(t, "password")
-	for name, pepper := range map[string]string{
-		"literal":     testPasswordPepper,
-		"environment": "${PASSWORD_PEPPER:?required}",
-	} {
-		t.Run(name, func(t *testing.T) {
-			input := "authentication:\n  api_keys:\n    - username: local\n      password_hash: '" + hash + "'\n      pepper: '" + pepper + "'\n      subject: local\n"
-			cfg, err := DecodeConfig(strings.NewReader(input), func(variable string) string {
-				if variable == "PASSWORD_PEPPER" {
-					return testPasswordPepper
-				}
-				return ""
-			})
-			if err != nil || cfg.Authentication.APIKeys[0].Pepper != testPasswordPepper {
-				t.Fatalf("pepper=%q err=%v", cfg.Authentication.APIKeys[0].Pepper, err)
+				t.Fatal("legacy authentication field was accepted")
 			}
 		})
 	}
 }
 
 func TestRepositoryConfigurationExamplesDecodeWithInjectedSecrets(t *testing.T) {
-	hash := mustPasswordHash(t, "example-password")
 	secrets := map[string]string{
-		"BROKER_EXAMPLE_PASSWORD_HASH":    hash,
-		"BROKER_EXAMPLE_PASSWORD_PEPPER":  testPasswordPepper,
-		"BROKER_ADMIN_TOKEN_PEPPER":       testTokenPepper,
-		"BROKER_ADMIN_OIDC_ISSUER":        "https://identity.example.com",
-		"BROKER_ADMIN_OIDC_CLIENT_ID":     "broker-admin",
-		"BROKER_ADMIN_OIDC_CLIENT_SECRET": "oidc-secret",
-		"BROKER_ADMIN_OIDC_REDIRECT_URL":  "https://broker.example.com/admin/auth/callback",
-		"OPENAI_API_KEY":                  "openai-secret", "COHERE_API_KEY": "cohere-secret",
+		"BROKER_AUTH_TOKEN_PEPPER":  testPasswordPepper,
+		"BROKER_OIDC_CLIENT_ID":     "broker-admin",
+		"BROKER_OIDC_CLIENT_SECRET": "oidc-secret",
+		"BROKER_OIDC_REDIRECT_URL":  "https://broker.example.com/admin/auth/callback",
+		"OPENAI_API_KEY":            "openai-secret", "COHERE_API_KEY": "cohere-secret",
 		"PRIMARY_S3_ACCESS_KEY_ID": "primary-access", "PRIMARY_S3_SECRET_ACCESS_KEY": "primary-secret",
 		"PUBLIC_S3_ACCESS_KEY_ID": "public-access", "PUBLIC_S3_SECRET_ACCESS_KEY": "public-secret",
 	}

@@ -34,18 +34,18 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 	}))
 	defer server.Close()
 	issuer = server.URL
-	cfg := AuthenticationConfig{OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"graphit.use"}, UsernameClaim: "$.profile.username", OrganizationClaim: "$.organization.id", TeamsClaim: "$.groups[*]"}}}
-	authenticator, err := newAuthenticator(context.Background(), cfg, true, server.Client())
+	cfg := AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"graphit.use"}, SubjectClaim: "$.identity.id", UsernameClaim: "$.profile.username", OrganizationClaim: "$.organization.id", TeamsClaim: "$.groups[*]", RoleClaim: "$.realm_access.roles[*]"}}}
+	authenticator, err := newAuthenticator(context.Background(), cfg, nil, true, server.Client())
 	if err != nil {
 		t.Fatalf("newAuthenticator: %v", err)
 	}
-	base := map[string]any{"iss": issuer, "sub": "subject-1", "aud": []string{"other", "graphit-broker"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "scope": "openid graphit.use", "profile": map[string]any{"username": "alice"}, "organization": map[string]any{"id": "acme"}, "groups": []string{"platform", "security"}}
+	base := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "stable-subject"}, "aud": []string{"other", "graphit-broker"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "scope": "openid graphit.use", "profile": map[string]any{"username": "alice"}, "organization": map[string]any{"id": "acme"}, "groups": []string{"platform", "security"}, "realm_access": map[string]any{"roles": []string{"auditor"}}}
 	token := signJWT(t, key, base)
 	principal, err := authenticator.Authenticate(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-	if principal.Username != "alice" || principal.Organization != "acme" || len(principal.Teams) != 2 {
+	if principal.Subject != "stable-subject" || principal.Username != "alice" || principal.Organization != "acme" || len(principal.Teams) != 2 || !containsString(principal.Roles, userRole) || !containsString(principal.Roles, "auditor") {
 		t.Fatalf("principal = %#v", principal)
 	}
 
@@ -107,36 +107,73 @@ func TestTokenScopesAndClaimSelectorsSupportCommonIdPShapes(t *testing.T) {
 }
 
 func TestAuthenticatorAcceptsUsernameSelectedPepperedArgon2idPassword(t *testing.T) {
-	a, err := newAuthenticator(context.Background(), AuthenticationConfig{APIKeys: []APIKeyConfig{
-		{Username: "automation", PasswordHash: mustPasswordHash(t, "secret-key"), Pepper: testPasswordPepper, Subject: "ci", Organization: "acme"},
-		{Username: "deployment", PasswordHash: mustPasswordHash(t, "deployment-key"), Pepper: testPasswordPepper, Subject: "deploy"},
-	}}, false, http.DefaultClient)
+	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := a.Authenticate(context.Background(), "automation:secret-key")
-	if err != nil || principal.AuthMethod != "api_key" {
+	defer store.Close()
+	if err := store.CreateLocalUser(context.Background(), LocalUser{Username: "automation", Subject: "ci", PasswordHash: mustPasswordHash(t, "automation-secret"), Organization: "acme", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateLocalUser(context.Background(), LocalUser{Username: "deployment", Subject: "deploy", PasswordHash: mustPasswordHash(t, "deployment-secret"), Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newAuthenticator(context.Background(), AuthenticationConfig{TokenPepper: testPasswordPepper}, store, false, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := a.Authenticate(context.Background(), "automation:automation-secret")
+	if err != nil || principal.AuthMethod != "local" || !containsString(principal.Roles, userRole) {
 		t.Fatalf("principal=%#v err=%v", principal, err)
 	}
 	if _, err := a.Authenticate(context.Background(), "automation:wrong"); err == nil {
-		t.Fatal("wrong API key accepted")
+		t.Fatal("wrong local password accepted")
 	}
-	if principal, err := a.Authenticate(context.Background(), "deployment:deployment-key"); err != nil || principal.Subject != "deploy" {
+	if principal, err := a.Authenticate(context.Background(), "deployment:deployment-secret"); err != nil || principal.Subject != "deploy" {
 		t.Fatalf("second username principal=%#v err=%v", principal, err)
 	}
-	if _, err := a.Authenticate(context.Background(), "unknown:secret-key"); err == nil {
-		t.Fatal("unknown API key username accepted")
+	if _, err := a.Authenticate(context.Background(), "unknown:unknown-password"); err == nil {
+		t.Fatal("unknown local username accepted")
 	}
-	if _, err := a.Authenticate(context.Background(), "secret-key"); err == nil {
+	if _, err := a.Authenticate(context.Background(), "automation-secret"); err == nil {
 		t.Fatal("unnamed password accepted")
 	}
-	wrongPepper := AuthenticationConfig{APIKeys: []APIKeyConfig{{Username: "automation", PasswordHash: mustPasswordHash(t, "secret-key"), Pepper: "different-password-pepper-01234567", Subject: "ci"}}}
-	other, err := newAuthenticator(context.Background(), wrongPepper, false, http.DefaultClient)
+	wrongPepper := AuthenticationConfig{TokenPepper: "different-password-pepper-01234567"}
+	other, err := newAuthenticator(context.Background(), wrongPepper, store, false, http.DefaultClient)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Authenticate(context.Background(), "automation:secret-key"); err == nil {
+	if _, err := other.Authenticate(context.Background(), "automation:automation-secret"); err == nil {
 		t.Fatal("password authenticated with a different pepper")
+	}
+}
+
+func TestLocalAuthenticationPerformsAtMostOnePasswordCheck(t *testing.T) {
+	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateLocalUser(context.Background(), LocalUser{Username: "known", Subject: "known", PasswordHash: mustPasswordHash(t, "known-password!"), Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newAuthenticator(context.Background(), AuthenticationConfig{TokenPepper: testPasswordPepper}, store, false, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := 0
+	a.passwordCheck = func(context.Context, passwordVerifier, []byte, string) bool {
+		checks++
+		return false
+	}
+	for _, credential := range []string{"known:wrong", "unknown:wrong"} {
+		checks = 0
+		if _, err := a.Authenticate(context.Background(), credential); err == nil {
+			t.Fatalf("credential %q was accepted", credential)
+		}
+		if checks != 1 {
+			t.Fatalf("credential %q performed %d password checks", credential, checks)
+		}
 	}
 }
 

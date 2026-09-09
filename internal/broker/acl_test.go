@@ -13,6 +13,19 @@ func (s *resourceGrantStub) ResourceGrants(context.Context) (PolicyDocument, err
 	return clonePolicy(s.document), nil
 }
 
+func clonePolicy(document PolicyDocument) PolicyDocument {
+	rules := document.Rules
+	document.Rules = make([]ACLRuleConfig, len(rules))
+	for i, rule := range rules {
+		document.Rules[i] = rule
+		document.Rules[i].Capabilities = append([]string(nil), rule.Capabilities...)
+		document.Rules[i].Projects = append([]string(nil), rule.Projects...)
+		document.Rules[i].S3Operations = append([]string(nil), rule.S3Operations...)
+		document.Rules[i].S3Prefixes = append([]string(nil), rule.S3Prefixes...)
+	}
+	return document
+}
+
 func testACL(rules ...ACLRuleConfig) *ACL {
 	return NewACL(&resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: rules}})
 }

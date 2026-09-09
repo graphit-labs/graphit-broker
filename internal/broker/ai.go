@@ -396,14 +396,6 @@ func embedUpstream(ctx context.Context, client *http.Client, cfg EmbeddingServic
 	}
 }
 
-func indexedEmbeddings(vectors [][]float32) embeddingBackendResponse {
-	data := make([]EmbeddingData, len(vectors))
-	for i, vector := range vectors {
-		data[i] = EmbeddingData{Object: "embedding", Embedding: vector, Index: i}
-	}
-	return embeddingBackendResponse{Object: "list", Data: data}
-}
-
 func googleEmbeddingURL(base, model string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.Contains(base, ":batchEmbedContents") {

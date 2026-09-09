@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -43,8 +44,8 @@ func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	return newServerWithFactory(ctx, cfg, NewAdminIdentityProvider)
 }
 
-func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error)) (*Server, error) {
-	control, err := OpenControlStore(cfg.Database, cfg.Administration.TokenPepper)
+func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error)) (*Server, error) {
+	control, err := OpenControlStore(cfg.Database, cfg.Authentication.TokenPepper)
 	if err != nil {
 		return nil, err
 	}
@@ -59,8 +60,9 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 	return s, nil
 }
 
-func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
-	authenticator, err := NewAuthenticator(ctx, cfg.Authentication)
+func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
+	localUsers, _ := grants.(localUserReader)
+	authenticator, err := NewAuthenticator(ctx, cfg.Authentication, localUsers)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +71,8 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		presigner = NewAWSPresignService(cfg.Services.S3)
 	}
 	var adminOIDC AdminIdentityProvider
-	if cfg.Administration.Enabled && cfg.Administration.OIDC.configured() {
-		adminOIDC, err = factory(ctx, cfg.Administration.OIDC)
+	if loginConfig, ok := browserLoginOIDC(cfg.Authentication.OIDC); cfg.Administration.Enabled && ok {
+		adminOIDC, err = factory(ctx, loginConfig)
 		if err != nil {
 			return nil, err
 		}
@@ -85,9 +87,13 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
-func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
-	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
-	return newServerFromRuntime(runtime, control)
+func browserLoginOIDC(configs []OIDCIssuerConfig) (OIDCIssuerConfig, bool) {
+	for _, cfg := range configs {
+		if cfg.loginConfigured() {
+			return cfg, true
+		}
+	}
+	return OIDCIssuerConfig{}, false
 }
 
 func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server {
@@ -126,6 +132,10 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.Handle("GET /admin/api/v1/role-assignments", s.requireAdministration("roles.read", http.HandlerFunc(s.adminAssignments)))
 		mux.Handle("POST /admin/api/v1/role-assignments", s.requireAdministration("roles.write", http.HandlerFunc(s.adminAssignments)))
 		mux.Handle("DELETE /admin/api/v1/role-assignments", s.requireAdministration("roles.write", http.HandlerFunc(s.adminAssignments)))
+		mux.Handle("GET /admin/api/v1/local-users", s.requireAdministration("users.read", http.HandlerFunc(s.adminLocalUsers)))
+		mux.Handle("POST /admin/api/v1/local-users", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUsers)))
+		mux.Handle("PUT /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
+		mux.Handle("DELETE /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
 	}
 	s.handler = s.observability(mux)
 	return s
@@ -437,6 +447,10 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 		}
 		principal, err := s.runtime().authenticator.Authenticate(r.Context(), raw)
 		if err != nil {
+			if retryAfter, limited := authenticationRetryAfter(err); limited {
+				writeAuthenticationRateLimit(w, r, retryAfter)
+				return
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="graphit-broker"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer credentials are required", requestID(r.Context()))
 			return
@@ -444,6 +458,18 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), principalKey, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func writeAuthenticationRateLimit(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	seconds := int64(retryAfter / time.Second)
+	if retryAfter%time.Second != 0 {
+		seconds++
+	}
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	writeError(w, http.StatusTooManyRequests, "authentication_rate_limited", "too many failed authentication attempts", requestID(r.Context()))
 }
 
 func (s *Server) observability(next http.Handler) http.Handler {

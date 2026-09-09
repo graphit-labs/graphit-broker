@@ -16,30 +16,44 @@ server:
   max_request_bytes: 4194304
 
 authentication:
+  # One deployment pepper protects local password preprocessing, browser sessions, and OIDC state
+  # with distinct cryptographic domains. It is never stored in SQL.
+  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
+  # Failed local-password checks are limited per username. At most max_concurrent expensive
+  # Argon2id checks run at once per broker process. A blocked or saturated request returns HTTP 429
+  # with Retry-After; successful checks do not consume the failure quota.
+  local_rate_limit:
+    max_failures: 5
+    window: 1m
+    lockout: 5m
+    max_concurrent: 2
   oidc:
     - issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
       required_scopes: ["graphit.use"]
+      # The same issuer and claim mapping authenticate broker consumers and administrators.
+      client_id: "${BROKER_OIDC_CLIENT_ID:?set the confidential browser client ID}"
+      client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
+      redirect_url: "${BROKER_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
+      scopes: ["openid", "profile", "email"]
+      subject_claim: "sub"
+      name_claim: "name"
+      email_claim: "email"
       username_claim: "preferred_username"
-      organization_claim: "organization.id"
-      teams_claim: "groups"
-  # Local identities use Argon2id PHC verifiers plus an external pepper per identity.
-  # Generate BROKER_LOCAL_PASSWORD_HASH with:
-  # graphit-broker --hash-password --password-pepper-env BROKER_LOCAL_PASSWORD_PEPPER
-  # api_keys:
-  #   - username: "automation"
-  #     password_hash: "${BROKER_LOCAL_PASSWORD_HASH}"
-  #     pepper: "${BROKER_LOCAL_PASSWORD_PEPPER}"
-  #     subject: "local-automation"
-  #     organization: "local"
-  #     teams: ["automation"]
-  #     # roles: ["admin"] # use on the first local administrator; see docs/administration.md
+      organization_claim: "$.organization.id"
+      teams_claim: "$.groups[*].name"
+      # Additional token roles are authoritative when configured; every authenticated principal
+      # still receives the built-in default role user.
+      role_claim: "$.realm_access.roles[*]"
+
+# Local users are stored in SQL and managed from /admin/. On a new database, create the first
+# local administrator with `graphit-broker --config config.yaml --bootstrap-admin` (or the explicit
+# stdin variant for automation). The command accepts only a password and creates username admin.
 
 # Configuration is deployment-owned and changes require a restart. The administration API exposes
 # a redacted read-only view. Resource grants, roles, assignments, flows, and sessions remain in SQL.
 administration:
   enabled: true
-  token_pepper: "${BROKER_ADMIN_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
   session_ttl: 8h
   # Public/native Graphit CLI client used only to render exact provider/login snippets in the UI.
   cli:
@@ -48,22 +62,6 @@ administration:
     oidc_client_id: "graphit-cli"
     # Optional. When omitted, Graphit listens on a free loopback port dynamically.
     oidc_redirect_uri: ""
-  oidc:
-    issuer: "${BROKER_ADMIN_OIDC_ISSUER:?set the administration OIDC issuer}"
-    client_id: "${BROKER_ADMIN_OIDC_CLIENT_ID:?set the administration OIDC client ID}"
-    client_secret: "${BROKER_ADMIN_OIDC_CLIENT_SECRET:?set the confidential client secret}"
-    redirect_url: "${BROKER_ADMIN_OIDC_REDIRECT_URL:?set the exact /admin/auth/callback URL}"
-    scopes: ["openid", "profile", "email"]
-    # A plain value is an exact top-level claim key. A value beginning with $ is RFC 9535
-    # JSONPath and can select nested/array values. name_claim and email_claim default as below;
-    # username/organization/teams inherit from a matching consumer issuer when omitted.
-    name_claim: "name"
-    email_claim: "email"
-    username_claim: "preferred_username"
-    organization_claim: "$.organization.id"
-    teams_claim: "$.groups[*].name"
-    # When configured, this is authoritative: token roles replace database role assignments.
-    role_claim: "$.realm_access.roles[*]"
 
 # Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
 # /admin/, then create grants in Resource grants or through /admin/api/v1/grants.

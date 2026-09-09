@@ -1,11 +1,15 @@
 # Database backends
 
-The broker has one SQL database selected by the deployment. It stores resource grants and revision,
-administration roles and assignments, OIDC login state, and sessions. It never stores `config.yml`,
-the expanded configuration, local password hashes/peppers, or deployment secrets. Local sessions
-store only a keyed credential fingerprint so a configuration change can force reauthentication;
-the fingerprint cannot recover the password, PHC, or pepper. In-memory AI result caches and generated
-pre-signed URLs are not persisted.
+The broker has one SQL database selected by the deployment. It stores local users and Argon2id PHC
+verifiers, resource grants and revision, system roles and assignments, OIDC login state, and
+sessions. It never stores `config.yml`, the expanded configuration, the authentication pepper, or
+other deployment secrets. Local sessions store the user's revision so identity/password/state
+changes force reauthentication. In-memory AI result caches and generated pre-signed URLs are not
+persisted.
+
+OIDC login rows contain separate HMAC-SHA-256 values for the state and the browser-binding secret;
+the raw values are never stored. Both HMACs use `authentication.token_pepper` with distinct
+cryptographic domains, and a callback consumes a row only when both values match.
 
 ## Common configuration
 

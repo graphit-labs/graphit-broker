@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 type fakeAdminOIDC struct {
 	identities  map[string]AdminIdentity
+	flows       map[string]struct{ nonce, verifier string }
 	state       string
 	nonce       string
 	verifier    string
@@ -24,6 +26,10 @@ type fakeAdminOIDC struct {
 
 func (f *fakeAdminOIDC) AuthorizationURL(state, nonce, verifier string) string {
 	f.state, f.nonce, f.verifier = state, nonce, verifier
+	if f.flows == nil {
+		f.flows = make(map[string]struct{ nonce, verifier string })
+	}
+	f.flows[state] = struct{ nonce, verifier string }{nonce: nonce, verifier: verifier}
 	values := url.Values{"state": {state}, "nonce": {nonce}, "code_challenge_method": {"S256"}}
 	return "https://identity.example/authorize?" + values.Encode()
 }
@@ -32,18 +38,31 @@ func (f *fakeAdminOIDC) Exchange(_ context.Context, code, verifier, nonce string
 	if f.exchangeErr != nil {
 		return AdminIdentity{}, f.exchangeErr
 	}
-	if code != "valid-code" || verifier == "" || verifier != f.verifier || nonce == "" || nonce != f.nonce {
+	validFlow := false
+	for _, flow := range f.flows {
+		if verifier == flow.verifier && nonce == flow.nonce {
+			validFlow = true
+			break
+		}
+	}
+	if code != "valid-code" || verifier == "" || nonce == "" || !validFlow {
 		return AdminIdentity{}, errors.New("invalid code, PKCE verifier, or nonce")
 	}
 	return f.identities["root-token"], nil
 }
 
-func (f *fakeAdminOIDC) Verify(_ context.Context, raw string) (AdminIdentity, error) {
-	identity, ok := f.identities[raw]
-	if !ok {
-		return AdminIdentity{}, errors.New("invalid ID token")
+type testAdminAuthenticator struct {
+	local      Authenticator
+	identities map[string]AdminIdentity
+}
+
+func (a testAdminAuthenticator) Authenticate(ctx context.Context, raw string) (Principal, error) {
+	if identity, ok := a.identities[raw]; ok {
+		return Principal{Issuer: identity.Issuer, Subject: identity.Subject, Username: identity.Username,
+			Organization: identity.Organization, Teams: identity.Teams, Roles: identity.Roles,
+			RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}, nil
 	}
-	return identity, nil
+	return a.local.Authenticate(ctx, raw)
 }
 
 func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
@@ -59,7 +78,7 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("admin page security headers missing: %#v", page.Header)
 	}
 	pageBody, _ := io.ReadAll(page.Body)
-	if !bytes.Contains(pageBody, []byte("Sign in with OIDC")) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
+	if !bytes.Contains(pageBody, []byte("Sign in with OIDC")) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
 		t.Fatalf("administration UI is incomplete: %s", pageBody)
 	}
 	if bytes.Contains(pageBody, []byte("sessionStorage")) || bytes.Contains(pageBody, []byte("Administrator bearer token")) {
@@ -83,6 +102,13 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("invalid state status=%s err=%v", statusText(invalid), err)
 	}
 	_ = invalid.Body.Close()
+
+	foreignClient := noRedirectClient()
+	foreign, err := foreignClient.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	if err != nil || foreign.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("callback without browser binding status=%s err=%v", statusText(foreign), err)
+	}
+	_ = foreign.Body.Close()
 
 	callback, err := client.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
 	if err != nil || callback.StatusCode != http.StatusSeeOther {
@@ -151,6 +177,57 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	_ = response.Body.Close()
 }
 
+func TestAdminOIDCAllowsConcurrentBrowserFlows(t *testing.T) {
+	service, httpServer, provider := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	client := noRedirectClient()
+
+	states := make([]string, 0, 2)
+	for range 2 {
+		login, err := client.Get(httpServer.URL + "/admin/auth/login")
+		if err != nil || login.StatusCode != http.StatusFound {
+			t.Fatalf("login status=%s err=%v", statusText(login), err)
+		}
+		location, _ := url.Parse(login.Header.Get("Location"))
+		states = append(states, location.Query().Get("state"))
+		_ = login.Body.Close()
+	}
+	if states[0] == states[1] || len(provider.flows) != 2 {
+		t.Fatalf("flows were not independent: states=%v provider=%v", states, provider.flows)
+	}
+	for _, state := range states {
+		callback, err := client.Get(httpServer.URL + "/admin/auth/callback?state=" + url.QueryEscape(state) + "&code=valid-code")
+		if err != nil || callback.StatusCode != http.StatusSeeOther {
+			t.Fatalf("callback state=%q status=%s err=%v", state, statusText(callback), err)
+		}
+		_ = callback.Body.Close()
+	}
+}
+
+func TestOIDCFlowCookieSecurityAttributes(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	expires := time.Now().Add(oidcFlowTTL)
+
+	loopback := service.oidcFlowCookie("state-a", "binding", expires)
+	if loopback.Name == service.oidcFlowCookieName("state-b") || strings.HasPrefix(loopback.Name, "__Host-") {
+		t.Fatalf("loopback flow cookie name=%q", loopback.Name)
+	}
+	if !loopback.HttpOnly || loopback.SameSite != http.SameSiteLaxMode || loopback.Secure || loopback.Path != "/" || loopback.MaxAge <= 0 {
+		t.Fatalf("loopback flow cookie=%#v", loopback)
+	}
+
+	state := *service.runtime()
+	state.config.Authentication.OIDC[0].RedirectURL = "https://broker.example/admin/auth/callback"
+	service.state.Store(&state)
+	production := service.oidcFlowCookie("state-a", "binding", expires)
+	if !strings.HasPrefix(production.Name, "__Host-graphit_oidc_flow_") || !production.Secure || !production.HttpOnly || production.Path != "/" || production.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("production flow cookie=%#v", production)
+	}
+}
+
 func TestAdminRBACBootstrapAssignmentAndRevocation(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
@@ -159,7 +236,7 @@ func TestAdminRBACBootstrapAssignmentAndRevocation(t *testing.T) {
 	if status := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/roles", "other-token", "").StatusCode; status != http.StatusForbidden {
 		t.Fatalf("unassigned administrator status=%d", status)
 	}
-	assignment := `{"subject":"other-subject","role":"admin"}`
+	assignment := `{"subject":"https://identity.example|other-subject","role":"admin"}`
 	assigned := bearerRequest(t, http.MethodPost, httpServer.URL+"/admin/api/v1/role-assignments", "root-token", assignment)
 	if assigned.StatusCode != http.StatusNoContent {
 		t.Fatalf("assign role status=%d", assigned.StatusCode)
@@ -188,10 +265,10 @@ func TestClaimRolesOverrideLocalRoleAssignments(t *testing.T) {
 	defer httpServer.Close()
 
 	state := *service.runtime()
-	state.config.Administration.OIDC.RoleClaim = "$.realm_access.roles[*]"
+	state.config.Authentication.OIDC[0].RoleClaim = "$.realm_access.roles[*]"
 	service.state.Store(&state)
 	ctx := context.Background()
-	if err := service.control.AssignRole(ctx, "other-subject", adminRole); err != nil {
+	if err := service.control.AssignRole(ctx, "https://identity.example|other-subject", adminRole); err != nil {
 		t.Fatal(err)
 	}
 	identity := provider.identities["other-token"]
@@ -223,10 +300,10 @@ func TestClaimRolesOverrideLocalRoleAssignments(t *testing.T) {
 		t.Fatalf("session role view=%#v", sessionBody)
 	}
 
-	if err := service.control.RevokeRole(ctx, "other-subject", adminRole); err != nil {
+	if err := service.control.RevokeRole(ctx, "https://identity.example|other-subject", adminRole); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.control.AssignRole(ctx, "other-subject", userRole); err != nil {
+	if err := service.control.AssignRole(ctx, "https://identity.example|other-subject", userRole); err != nil {
 		t.Fatal(err)
 	}
 	identity.Roles = []string{adminRole}
@@ -238,7 +315,7 @@ func TestClaimRolesOverrideLocalRoleAssignments(t *testing.T) {
 	}
 
 	state = *service.runtime()
-	state.config.Administration.OIDC.RoleClaim = ""
+	state.config.Authentication.OIDC[0].RoleClaim = ""
 	service.state.Store(&state)
 	databaseRole := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "other-token", "")
 	_ = databaseRole.Body.Close()
@@ -253,7 +330,7 @@ func TestUserRoleListsOnlyAccessibleProjectsAndProviderCommand(t *testing.T) {
 	defer httpServer.Close()
 
 	ctx := context.Background()
-	if err := service.control.AssignRole(ctx, "other-subject", userRole); err != nil {
+	if err := service.control.AssignRole(ctx, "https://identity.example|other-subject", userRole); err != nil {
 		t.Fatal(err)
 	}
 	document, err := service.control.CreateResourceGrant(ctx, 1, ACLRuleConfig{
@@ -328,13 +405,13 @@ func TestOIDCProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
 	}
 }
 
-func TestAPIKeyUserCanCreateUISessionAndReceivesLocalCLISnippet(t *testing.T) {
+func TestLocalUserCanAuthenticateByBearerAndCreateUISession(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
 
 	ctx := context.Background()
-	if err := service.control.AssignRole(ctx, "consumer-subject", userRole); err != nil {
+	if err := service.control.AssignRole(ctx, "local|consumer-subject", userRole); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.control.CreateResourceGrant(ctx, 1, ACLRuleConfig{
@@ -343,6 +420,16 @@ func TestAPIKeyUserCanCreateUISessionAndReceivesLocalCLISnippet(t *testing.T) {
 	}, service.runtime().config.Services.S3); err != nil {
 		t.Fatal(err)
 	}
+	bearerProjects := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/projects", "consumer:consumer-secret", "")
+	if bearerProjects.StatusCode != http.StatusOK {
+		t.Fatalf("local bearer projects status=%d", bearerProjects.StatusCode)
+	}
+	_ = bearerProjects.Body.Close()
+	bearerConfig := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "consumer:consumer-secret", "")
+	if bearerConfig.StatusCode != http.StatusForbidden {
+		t.Fatalf("local bearer configuration status=%d", bearerConfig.StatusCode)
+	}
+	_ = bearerConfig.Body.Close()
 
 	invalid := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"wrong"}`)
 	if invalid.StatusCode != http.StatusUnauthorized {
@@ -387,13 +474,36 @@ func TestAPIKeyUserCanCreateUISessionAndReceivesLocalCLISnippet(t *testing.T) {
 	}
 }
 
-func TestLocalOnlyAPIKeyCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
+func TestAdminLocalLoginReturnsRetryAfterAfterDefaultFailureLimit(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	for range 5 {
+		response := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"incorrect-password"}`)
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("failed login status=%d", response.StatusCode)
+		}
+		_ = response.Body.Close()
+	}
+	limited := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"consumer-secret"}`)
+	defer limited.Body.Close()
+	if limited.StatusCode != http.StatusTooManyRequests || limited.Header.Get("Retry-After") == "" {
+		t.Fatalf("rate-limited login status=%d retry-after=%q", limited.StatusCode, limited.Header.Get("Retry-After"))
+	}
+	direct := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "consumer:consumer-secret", "")
+	defer direct.Body.Close()
+	if direct.StatusCode != http.StatusTooManyRequests || direct.Header.Get("Retry-After") == "" {
+		t.Fatalf("shared bearer rate limit status=%d retry-after=%q", direct.StatusCode, direct.Header.Get("Retry-After"))
+	}
+}
+
+func TestLocalOnlyUserCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
-	cfg.Authentication.APIKeys = []APIKeyConfig{{Username: "bootstrap", PasswordHash: mustPasswordHash(t, "bootstrap-password"), Pepper: testPasswordPepper, Subject: "local-root", Roles: []string{adminRole}}}
+	cfg.Authentication.TokenPepper = testPasswordPepper
+	cfg.Database.DSN = t.TempDir() + "/broker.db"
 	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour,
-		TokenPepper: testTokenPepper,
-		CLI:         GraphitCLIConfig{ProviderName: "local-broker", ProfileName: "local-root"}}
-	service, err := newServerWithFactory(context.Background(), cfg, func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error) {
+		CLI: GraphitCLIConfig{ProviderName: "local-broker", ProfileName: "local-root"}}
+	service, err := newServerWithFactory(context.Background(), cfg, func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error) {
 		t.Fatal("OIDC provider factory was called for local-only administration")
 		return nil, nil
 	})
@@ -401,6 +511,9 @@ func TestLocalOnlyAPIKeyCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
+	if err := service.control.BootstrapLocalAdmin(context.Background(), mustPasswordHash(t, "bootstrap-password")); err != nil {
+		t.Fatal(err)
+	}
 	httpServer := httptest.NewServer(service)
 	defer httpServer.Close()
 
@@ -415,7 +528,7 @@ func TestLocalOnlyAPIKeyCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 		t.Fatalf("login options=%#v", options)
 	}
 
-	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"bootstrap","password":"bootstrap-password"}`)
+	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"admin","password":"bootstrap-password"}`)
 	if login.StatusCode != http.StatusNoContent || len(login.Cookies()) == 0 {
 		t.Fatalf("local bootstrap login status=%d cookies=%#v", login.StatusCode, login.Cookies())
 	}
@@ -439,12 +552,17 @@ func TestLocalOnlyAPIKeyCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	}
 	_ = json.NewDecoder(sessionResponse.Body).Decode(&sessionBody)
 	_ = sessionResponse.Body.Close()
-	if sessionBody.RoleSource != "configuration" {
+	if sessionBody.RoleSource != "database" {
 		t.Fatalf("local bootstrap role source=%q", sessionBody.RoleSource)
 	}
-	state := *service.runtime()
-	state.config.Authentication.APIKeys[0].Pepper = "rotated-password-pepper-0123456789"
-	service.state.Store(&state)
+	user, err := service.control.LocalUserByUsername(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.PasswordHash = mustPasswordHash(t, "replacement-password")
+	if err := service.control.UpdateLocalUser(context.Background(), "admin", user); err != nil {
+		t.Fatal(err)
+	}
 	staleRequest, _ := http.NewRequest(http.MethodGet, httpServer.URL+"/admin/api/v1/config", nil)
 	staleRequest.AddCookie(cookie)
 	staleResponse, err := http.DefaultClient.Do(staleRequest)
@@ -454,37 +572,90 @@ func TestLocalOnlyAPIKeyCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	_ = staleResponse.Body.Close()
 }
 
-func TestLocalSessionRefreshesAfterCredentialConfigurationChanges(t *testing.T) {
-	key := APIKeyConfig{Username: "bootstrap", PasswordHash: mustPasswordHash(t, "bootstrap-password"), Pepper: testPasswordPepper, Subject: "local-root", Roles: []string{adminRole}}
-	server := &Server{}
-	server.state.Store(&runtimeState{config: Config{
-		Authentication: AuthenticationConfig{APIKeys: []APIKeyConfig{key}},
-		Administration: AdministrationConfig{TokenPepper: testTokenPepper},
-	}})
-	session := AdminSession{Issuer: "apikey:bootstrap", Subject: key.Subject, Username: key.Username,
-		Roles: []string{adminRole}, RolesFromClaim: true, RoleClaimSelector: localAPIKeyRoleSource,
-		CredentialFingerprint: localCredentialFingerprint(key, testTokenPepper)}
-	if server.sessionNeedsRoleRefresh(session) {
+func TestLocalSessionRefreshesAfterUserRevisionChanges(t *testing.T) {
+	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.BootstrapLocalAdmin(context.Background(), mustPasswordHash(t, "bootstrap-password")); err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.LocalUserByUsername(context.Background(), "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{control: store}
+	server.state.Store(&runtimeState{config: Config{Authentication: AuthenticationConfig{TokenPepper: testPasswordPepper}}})
+	session := AdminSession{Issuer: localIdentityIssuer, Subject: user.Subject, Username: user.Username, LocalUserRevision: user.Revision}
+	if server.sessionNeedsRoleRefresh(context.Background(), session) {
 		t.Fatal("unchanged local credential required a refresh")
 	}
-	for name, mutate := range map[string]func(*APIKeyConfig){
-		"username":      func(candidate *APIKeyConfig) { candidate.Username = "renamed" },
-		"password hash": func(candidate *APIKeyConfig) { candidate.PasswordHash = mustPasswordHash(t, "new-password") },
-		"pepper":        func(candidate *APIKeyConfig) { candidate.Pepper = "rotated-password-pepper-0123456789" },
-		"roles":         func(candidate *APIKeyConfig) { candidate.Roles = []string{userRole} },
-	} {
-		t.Run(name, func(t *testing.T) {
-			changed := key
-			mutate(&changed)
-			server.state.Store(&runtimeState{config: Config{
-				Authentication: AuthenticationConfig{APIKeys: []APIKeyConfig{changed}},
-				Administration: AdministrationConfig{TokenPepper: testTokenPepper},
-			}})
-			if !server.sessionNeedsRoleRefresh(session) {
-				t.Fatal("changed local credential did not require a refresh")
-			}
-		})
+	user.Name = "Changed"
+	if err := store.UpdateLocalUser(context.Background(), "admin", user); err != nil {
+		t.Fatal(err)
 	}
+	if !server.sessionNeedsRoleRefresh(context.Background(), session) {
+		t.Fatal("changed local user did not require a refresh")
+	}
+}
+
+func TestAdminLocalUserCRUDIsProtectedAndNeverReturnsPasswordHash(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	rawSession := "root-cookie-session"
+	csrf := "root-csrf-token"
+	if err := service.control.CreateSession(context.Background(), rawSession, AdminSession{
+		Issuer: "https://identity.example", Subject: "root-subject", Username: "root", CSRFToken: csrf, ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	short := bearerRequest(t, http.MethodPost, httpServer.URL+"/admin/api/v1/local-users", "root-token", `{"username":"short","subject":"local-short","password":"short-password","enabled":true}`)
+	if short.StatusCode != http.StatusBadRequest {
+		t.Fatalf("short local password status=%d", short.StatusCode)
+	}
+	_ = short.Body.Close()
+	body := `{"username":"alice","subject":"local-alice","password":"initial-password","name":"Alice","roles":[],"enabled":true}`
+	request, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/local-users", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: rawSession})
+	response, err := http.DefaultClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing CSRF status=%s err=%v", statusText(response), err)
+	}
+	_ = response.Body.Close()
+	request, _ = http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/local-users", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-CSRF-Token", csrf)
+	request.AddCookie(&http.Cookie{Name: adminCookieName, Value: rawSession})
+	response, err = http.DefaultClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusCreated {
+		t.Fatalf("create local user status=%s err=%v", statusText(response), err)
+	}
+	_ = response.Body.Close()
+	listed := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/local-users", "root-token", "")
+	encoded, _ := io.ReadAll(listed.Body)
+	_ = listed.Body.Close()
+	if listed.StatusCode != http.StatusOK || bytes.Contains(encoded, []byte("password_hash")) || bytes.Contains(encoded, []byte("initial-secret")) || !bytes.Contains(encoded, []byte(`"roles":["user"]`)) {
+		t.Fatalf("local user list status=%d body=%s", listed.StatusCode, encoded)
+	}
+	updated := `{"username":"alice-renamed","subject":"local-alice","password":"replacement-secret","name":"Alice Updated","roles":["admin"],"enabled":true}`
+	put := bearerRequest(t, http.MethodPut, httpServer.URL+"/admin/api/v1/local-users/alice", "root-token", updated)
+	if put.StatusCode != http.StatusNoContent {
+		t.Fatalf("update local user status=%d", put.StatusCode)
+	}
+	_ = put.Body.Close()
+	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"alice-renamed","password":"replacement-secret"}`)
+	if login.StatusCode != http.StatusNoContent {
+		t.Fatalf("updated local user login status=%d", login.StatusCode)
+	}
+	_ = login.Body.Close()
+	deleted := bearerRequest(t, http.MethodDelete, httpServer.URL+"/admin/api/v1/local-users/alice-renamed", "root-token", "")
+	if deleted.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete local user status=%d", deleted.StatusCode)
+	}
+	_ = deleted.Body.Close()
 }
 
 func postJSON(t *testing.T, endpoint, body string) *http.Response {
@@ -516,7 +687,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	}
 	configBody, _ := io.ReadAll(configResponse.Body)
 	_ = configResponse.Body.Close()
-	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTSECRET", testTokenPepper, testPasswordPepper, service.runtime().config.Database.DSN, service.runtime().config.Authentication.APIKeys[0].PasswordHash} {
+	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTSECRET", testPasswordPepper, service.runtime().config.Database.DSN} {
 		if bytes.Contains(configBody, []byte(secret)) {
 			t.Fatalf("configuration response leaked %q: %s", secret, configBody)
 		}
@@ -527,7 +698,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	if err := json.Unmarshal(configBody, &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(envelope.YAML, configuredSecret); count < 8 {
+	if count := strings.Count(envelope.YAML, configuredSecret); count < 6 {
 		t.Fatalf("expected redacted placeholders, count=%d YAML=%s", count, envelope.YAML)
 	}
 	update, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/config", strings.NewReader(`{"yaml":"services: {}"}`))
@@ -610,24 +781,38 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.Server, *fakeAdminOIDC) {
 	t.Helper()
 	cfg := testServerConfig(embeddingURL, "http://127.0.0.1:1")
-	cfg.Authentication.APIKeys = []APIKeyConfig{{Username: "consumer", PasswordHash: mustPasswordHash(t, "consumer-secret"), Pepper: testPasswordPepper, Subject: "consumer-subject"}}
+	cfg.Authentication = AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{
+		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"}, SubjectClaim: "sub", UsernameClaim: "preferred_username",
+		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/admin/auth/callback", Scopes: []string{"openid", "profile", "email"},
+	}}}
 	cfg.Services.Embeddings.Upstream.APIKey = "embedding-secret"
 	cfg.Services.Rerank.Upstream.APIKey = "rerank-secret"
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
-	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour,
-		TokenPepper: testTokenPepper,
-		OIDC:        AdminOIDCConfig{Issuer: "https://identity.example", ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/admin/auth/callback", Scopes: []string{"openid", "profile", "email"}}}
+	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour}
 	provider := &fakeAdminOIDC{identities: map[string]AdminIdentity{
 		"root-token": {Issuer: "https://identity.example", Subject: "root-subject", Name: "Root", Email: "root@example.test",
 			Username: "root", Organization: "acme", Teams: []string{"platform"}},
 		"other-token": {Issuer: "https://identity.example", Subject: "other-subject", Name: "Other",
 			Username: "alice", Organization: "acme", Teams: []string{"platform"}},
 	}}
-	service, err := newServerWithFactory(context.Background(), cfg, func(context.Context, AdminOIDCConfig) (AdminIdentityProvider, error) { return provider, nil })
+	control, err := OpenControlStore(cfg.Database, cfg.Authentication.TokenPepper)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.control.AssignRole(context.Background(), "root-subject", adminRole); err != nil {
+	if err := control.CreateLocalUser(context.Background(), LocalUser{Username: "consumer", Subject: "consumer-subject", PasswordHash: mustPasswordHash(t, "consumer-secret"), Enabled: true}); err != nil {
+		control.Close()
+		t.Fatal(err)
+	}
+	localConfig := cfg.Authentication
+	localConfig.OIDC = nil
+	localAuthenticator, err := NewAuthenticator(context.Background(), localConfig, control)
+	if err != nil {
+		control.Close()
+		t.Fatal(err)
+	}
+	authenticator := testAdminAuthenticator{local: localAuthenticator, identities: provider.identities}
+	service := newServerWithDependencies(cfg, authenticator, NewAIService(cfg.Services), nil, control, control, provider)
+	if err := service.control.AssignRole(context.Background(), "https://identity.example|root-subject", adminRole); err != nil {
 		service.Close()
 		t.Fatal(err)
 	}
@@ -652,5 +837,6 @@ func bearerRequest(t *testing.T, method, endpoint, token, body string) *http.Res
 }
 
 func noRedirectClient() *http.Client {
-	return &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	jar, _ := cookiejar.New(nil)
+	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }

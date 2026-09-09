@@ -52,35 +52,39 @@ type ServerConfig struct {
 }
 
 type AuthenticationConfig struct {
-	OIDC    []OIDCIssuerConfig `yaml:"oidc"`
-	APIKeys []APIKeyConfig     `yaml:"api_keys"`
+	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
+	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
+	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
+}
+
+type LocalAuthenticationRateLimit struct {
+	MaxFailures   int           `yaml:"max_failures" json:"max_failures"`
+	Window        time.Duration `yaml:"window" json:"window"`
+	Lockout       time.Duration `yaml:"lockout" json:"lockout"`
+	MaxConcurrent int           `yaml:"max_concurrent" json:"max_concurrent"`
 }
 
 type OIDCIssuerConfig struct {
-	Issuer            string   `yaml:"issuer"`
-	Audiences         []string `yaml:"audiences"`
-	RequiredScopes    []string `yaml:"required_scopes"`
-	UsernameClaim     string   `yaml:"username_claim"`
-	OrganizationClaim string   `yaml:"organization_claim"`
-	TeamsClaim        string   `yaml:"teams_claim"`
-}
-
-type APIKeyConfig struct {
-	Username     string   `yaml:"username"`
-	PasswordHash string   `yaml:"password_hash"`
-	Pepper       string   `yaml:"pepper"`
-	Subject      string   `yaml:"subject"`
-	Organization string   `yaml:"organization"`
-	Teams        []string `yaml:"teams"`
-	Roles        []string `yaml:"roles"`
+	Issuer            string   `yaml:"issuer" json:"issuer"`
+	Audiences         []string `yaml:"audiences" json:"audiences"`
+	RequiredScopes    []string `yaml:"required_scopes" json:"required_scopes,omitempty"`
+	ClientID          string   `yaml:"client_id" json:"client_id,omitempty"`
+	ClientSecret      string   `yaml:"client_secret" json:"client_secret,omitempty"`
+	RedirectURL       string   `yaml:"redirect_url" json:"redirect_url,omitempty"`
+	Scopes            []string `yaml:"scopes" json:"scopes,omitempty"`
+	SubjectClaim      string   `yaml:"subject_claim" json:"subject_claim"`
+	NameClaim         string   `yaml:"name_claim" json:"name_claim,omitempty"`
+	EmailClaim        string   `yaml:"email_claim" json:"email_claim,omitempty"`
+	UsernameClaim     string   `yaml:"username_claim" json:"username_claim"`
+	OrganizationClaim string   `yaml:"organization_claim" json:"organization_claim,omitempty"`
+	TeamsClaim        string   `yaml:"teams_claim" json:"teams_claim,omitempty"`
+	RoleClaim         string   `yaml:"role_claim" json:"role_claim,omitempty"`
 }
 
 type AdministrationConfig struct {
-	Enabled     bool             `yaml:"enabled" json:"enabled"`
-	TokenPepper string           `yaml:"token_pepper" json:"token_pepper,omitempty"`
-	SessionTTL  time.Duration    `yaml:"session_ttl" json:"session_ttl"`
-	OIDC        AdminOIDCConfig  `yaml:"oidc" json:"oidc"`
-	CLI         GraphitCLIConfig `yaml:"cli" json:"cli"`
+	Enabled    bool             `yaml:"enabled" json:"enabled"`
+	SessionTTL time.Duration    `yaml:"session_ttl" json:"session_ttl"`
+	CLI        GraphitCLIConfig `yaml:"cli" json:"cli"`
 }
 
 type GraphitCLIConfig struct {
@@ -90,24 +94,9 @@ type GraphitCLIConfig struct {
 	OIDCRedirectURI string `yaml:"oidc_redirect_uri" json:"oidc_redirect_uri,omitempty"`
 }
 
-type AdminOIDCConfig struct {
-	Issuer            string   `yaml:"issuer" json:"issuer"`
-	ClientID          string   `yaml:"client_id" json:"client_id"`
-	ClientSecret      string   `yaml:"client_secret" json:"client_secret,omitempty"`
-	RedirectURL       string   `yaml:"redirect_url" json:"redirect_url"`
-	Scopes            []string `yaml:"scopes" json:"scopes,omitempty"`
-	NameClaim         string   `yaml:"name_claim" json:"name_claim,omitempty"`
-	EmailClaim        string   `yaml:"email_claim" json:"email_claim,omitempty"`
-	UsernameClaim     string   `yaml:"username_claim" json:"username_claim,omitempty"`
-	OrganizationClaim string   `yaml:"organization_claim" json:"organization_claim,omitempty"`
-	TeamsClaim        string   `yaml:"teams_claim" json:"teams_claim,omitempty"`
-	RoleClaim         string   `yaml:"role_claim" json:"role_claim,omitempty"`
-}
-
-func (c AdminOIDCConfig) configured() bool {
-	return strings.TrimSpace(c.Issuer) != "" || strings.TrimSpace(c.ClientID) != "" ||
-		strings.TrimSpace(c.ClientSecret) != "" || strings.TrimSpace(c.RedirectURL) != "" ||
-		strings.TrimSpace(c.RoleClaim) != ""
+func (c OIDCIssuerConfig) loginConfigured() bool {
+	return strings.TrimSpace(c.ClientID) != "" || strings.TrimSpace(c.ClientSecret) != "" ||
+		strings.TrimSpace(c.RedirectURL) != ""
 }
 
 type ACLRuleConfig struct {
@@ -296,17 +285,9 @@ func (c *Config) defaults() {
 	if c.Server.MaxRequestBytes == 0 {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
+	c.Authentication.LocalRateLimit.setDefaults()
 	if c.Administration.SessionTTL == 0 {
 		c.Administration.SessionTTL = 8 * time.Hour
-	}
-	if len(c.Administration.OIDC.Scopes) == 0 {
-		c.Administration.OIDC.Scopes = []string{"openid", "profile", "email"}
-	}
-	if c.Administration.OIDC.NameClaim == "" {
-		c.Administration.OIDC.NameClaim = "name"
-	}
-	if c.Administration.OIDC.EmailClaim == "" {
-		c.Administration.OIDC.EmailClaim = "email"
 	}
 	if c.Administration.CLI.ProviderName == "" {
 		c.Administration.CLI.ProviderName = "organization-broker"
@@ -314,20 +295,20 @@ func (c *Config) defaults() {
 	if c.Administration.CLI.ProfileName == "" {
 		c.Administration.CLI.ProfileName = c.Administration.CLI.ProviderName
 	}
-	for _, issuer := range c.Authentication.OIDC {
-		if strings.TrimRight(strings.TrimSpace(issuer.Issuer), "/") != strings.TrimRight(strings.TrimSpace(c.Administration.OIDC.Issuer), "/") {
-			continue
+	for i := range c.Authentication.OIDC {
+		issuer := &c.Authentication.OIDC[i]
+		if issuer.SubjectClaim == "" {
+			issuer.SubjectClaim = "sub"
 		}
-		if c.Administration.OIDC.UsernameClaim == "" {
-			c.Administration.OIDC.UsernameClaim = issuer.UsernameClaim
+		if issuer.NameClaim == "" {
+			issuer.NameClaim = "name"
 		}
-		if c.Administration.OIDC.OrganizationClaim == "" {
-			c.Administration.OIDC.OrganizationClaim = issuer.OrganizationClaim
+		if issuer.EmailClaim == "" {
+			issuer.EmailClaim = "email"
 		}
-		if c.Administration.OIDC.TeamsClaim == "" {
-			c.Administration.OIDC.TeamsClaim = issuer.TeamsClaim
+		if len(issuer.Scopes) == 0 && issuer.loginConfigured() {
+			issuer.Scopes = []string{"openid", "profile", "email"}
 		}
-		break
 	}
 	if strings.TrimSpace(c.Models.Directory) == "" {
 		c.Models.Directory = "/var/cache/graphit-broker/models"
@@ -385,6 +366,34 @@ func (c *Config) defaults() {
 	c.Services.Rerank.Cache.setDefaults()
 }
 
+func (c *LocalAuthenticationRateLimit) setDefaults() {
+	if c.MaxFailures == 0 {
+		c.MaxFailures = 5
+	}
+	if c.Window == 0 {
+		c.Window = time.Minute
+	}
+	if c.Lockout == 0 {
+		c.Lockout = 5 * time.Minute
+	}
+	if c.MaxConcurrent == 0 {
+		c.MaxConcurrent = 2
+	}
+}
+
+func (c LocalAuthenticationRateLimit) validate() error {
+	if c.MaxFailures <= 0 {
+		return errors.New("authentication.local_rate_limit.max_failures must be positive")
+	}
+	if c.Window <= 0 || c.Lockout <= 0 {
+		return errors.New("authentication.local_rate_limit window and lockout must be positive")
+	}
+	if c.MaxConcurrent <= 0 {
+		return errors.New("authentication.local_rate_limit.max_concurrent must be positive")
+	}
+	return nil
+}
+
 func (c *EmbeddingServiceConfig) setDefaults() {
 	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
 	if c.Backend == "" {
@@ -432,6 +441,10 @@ func (c Config) Validate() error {
 	if c.Database.ConnMaxLifetime <= 0 {
 		return errors.New("database.conn_max_lifetime must be positive")
 	}
+	if err := c.Authentication.LocalRateLimit.validate(); err != nil {
+		return err
+	}
+	loginProviders := 0
 	for i, issuer := range c.Authentication.OIDC {
 		if err := validateHTTPSURL(issuer.Issuer, "OIDC issuer"); err != nil {
 			return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
@@ -439,67 +452,37 @@ func (c Config) Validate() error {
 		if len(issuer.Audiences) == 0 {
 			return fmt.Errorf("authentication.oidc[%d]: at least one audience is required", i)
 		}
+		if strings.TrimSpace(issuer.SubjectClaim) == "" {
+			return fmt.Errorf("authentication.oidc[%d]: subject_claim is required", i)
+		}
 		if issuer.UsernameClaim == "" {
 			return fmt.Errorf("authentication.oidc[%d]: username_claim is required", i)
 		}
 		for _, mapping := range []struct{ field, selector string }{
+			{"subject_claim", issuer.SubjectClaim}, {"name_claim", issuer.NameClaim}, {"email_claim", issuer.EmailClaim},
 			{"username_claim", issuer.UsernameClaim}, {"organization_claim", issuer.OrganizationClaim},
-			{"teams_claim", issuer.TeamsClaim},
+			{"teams_claim", issuer.TeamsClaim}, {"role_claim", issuer.RoleClaim},
 		} {
 			if err := validateClaimSelector(mapping.selector); err != nil {
 				return fmt.Errorf("authentication.oidc[%d].%s: %w", i, mapping.field, err)
 			}
 		}
-	}
-	apiKeyUsernames := map[string]struct{}{}
-	for i, key := range c.Authentication.APIKeys {
-		if !safeSegment(key.Username) {
-			return fmt.Errorf("authentication.api_keys[%d]: username must be a safe non-empty identifier", i)
-		}
-		if _, duplicate := apiKeyUsernames[key.Username]; duplicate {
-			return fmt.Errorf("authentication.api_keys[%d]: duplicate username %q", i, key.Username)
-		}
-		apiKeyUsernames[key.Username] = struct{}{}
-		if key.Subject == "" {
-			return fmt.Errorf("authentication.api_keys[%d]: subject is required", i)
-		}
-		if _, err := parsePasswordVerifier(key.PasswordHash); err != nil {
-			return fmt.Errorf("authentication.api_keys[%d].password_hash: %w", i, err)
-		}
-		if len(key.Pepper) < passwordPepperMinimumBytes {
-			return fmt.Errorf("authentication.api_keys[%d].pepper must contain at least %d bytes", i, passwordPepperMinimumBytes)
-		}
-		for _, role := range cleanStrings(key.Roles) {
-			if !safeSegment(role) {
-				return fmt.Errorf("authentication.api_keys[%d].roles contains unsafe role %q", i, role)
+		if issuer.loginConfigured() {
+			loginProviders++
+			if strings.TrimSpace(issuer.ClientID) == "" {
+				return fmt.Errorf("authentication.oidc[%d].client_id is required for browser login", i)
+			}
+			if err := validateHTTPSOrLoopbackURL(issuer.RedirectURL, "OIDC redirect URL"); err != nil {
+				return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
 			}
 		}
+	}
+	if loginProviders > 1 {
+		return errors.New("authentication.oidc must configure at most one browser login client")
 	}
 	if c.Administration.Enabled {
-		if len(c.Administration.TokenPepper) < tokenPepperMinimumBytes {
-			return fmt.Errorf("administration.token_pepper must contain at least %d bytes", tokenPepperMinimumBytes)
-		}
-		if c.Administration.OIDC.configured() {
-			if err := validateHTTPSURL(c.Administration.OIDC.Issuer, "administration OIDC issuer"); err != nil {
-				return err
-			}
-			if strings.TrimSpace(c.Administration.OIDC.ClientID) == "" {
-				return errors.New("administration.oidc.client_id is required when administration OIDC is configured")
-			}
-			if err := validateHTTPSOrLoopbackURL(c.Administration.OIDC.RedirectURL, "administration OIDC redirect URL"); err != nil {
-				return err
-			}
-			for _, mapping := range []struct{ field, selector string }{
-				{"name_claim", c.Administration.OIDC.NameClaim}, {"email_claim", c.Administration.OIDC.EmailClaim},
-				{"username_claim", c.Administration.OIDC.UsernameClaim}, {"organization_claim", c.Administration.OIDC.OrganizationClaim},
-				{"teams_claim", c.Administration.OIDC.TeamsClaim}, {"role_claim", c.Administration.OIDC.RoleClaim},
-			} {
-				if err := validateClaimSelector(mapping.selector); err != nil {
-					return fmt.Errorf("administration.oidc.%s: %w", mapping.field, err)
-				}
-			}
-		} else if len(c.Authentication.APIKeys) == 0 {
-			return errors.New("administration requires an OIDC client or at least one authentication.api_keys identity")
+		if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
+			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when administration is enabled", tokenPepperMinimumBytes)
 		}
 		if c.Administration.SessionTTL < 5*time.Minute || c.Administration.SessionTTL > 7*24*time.Hour {
 			return errors.New("administration.session_ttl must be between 5m and 168h")

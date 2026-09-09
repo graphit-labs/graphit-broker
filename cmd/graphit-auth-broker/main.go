@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,39 +26,40 @@ func main() {
 	setupModels := flag.Bool("setup-models", false, "download and verify selected local model artifacts, then exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	hashPassword := flag.Bool("hash-password", false, "read a password securely from the terminal and print a peppered Argon2id PHC verifier")
-	hashPasswordStdin := flag.Bool("hash-password-stdin", false, "read a password from standard input and print a peppered Argon2id PHC verifier")
-	passwordPepperEnv := flag.String("password-pepper-env", "", "environment variable containing the password pepper (required with password hashing)")
+	bootstrapAdmin := flag.Bool("bootstrap-admin", false, "create the first local administrator using a password read securely from the terminal")
+	bootstrapAdminStdin := flag.Bool("bootstrap-admin-stdin", false, "create the first local administrator using a password read from standard input")
 	flag.Parse()
-	if *hashPassword && *hashPasswordStdin {
-		fmt.Fprintln(os.Stderr, "choose either --hash-password or --hash-password-stdin")
+	if *bootstrapAdmin && *bootstrapAdminStdin {
+		fmt.Fprintln(os.Stderr, "choose either --bootstrap-admin or --bootstrap-admin-stdin")
 		os.Exit(2)
 	}
-	if *hashPassword || *hashPasswordStdin {
+	if *bootstrapAdmin || *bootstrapAdminStdin {
 		if flag.NArg() != 0 {
-			fmt.Fprintln(os.Stderr, "password hashing does not accept password arguments")
+			fmt.Fprintln(os.Stderr, "administrator bootstrap does not accept arguments")
 			os.Exit(2)
 		}
-		pepper, err := passwordPepperFromEnvironment(*passwordPepperEnv, os.LookupEnv)
+		cfg, err := broker.LoadConfig(*configPath)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "password hashing failed:", err)
+			fmt.Fprintln(os.Stderr, "administrator bootstrap failed:", err)
 			os.Exit(1)
 		}
-		defer zeroBytes(pepper)
-		if *hashPassword {
-			err = hashPasswordFromTerminal(os.Stdin, os.Stderr, os.Stdout, pepper)
+		var password []byte
+		if *bootstrapAdmin {
+			password, err = passwordFromTerminal(os.Stdin, os.Stderr)
 		} else {
-			err = hashPasswordFromStdin(os.Stdin, os.Stdout, pepper)
+			password, err = passwordFromStdin(os.Stdin)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "password hashing failed:", err)
+			fmt.Fprintln(os.Stderr, "administrator bootstrap failed:", err)
 			os.Exit(1)
 		}
+		defer zeroBytes(password)
+		if err := bootstrapLocalAdmin(context.Background(), cfg, password); err != nil {
+			fmt.Fprintln(os.Stderr, "administrator bootstrap failed:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, "local administrator created")
 		return
-	}
-	if *passwordPepperEnv != "" {
-		fmt.Fprintln(os.Stderr, "--password-pepper-env requires --hash-password or --hash-password-stdin")
-		os.Exit(2)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{}))
 	slog.SetDefault(logger)
@@ -141,13 +141,12 @@ func main() {
 	}
 }
 
-func hashPasswordFromStdin(input io.Reader, output io.Writer, pepper []byte) error {
+func passwordFromStdin(input io.Reader) ([]byte, error) {
 	const maximumInputBytes = 4096
 	password, err := io.ReadAll(io.LimitReader(input, maximumInputBytes+2))
 	if err != nil {
-		return fmt.Errorf("read password from standard input: %w", err)
+		return nil, fmt.Errorf("read password from standard input: %w", err)
 	}
-	defer zeroBytes(password)
 	if len(password) > 0 && password[len(password)-1] == '\n' {
 		password = password[:len(password)-1]
 		if len(password) > 0 && password[len(password)-1] == '\r' {
@@ -155,66 +154,57 @@ func hashPasswordFromStdin(input io.Reader, output io.Writer, pepper []byte) err
 		}
 	}
 	if len(password) == 0 {
-		return errors.New("password cannot be empty")
+		return nil, errors.New("password cannot be empty")
 	}
 	if len(password) > maximumInputBytes {
-		return fmt.Errorf("password must not exceed %d bytes", maximumInputBytes)
+		zeroBytes(password)
+		return nil, fmt.Errorf("password must not exceed %d bytes", maximumInputBytes)
 	}
-	hash, err := broker.HashPassword(password, pepper)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(output, hash)
-	return err
+	return password, nil
 }
 
-func hashPasswordFromTerminal(input *os.File, prompt, output io.Writer, pepper []byte) error {
+func passwordFromTerminal(input *os.File, prompt io.Writer) ([]byte, error) {
 	fd := int(input.Fd())
 	if !term.IsTerminal(fd) {
-		return errors.New("interactive mode requires a terminal; use --hash-password-stdin for automation")
+		return nil, errors.New("interactive mode requires a terminal; use --bootstrap-admin-stdin for automation")
 	}
 	_, _ = fmt.Fprint(prompt, "Password: ")
 	password, err := term.ReadPassword(fd)
 	_, _ = fmt.Fprintln(prompt)
 	if err != nil {
-		return fmt.Errorf("read password: %w", err)
+		return nil, fmt.Errorf("read password: %w", err)
 	}
-	defer zeroBytes(password)
 	if len(password) == 0 {
-		return errors.New("password cannot be empty")
+		return nil, errors.New("password cannot be empty")
 	}
 	_, _ = fmt.Fprint(prompt, "Confirm password: ")
 	confirmation, err := term.ReadPassword(fd)
 	_, _ = fmt.Fprintln(prompt)
 	if err != nil {
-		return fmt.Errorf("read password confirmation: %w", err)
+		zeroBytes(password)
+		return nil, fmt.Errorf("read password confirmation: %w", err)
 	}
 	defer zeroBytes(confirmation)
 	if !bytes.Equal(password, confirmation) {
-		return errors.New("password confirmation does not match")
+		zeroBytes(password)
+		return nil, errors.New("password confirmation does not match")
 	}
+	return password, nil
+}
+
+func bootstrapLocalAdmin(ctx context.Context, cfg broker.Config, password []byte) error {
+	pepper := []byte(cfg.Authentication.TokenPepper)
+	defer zeroBytes(pepper)
 	hash, err := broker.HashPassword(password, pepper)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(output, hash)
-	return err
-}
-
-func passwordPepperFromEnvironment(name string, lookup func(string) (string, bool)) ([]byte, error) {
-	if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
-		return nil, errors.New("--password-pepper-env must name an environment variable")
+	store, err := broker.OpenControlStore(cfg.Database, cfg.Authentication.TokenPepper)
+	if err != nil {
+		return err
 	}
-	value, found := lookup(name)
-	if !found || value == "" {
-		return nil, fmt.Errorf("password pepper environment variable %q is not set or is empty", name)
-	}
-	pepper := []byte(value)
-	if len(pepper) < 32 {
-		zeroBytes(pepper)
-		return nil, fmt.Errorf("password pepper environment variable %q must contain at least 32 bytes", name)
-	}
-	return pepper, nil
+	defer store.Close()
+	return store.BootstrapLocalAdmin(ctx, hash)
 }
 
 func zeroBytes(value []byte) {

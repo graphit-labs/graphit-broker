@@ -19,7 +19,7 @@ or upstream secrets.
 | startup cannot connect | driver/DSN/TLS/network/credentials | `BROKER_DATABASE_*`, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
-| UI identity gets 403 | no configured or database role permits the action | API-key `roles`, OIDC `role_claim`, assignments |
+| UI identity gets 403 | default `user` or assigned/claimed roles do not permit the action | unified OIDC `role_claim`, canonical-subject assignments |
 | grant write gets 409 | another admin changed the ACL revision | reload and reapply |
 | Hub outage does not use projects.json | expected secure behavior | selected broker is sole authority |
 | pre-sign gets 403 | missing S3 capability/operation/project/prefix | grant and route |
@@ -47,22 +47,22 @@ flows, then scale.
 ## Rotation
 
 - OIDC signing keys follow issuer JWKS rotation.
-- Consumer/OIDC/admin client changes should be updated in deployment configuration and tested before removing
+- OIDC issuer/browser-client changes should be updated in unified authentication configuration and tested before removing
   old IdP values.
 - S3 route keys can be rotated by updating the route; already issued URLs remain valid until their
   short expiry.
 - AI API keys are rotated at the provider/secret manager, followed by a deployment restart.
-- Local passwords in `authentication.api_keys` use per-identity peppers and Argon2id verifiers;
-  rotate the pepper and verifier together, then restart in coordination with callers. Existing
-  local UI sessions are invalidated by either change.
+- Local passwords use SQL Argon2id verifiers and the deployment-wide
+  `authentication.token_pepper`. Change individual passwords in the Local users UI. Pepper rotation
+  invalidates every local password and administration session and requires a coordinated recovery.
 - Grant revocation is immediate on the next request and increments the revision.
 
 ## Incident response
 
 For a leaked end-user token, revoke/expire it at the IdP and remove affected grants if necessary.
 For a leaked S3 or AI key, rotate it at the upstream, update deployment secrets, and restart. For
-database exposure, invalidate live admin sessions and restore trusted grants/roles. Deployment
-secrets are not stored in SQL; rotate the external token pepper if compromise may include both SQL
+database exposure, invalidate live admin sessions, reset local passwords, and restore trusted
+users/grants/roles. Deployment secrets are not stored in SQL; rotate the authentication pepper if compromise may include both SQL
 and deployment secret access.
 
 If SQL is unavailable, the broker fails authorization closed. Do not introduce a cached-grant or

@@ -32,9 +32,32 @@ func TestHashPasswordCreatesSaltedArgon2idVerifier(t *testing.T) {
 
 func TestHashPasswordRequiresStrongPepper(t *testing.T) {
 	for _, pepper := range []string{"", "too-short"} {
-		if _, err := HashPassword([]byte("password"), []byte(pepper)); err == nil || !strings.Contains(err.Error(), "pepper") {
+		if _, err := HashPassword([]byte("valid-password!"), []byte(pepper)); err == nil || !strings.Contains(err.Error(), "pepper") {
 			t.Fatalf("pepper %q error=%v", pepper, err)
 		}
+	}
+}
+
+func TestHashPasswordRequiresFifteenUnicodeCharacters(t *testing.T) {
+	for name, password := range map[string][]byte{
+		"fourteen ASCII":   []byte(strings.Repeat("a", passwordMinimumCharacters-1)),
+		"fourteen Unicode": []byte(strings.Repeat("á", passwordMinimumCharacters-1)),
+		"invalid UTF-8":    {0xff, 0xfe},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := HashPassword(password, []byte(testPasswordPepper)); err == nil {
+				t.Fatal("short or invalid password was accepted")
+			}
+		})
+	}
+	password := strings.Repeat("á", passwordMinimumCharacters)
+	hash, err := HashPassword([]byte(password), []byte(testPasswordPepper))
+	if err != nil {
+		t.Fatalf("fifteen-character Unicode password was rejected: %v", err)
+	}
+	verifier, err := parsePasswordVerifier(hash)
+	if err != nil || !verifier.verify([]byte(password), []byte(testPasswordPepper)) {
+		t.Fatalf("Unicode verifier failed: %v", err)
 	}
 }
 

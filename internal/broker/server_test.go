@@ -30,6 +30,11 @@ func (failingGrantReader) ResourceGrants(context.Context) (PolicyDocument, error
 	return PolicyDocument{}, errors.New("synthetic database outage")
 }
 
+func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
+	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
+	return newServerFromRuntime(runtime, control)
+}
+
 func defaultTestRules() []ACLRuleConfig {
 	return []ACLRuleConfig{
 		{ID: "ai", Name: "ai", Access: "organization", Principal: "acme", Capabilities: []string{"embeddings", "rerank"}},
@@ -109,6 +114,20 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("presign response exposed broker-owned storage details: %s", body)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestServerReturnsRetryAfterWhenAuthenticationIsRateLimited(t *testing.T) {
+	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
+	authenticator := authFunc(func(context.Context, string) (Principal, error) {
+		return Principal{}, &authenticationRateLimitError{retryAfter: 90 * time.Second}
+	})
+	server := httptest.NewServer(newServer(cfg, authenticator, NewAIService(cfg.Services)))
+	defer server.Close()
+	response := post(t, server.URL+"/v1/embeddings", "limited", `{"input":"hello"}`)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "90" {
+		t.Fatalf("rate limit status=%d retry-after=%q", response.StatusCode, response.Header.Get("Retry-After"))
+	}
 }
 
 func TestAuthorizationBackendFailureReturnsServiceUnavailable(t *testing.T) {
@@ -308,8 +327,9 @@ func TestServerEmbeddingInputTypeDefaultsToDocumentAndRejectsUnknownValue(t *tes
 
 func testServerConfig(embeddingURL, rerankURL string) Config {
 	return Config{
-		Database: DatabaseConfig{Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute},
-		Server:   ServerConfig{MaxRequestBytes: 1 << 20},
+		Database:       DatabaseConfig{Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute},
+		Server:         ServerConfig{MaxRequestBytes: 1 << 20},
+		Authentication: AuthenticationConfig{TokenPepper: testTokenPepper},
 		Services: ServicesConfig{
 			Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "default", Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: HTTPUpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},
 			Rerank:     RerankServiceConfig{Enabled: true, Route: "default", Revision: "rerank-r1", MaxDocuments: 10, MaxDocumentBytes: 1000, Upstream: HTTPUpstreamConfig{URL: rerankURL, Protocol: "graphit-rerank-v1", Model: "internal-rerank", Timeout: time.Second}},

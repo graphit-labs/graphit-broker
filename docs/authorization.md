@@ -1,7 +1,7 @@
 # Resource authorization
 
-Resource grants are the sole authorization source for consumer operations handled by the broker.
-They live in normalized SQL tables and are independent from administration roles. The broker
+Resource grants are the sole project-capability authorization source for consumer operations.
+They live in normalized SQL tables and are independent from system RBAC roles. The broker
 loads current grants for every consequential request, so a committed change applies to the next
 Hub resolution, S3 pre-sign, embedding, or rerank request.
 
@@ -10,14 +10,18 @@ Hub resolution, S3 pre-sign, embedding, or rerank request.
 The broker derives the principal from exactly one source:
 
 - no `Authorization` header: anonymous principal;
-- a configured local credential: the username-selected, peppered Argon2id password identity and its fixed
+- a SQL local user: the username-selected, globally peppered Argon2id identity and its persisted
   subject/username/organization/teams;
 - an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured exact-key or
   RFC 9535 JSONPath claim selectors are validated before attributes are mapped.
 
-Request bodies cannot provide identity claims. Canonical OIDC identity is `iss|sub`; username,
+Request bodies cannot provide identity claims. Canonical identity is `issuer|subject`; username,
 organization, and teams are attributes from the verified token only. An invalid bearer returns
 `401` and is never downgraded to anonymous.
+
+RBAC is system-wide and orthogonal to grants. Every authenticated principal has the default `user`
+role; SQL assignments or an authoritative OIDC role claim can add roles such as `admin`. Those
+roles select broker/UI actions but do not make a resource grant match.
 
 ## Grant shape
 
@@ -110,7 +114,7 @@ An internal team can receive this grant:
 }
 ```
 
-A separate API-key or OIDC identity used by a publication service can receive:
+A separate local-user or OIDC identity used by a publication service can receive:
 
 ```json
 {

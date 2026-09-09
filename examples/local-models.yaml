@@ -9,11 +9,7 @@ server:
   address: ":8080"
 
 authentication:
-  api_keys:
-    - username: local-example
-      password_hash: "${BROKER_EXAMPLE_PASSWORD_HASH:?generate with graphit-broker --hash-password --password-pepper-env BROKER_EXAMPLE_PASSWORD_PEPPER}"
-      pepper: "${BROKER_EXAMPLE_PASSWORD_PEPPER:?set at least 32 bytes}"
-      subject: local-example
+  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes before bootstrapping local users}"
 
 models:
   directory: /var/cache/graphit-broker/models

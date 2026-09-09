@@ -13,20 +13,26 @@ import (
 	"time"
 )
 
-var ErrRevisionConflict = errors.New("revision conflict")
+var (
+	ErrRevisionConflict  = errors.New("revision conflict")
+	ErrLocalUserNotFound = errors.New("local user not found")
+	ErrLocalUsersExist   = errors.New("local users already exist")
+)
 
 const (
 	adminRole               = "admin"
 	userRole                = "user"
-	schemaVersion           = 3
+	localIdentityIssuer     = "local"
+	schemaVersion           = 5
 	tokenPepperMinimumBytes = 32
 	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
 	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
+	oidcFlowBindingDomain   = "graphit-broker/oidc-flow-binding/v1"
 )
 
-var adminActions = []string{
+var systemActions = []string{
 	"session.read", "configuration.read",
-	"grants.read", "grants.write", "roles.read", "roles.write", "projects.read",
+	"grants.read", "grants.write", "roles.read", "roles.write", "users.read", "users.write", "projects.read",
 }
 
 var userActions = []string{"session.read", "projects.read"}
@@ -39,9 +45,24 @@ type ControlStore struct {
 	tokenPepper []byte
 }
 
-type AdminRole struct {
+type Role struct {
 	Name        string   `json:"name"`
 	Permissions []string `json:"permissions"`
+}
+
+type LocalUser struct {
+	Username     string    `json:"username"`
+	Subject      string    `json:"subject"`
+	Name         string    `json:"name,omitempty"`
+	Email        string    `json:"email,omitempty"`
+	Organization string    `json:"organization,omitempty"`
+	Teams        []string  `json:"teams,omitempty"`
+	Roles        []string  `json:"roles"`
+	Enabled      bool      `json:"enabled"`
+	Revision     int64     `json:"revision"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	PasswordHash string    `json:"-"`
 }
 
 type RoleAssignment struct {
@@ -51,23 +72,22 @@ type RoleAssignment struct {
 }
 
 type AdminSession struct {
-	Issuer                string
-	Subject               string
-	Name                  string
-	Email                 string
-	Username              string
-	Organization          string
-	Teams                 []string
-	Roles                 []string
-	RolesFromClaim        bool
-	RoleClaimSelector     string
-	CredentialFingerprint string
-	CSRFToken             string
-	ExpiresAt             time.Time
+	Issuer            string
+	Subject           string
+	Name              string
+	Email             string
+	Username          string
+	Organization      string
+	Teams             []string
+	Roles             []string
+	RolesFromClaim    bool
+	RoleClaimSelector string
+	LocalUserRevision int64
+	CSRFToken         string
+	ExpiresAt         time.Time
 }
 
 type OIDCFlow struct {
-	StateHash    string
 	Nonce        string
 	PKCEVerifier string
 	ExpiresAt    time.Time
@@ -117,15 +137,28 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 		return fmt.Errorf("begin database initialization: %w", err)
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (id SMALLINT PRIMARY KEY, version BIGINT NOT NULL)`); err != nil {
+		return fmt.Errorf("initialize %s schema version table: %w", s.dialect.Name(), err)
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO schema_meta(id, version) VALUES(?, ?)`)), 1, schemaVersion); err != nil {
+		return fmt.Errorf("seed schema version: %w", err)
+	}
+	var storedSchemaVersion int
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT version FROM schema_meta WHERE id=?`), 1).Scan(&storedSchemaVersion); err != nil {
+		return fmt.Errorf("read database schema version: %w", err)
+	}
+	if storedSchemaVersion != schemaVersion {
+		return fmt.Errorf("unsupported database schema version %d: recreate the database", storedSchemaVersion)
+	}
 	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS schema_meta (id SMALLINT PRIMARY KEY, version BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS roles (name VARCHAR(128) PRIMARY KEY, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS role_permissions (role VARCHAR(128) NOT NULL, action VARCHAR(128) NOT NULL, PRIMARY KEY(role, action), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS role_assignments (subject VARCHAR(512) NOT NULL, role VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, role), FOREIGN KEY(role) REFERENCES roles(name) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_sessions (token_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, csrf_token VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, credential_fingerprint VARCHAR(64) NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
+		`CREATE TABLE IF NOT EXISTS admin_session_principals (token_hash VARCHAR(64) PRIMARY KEY, issuer VARCHAR(1024) NOT NULL, username VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS admin_session_claim_roles (token_hash VARCHAR(64) PRIMARY KEY, claim_selector VARCHAR(4096) NOT NULL, roles_json TEXT NOT NULL, FOREIGN KEY(token_hash) REFERENCES admin_sessions(token_hash) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oidc_flows (state_hash VARCHAR(64) PRIMARY KEY, browser_binding_hash VARCHAR(64) NOT NULL, nonce VARCHAR(128) NOT NULL, pkce_verifier VARCHAR(256) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS local_users (username VARCHAR(128) PRIMARY KEY, subject VARCHAR(512) NOT NULL UNIQUE, password_hash VARCHAR(512) NOT NULL, name VARCHAR(512) NOT NULL, email VARCHAR(512) NOT NULL, organization VARCHAR(512) NOT NULL, teams_json TEXT NOT NULL, enabled SMALLINT NOT NULL, revision BIGINT NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS grant_capabilities (grant_id VARCHAR(128) NOT NULL, value VARCHAR(128) NOT NULL, PRIMARY KEY(grant_id, value), FOREIGN KEY(grant_id) REFERENCES resource_grants(id) ON DELETE CASCADE)`,
@@ -138,20 +171,10 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO schema_meta(id, version) VALUES(?, ?)`)), 1, schemaVersion); err != nil {
-		return fmt.Errorf("seed schema version: %w", err)
-	}
-	var storedSchemaVersion int
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT version FROM schema_meta WHERE id=?`), 1).Scan(&storedSchemaVersion); err != nil {
-		return fmt.Errorf("read database schema version: %w", err)
-	}
-	if storedSchemaVersion != schemaVersion {
-		return fmt.Errorf("unsupported database schema version %d: recreate the database", storedSchemaVersion)
-	}
 	if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO roles(name, created_at) VALUES(?, ?)`)), adminRole, now); err != nil {
 		return fmt.Errorf("seed admin role: %w", err)
 	}
-	for _, action := range adminActions {
+	for _, action := range systemActions {
 		if _, err := tx.ExecContext(ctx, s.bind(s.dialect.InsertIgnore(`INSERT INTO role_permissions(role, action) VALUES(?, ?)`)), adminRole, action); err != nil {
 			return fmt.Errorf("seed admin permissions: %w", err)
 		}
@@ -177,15 +200,11 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 }
 
 func (s *ControlStore) Authorize(ctx context.Context, subject, action string) (bool, error) {
-	var one int
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1 FROM role_assignments a JOIN role_permissions p ON p.role=a.role WHERE a.subject=? AND (p.action=? OR p.action='*')`), subject, action).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+	permissions, err := s.SubjectPermissions(ctx, subject)
 	if err != nil {
-		return false, fmt.Errorf("authorize administrator: %w", err)
+		return false, fmt.Errorf("authorize principal: %w", err)
 	}
-	return true, nil
+	return containsString(permissions, action) || containsString(permissions, "*"), nil
 }
 
 func (s *ControlStore) AssignmentCount(ctx context.Context) (int, error) {
@@ -203,19 +222,24 @@ func (s *ControlStore) SubjectRoles(ctx context.Context, subject string) ([]stri
 		return nil, err
 	}
 	defer rows.Close()
-	var values []string
+	values := []string{userRole}
 	for rows.Next() {
 		var value string
 		if err := rows.Scan(&value); err != nil {
 			return nil, err
 		}
-		values = append(values, value)
+		if value != userRole {
+			values = append(values, value)
+		}
 	}
-	return values, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return cleanStrings(values), nil
 }
 
 func (s *ControlStore) SubjectPermissions(ctx context.Context, subject string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT p.action FROM role_assignments a JOIN role_permissions p ON p.role=a.role WHERE a.subject=? ORDER BY p.action`), strings.TrimSpace(subject))
+	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT DISTINCT p.action FROM role_permissions p WHERE p.role=? OR p.role IN (SELECT a.role FROM role_assignments a WHERE a.subject=?) ORDER BY p.action`), userRole, strings.TrimSpace(subject))
 	if err != nil {
 		return nil, err
 	}
@@ -232,10 +256,7 @@ func (s *ControlStore) SubjectPermissions(ctx context.Context, subject string) (
 }
 
 func (s *ControlStore) RolePermissions(ctx context.Context, roles []string) ([]string, error) {
-	roles = cleanStrings(roles)
-	if len(roles) == 0 {
-		return nil, nil
-	}
+	roles = cleanStrings(append(roles, userRole))
 	placeholders := make([]string, len(roles))
 	arguments := make([]any, len(roles))
 	for i, role := range roles {
@@ -261,18 +282,18 @@ func (s *ControlStore) RolePermissions(ctx context.Context, roles []string) ([]s
 func (s *ControlStore) AuthorizeRoles(ctx context.Context, roles []string, action string) (bool, error) {
 	permissions, err := s.RolePermissions(ctx, roles)
 	if err != nil {
-		return false, fmt.Errorf("authorize claimed administration roles: %w", err)
+		return false, fmt.Errorf("authorize claimed roles: %w", err)
 	}
 	return containsString(permissions, action) || containsString(permissions, "*"), nil
 }
 
-func (s *ControlStore) Roles(ctx context.Context) ([]AdminRole, error) {
+func (s *ControlStore) Roles(ctx context.Context) ([]Role, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.name, COALESCE(p.action, '') FROM roles r LEFT JOIN role_permissions p ON p.role=r.name ORDER BY r.name, p.action`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	byName := map[string]*AdminRole{}
+	byName := map[string]*Role{}
 	var order []string
 	for rows.Next() {
 		var name, action string
@@ -281,7 +302,7 @@ func (s *ControlStore) Roles(ctx context.Context) ([]AdminRole, error) {
 		}
 		role := byName[name]
 		if role == nil {
-			role = &AdminRole{Name: name}
+			role = &Role{Name: name}
 			byName[name] = role
 			order = append(order, name)
 		}
@@ -289,18 +310,18 @@ func (s *ControlStore) Roles(ctx context.Context) ([]AdminRole, error) {
 			role.Permissions = append(role.Permissions, action)
 		}
 	}
-	result := make([]AdminRole, 0, len(order))
+	result := make([]Role, 0, len(order))
 	for _, name := range order {
 		result = append(result, *byName[name])
 	}
 	return result, rows.Err()
 }
 
-func (s *ControlStore) SetRole(ctx context.Context, role AdminRole) error {
+func (s *ControlStore) SetRole(ctx context.Context, role Role) error {
 	role.Name = strings.TrimSpace(role.Name)
 	role.Permissions = cleanStrings(role.Permissions)
 	if role.Name == adminRole {
-		role.Permissions = append([]string(nil), adminActions...)
+		role.Permissions = append([]string(nil), systemActions...)
 	} else if role.Name == userRole {
 		role.Permissions = append([]string(nil), userActions...)
 	}
@@ -308,8 +329,8 @@ func (s *ControlStore) SetRole(ctx context.Context, role AdminRole) error {
 		return errors.New("role needs a safe name and at least one permission")
 	}
 	for _, action := range role.Permissions {
-		if !validAdminAction(action) {
-			return fmt.Errorf("unsupported administration action %q", action)
+		if !validSystemAction(action) {
+			return fmt.Errorf("unsupported system action %q", action)
 		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -350,11 +371,11 @@ func (s *ControlStore) DeleteRole(ctx context.Context, role string) error {
 	return nil
 }
 
-func validAdminAction(action string) bool {
+func validSystemAction(action string) bool {
 	if action == "*" {
 		return true
 	}
-	for _, allowed := range adminActions {
+	for _, allowed := range systemActions {
 		if action == allowed {
 			return true
 		}
@@ -391,8 +412,312 @@ func (s *ControlStore) AssignRole(ctx context.Context, subject, role string) err
 }
 
 func (s *ControlStore) RevokeRole(ctx context.Context, subject, role string) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM role_assignments WHERE subject=? AND role=?`), strings.TrimSpace(subject), strings.TrimSpace(role))
+	subject, role = strings.TrimSpace(subject), strings.TrimSpace(role)
+	if role == adminRole {
+		last, err := s.isLastAssignedAdmin(ctx, subject)
+		if err != nil {
+			return err
+		}
+		if last {
+			return errors.New("cannot revoke the last assigned admin role")
+		}
+	}
+	_, err := s.db.ExecContext(ctx, s.bind(`DELETE FROM role_assignments WHERE subject=? AND role=?`), subject, role)
 	return err
+}
+
+func (s *ControlStore) isLastAssignedAdmin(ctx context.Context, subject string) (bool, error) {
+	assignments, err := s.Assignments(ctx)
+	if err != nil {
+		return false, err
+	}
+	currentIsAdmin := false
+	var others []string
+	for _, assignment := range assignments {
+		if assignment.Role != adminRole {
+			continue
+		}
+		if assignment.Subject == subject {
+			currentIsAdmin = true
+		} else {
+			others = append(others, assignment.Subject)
+		}
+	}
+	if !currentIsAdmin {
+		return false, nil
+	}
+	users, err := s.LocalUsers(ctx)
+	if err != nil {
+		return false, err
+	}
+	enabledLocalAdmins := map[string]bool{}
+	for _, user := range users {
+		enabledLocalAdmins[localUserCanonicalSubject(user.Subject)] = user.Enabled
+	}
+	for _, candidate := range others {
+		if !strings.HasPrefix(candidate, localIdentityIssuer+"|") || enabledLocalAdmins[candidate] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func localUserCanonicalSubject(subject string) string {
+	return localIdentityIssuer + "|" + strings.TrimSpace(subject)
+}
+
+func validateLocalUser(user LocalUser, passwordRequired bool) error {
+	if !safeSegment(user.Username) {
+		return errors.New("local user username must be a safe non-empty identifier")
+	}
+	if strings.TrimSpace(user.Subject) == "" || len(user.Subject) > 512 {
+		return errors.New("local user subject is required and must not exceed 512 bytes")
+	}
+	if passwordRequired || user.PasswordHash != "" {
+		if _, err := parsePasswordVerifier(user.PasswordHash); err != nil {
+			return fmt.Errorf("local user password hash: %w", err)
+		}
+	}
+	for _, role := range cleanStrings(user.Roles) {
+		if !safeSegment(role) {
+			return fmt.Errorf("local user role %q is invalid", role)
+		}
+	}
+	return nil
+}
+
+func assignedRoles(roles []string) []string {
+	values := cleanStrings(roles)
+	result := values[:0]
+	for _, role := range values {
+		if role != userRole {
+			result = append(result, role)
+		}
+	}
+	return result
+}
+
+func (s *ControlStore) LocalUserCount(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM local_users`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count local users: %w", err)
+	}
+	return count, nil
+}
+
+func (s *ControlStore) LocalUsers(ctx context.Context) ([]LocalUser, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT username, subject, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	var users []LocalUser
+	for rows.Next() {
+		user, err := scanLocalUser(rows, false)
+		if err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range users {
+		var err error
+		users[i].Roles, err = s.SubjectRoles(ctx, localUserCanonicalSubject(users[i].Subject))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return users, nil
+}
+
+type rowScanner interface{ Scan(...any) error }
+
+func scanLocalUser(row rowScanner, withPassword bool) (LocalUser, error) {
+	var user LocalUser
+	var teams, created, updated string
+	var enabled int
+	values := []any{&user.Username, &user.Subject}
+	if withPassword {
+		values = append(values, &user.PasswordHash)
+	}
+	values = append(values, &user.Name, &user.Email, &user.Organization, &teams, &enabled, &user.Revision, &created, &updated)
+	if err := row.Scan(values...); err != nil {
+		return LocalUser{}, err
+	}
+	if err := json.Unmarshal([]byte(teams), &user.Teams); err != nil {
+		return LocalUser{}, fmt.Errorf("decode local user teams: %w", err)
+	}
+	user.Teams = cleanStrings(user.Teams)
+	user.Enabled = enabled != 0
+	user.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	user.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	return user, nil
+}
+
+func (s *ControlStore) LocalUserByUsername(ctx context.Context, username string) (LocalUser, error) {
+	row := s.db.QueryRowContext(ctx, s.bind(`SELECT username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at FROM local_users WHERE username=?`), strings.TrimSpace(username))
+	user, err := scanLocalUser(row, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return LocalUser{}, ErrLocalUserNotFound
+	}
+	if err != nil {
+		return LocalUser{}, err
+	}
+	user.Roles, err = s.SubjectRoles(ctx, localUserCanonicalSubject(user.Subject))
+	if err != nil {
+		return LocalUser{}, err
+	}
+	return user, nil
+}
+
+func (s *ControlStore) BootstrapLocalAdmin(ctx context.Context, passwordHash string) error {
+	user := LocalUser{Username: "admin", Subject: "admin", Name: "Local Administrator", PasswordHash: passwordHash, Enabled: true, Roles: []string{adminRole}}
+	if err := validateLocalUser(user, true); err != nil {
+		return err
+	}
+	teams, _ := json.Marshal([]string{})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM local_users`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return ErrLocalUsersExist
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, user.Subject, user.PasswordHash, user.Name, "", "", string(teams), 1, 1, now, now); err != nil {
+		return fmt.Errorf("create local administrator: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO role_assignments(subject, role, created_at) VALUES(?, ?, ?)`), localUserCanonicalSubject(user.Subject), adminRole, now); err != nil {
+		return fmt.Errorf("assign local administrator role: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *ControlStore) CreateLocalUser(ctx context.Context, user LocalUser) error {
+	if err := validateLocalUser(user, true); err != nil {
+		return err
+	}
+	roles := assignedRoles(user.Roles)
+	teams, err := json.Marshal(cleanStrings(user.Teams))
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO local_users(username, subject, password_hash, name, email, organization, teams_json, enabled, revision, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), user.Username, strings.TrimSpace(user.Subject), user.PasswordHash, user.Name, user.Email, user.Organization, string(teams), boolInt(user.Enabled), 1, now, now); err != nil {
+		return fmt.Errorf("create local user: %w", err)
+	}
+	for _, role := range roles {
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO role_assignments(subject, role, created_at) VALUES(?, ?, ?)`), localUserCanonicalSubject(user.Subject), role, now); err != nil {
+			return fmt.Errorf("assign local user role %q: %w", role, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func (s *ControlStore) UpdateLocalUser(ctx context.Context, currentUsername string, user LocalUser) error {
+	if err := validateLocalUser(user, false); err != nil {
+		return err
+	}
+	existing, err := s.LocalUserByUsername(ctx, currentUsername)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(user.Subject) != existing.Subject {
+		return errors.New("local user subject is immutable")
+	}
+	if user.PasswordHash == "" {
+		user.PasswordHash = existing.PasswordHash
+	}
+	roles := assignedRoles(user.Roles)
+	canonical := localUserCanonicalSubject(user.Subject)
+	if (!user.Enabled || !containsString(roles, adminRole)) && containsString(existing.Roles, adminRole) {
+		last, err := s.isLastAssignedAdmin(ctx, canonical)
+		if err != nil {
+			return err
+		}
+		if last {
+			return errors.New("cannot disable or demote the last assigned administrator")
+		}
+	}
+	teams, _ := json.Marshal(cleanStrings(user.Teams))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, s.bind(`UPDATE local_users SET username=?, password_hash=?, name=?, email=?, organization=?, teams_json=?, enabled=?, revision=revision+1, updated_at=? WHERE username=? AND subject=?`), user.Username, user.PasswordHash, user.Name, user.Email, user.Organization, string(teams), boolInt(user.Enabled), now, strings.TrimSpace(currentUsername), existing.Subject)
+	if err != nil {
+		return fmt.Errorf("update local user: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return ErrLocalUserNotFound
+	}
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM role_assignments WHERE subject=?`), canonical); err != nil {
+		return err
+	}
+	for _, role := range roles {
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO role_assignments(subject, role, created_at) VALUES(?, ?, ?)`), canonical, role, now); err != nil {
+			return fmt.Errorf("assign local user role %q: %w", role, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *ControlStore) DeleteLocalUser(ctx context.Context, username string) error {
+	user, err := s.LocalUserByUsername(ctx, username)
+	if err != nil {
+		return err
+	}
+	canonical := localUserCanonicalSubject(user.Subject)
+	last, err := s.isLastAssignedAdmin(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	if last {
+		return errors.New("cannot delete the last assigned administrator")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM role_assignments WHERE subject=?`), canonical); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM local_users WHERE username=?`), strings.TrimSpace(username))
+	if err != nil {
+		return err
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		return ErrLocalUserNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *ControlStore) ResourceGrants(ctx context.Context) (PolicyDocument, error) {
@@ -646,12 +971,12 @@ func (s *ControlStore) tokenHash(domain, raw string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func (s *ControlStore) SaveFlow(ctx context.Context, rawState string, flow OIDCFlow) error {
-	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, nonce, pkce_verifier, expires_at, created_at) VALUES(?, ?, ?, ?, ?)`), s.tokenHash(oidcFlowTokenDomain, rawState), flow.Nonce, flow.PKCEVerifier, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+func (s *ControlStore) SaveFlow(ctx context.Context, rawState, rawBrowserBinding string, flow OIDCFlow) error {
+	_, err := s.db.ExecContext(ctx, s.bind(`INSERT INTO oidc_flows(state_hash, browser_binding_hash, nonce, pkce_verifier, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?)`), s.tokenHash(oidcFlowTokenDomain, rawState), s.tokenHash(oidcFlowBindingDomain, rawBrowserBinding), flow.Nonce, flow.PKCEVerifier, flow.ExpiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
-func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState string) (OIDCFlow, error) {
+func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState, rawBrowserBinding string) (OIDCFlow, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return OIDCFlow{}, err
@@ -660,10 +985,11 @@ func (s *ControlStore) ConsumeFlow(ctx context.Context, rawState string) (OIDCFl
 	var flow OIDCFlow
 	var expires string
 	key := s.tokenHash(oidcFlowTokenDomain, rawState)
-	if err := tx.QueryRowContext(ctx, s.bind(`SELECT nonce, pkce_verifier, expires_at FROM oidc_flows WHERE state_hash=?`), key).Scan(&flow.Nonce, &flow.PKCEVerifier, &expires); err != nil {
+	binding := s.tokenHash(oidcFlowBindingDomain, rawBrowserBinding)
+	if err := tx.QueryRowContext(ctx, s.bind(`SELECT nonce, pkce_verifier, expires_at FROM oidc_flows WHERE state_hash=? AND browser_binding_hash=?`), key, binding).Scan(&flow.Nonce, &flow.PKCEVerifier, &expires); err != nil {
 		return OIDCFlow{}, err
 	}
-	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oidc_flows WHERE state_hash=?`), key)
+	result, err := tx.ExecContext(ctx, s.bind(`DELETE FROM oidc_flows WHERE state_hash=? AND browser_binding_hash=?`), key, binding)
 	if err != nil {
 		return OIDCFlow{}, err
 	}
@@ -695,7 +1021,7 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json, credential_fingerprint) VALUES(?, ?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams), session.CredentialFingerprint); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO admin_session_principals(token_hash, issuer, username, organization, teams_json, local_user_revision) VALUES(?, ?, ?, ?, ?, ?)`), hash, session.Issuer, session.Username, session.Organization, string(teams), session.LocalUserRevision); err != nil {
 		return err
 	}
 	if session.RolesFromClaim {
@@ -703,9 +1029,6 @@ func (s *ControlStore) CreateSession(ctx context.Context, rawToken string, sessi
 			return errors.New("administration session role claim selector is required")
 		}
 		claimedRoles := cleanStrings(session.Roles)
-		if len(claimedRoles) == 0 {
-			return errors.New("administration session claimed roles are required")
-		}
 		roles, err := json.Marshal(claimedRoles)
 		if err != nil {
 			return err
@@ -730,7 +1053,7 @@ func (s *ControlStore) Session(ctx context.Context, rawToken string) (AdminSessi
 		return AdminSession{}, errors.New("administration session expired")
 	}
 	var teams string
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT issuer, username, organization, teams_json, credential_fingerprint FROM admin_session_principals WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken)).Scan(&session.Issuer, &session.Username, &session.Organization, &teams, &session.CredentialFingerprint)
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT issuer, username, organization, teams_json, local_user_revision FROM admin_session_principals WHERE token_hash=?`), s.tokenHash(adminSessionTokenDomain, rawToken)).Scan(&session.Issuer, &session.Username, &session.Organization, &teams, &session.LocalUserRevision)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return AdminSession{}, err
 	}

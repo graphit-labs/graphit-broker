@@ -40,7 +40,7 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 				http.Error(w, `{"error":"invalid_grant"}`, http.StatusUnauthorized)
 				return
 			}
-			claims := map[string]any{"iss": issuer, "sub": "admin-subject", "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "nonce": nonce,
+			claims := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "admin-subject"}, "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "nonce": nonce,
 				"profile": map[string]any{"display_name": "Admin", "email": "admin@example.test"}, "realm_access": map[string]any{"roles": []string{"admin", "auditor"}}}
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "token_type": "Bearer", "expires_in": 3600, "id_token": signJWT(t, key, claims)})
 		default:
@@ -50,8 +50,8 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	defer server.Close()
 	issuer = server.URL
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, server.Client())
-	provider, err := NewAdminIdentityProvider(ctx, AdminOIDCConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/admin/auth/callback",
-		NameClaim: "$.profile.display_name", EmailClaim: "$.profile.email", RoleClaim: "$.realm_access.roles[*]"})
+	provider, err := NewAdminIdentityProvider(ctx, OIDCIssuerConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/admin/auth/callback",
+		SubjectClaim: "$.identity.id", NameClaim: "$.profile.display_name", EmailClaim: "$.profile.email", UsernameClaim: "$.profile.email", RoleClaim: "$.realm_access.roles[*]"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,20 +63,8 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !secretObserved || identity.Subject != "admin-subject" || identity.Name != "Admin" || identity.Email != "admin@example.test" || !identity.RolesFromClaim || len(identity.Roles) != 2 || identity.Roles[0] != "admin" {
+	if !secretObserved || identity.Subject != "admin-subject" || identity.Name != "Admin" || identity.Email != "admin@example.test" || !identity.RolesFromClaim || len(identity.Roles) != 3 || identity.Roles[0] != "admin" || identity.Roles[2] != userRole {
 		t.Fatalf("secretObserved=%v identity=%#v", secretObserved, identity)
-	}
-	missingRole := signJWT(t, key, map[string]any{"iss": issuer, "sub": "admin-subject", "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix()})
-	if _, err := provider.Verify(context.Background(), missingRole); err == nil {
-		t.Fatal("ID token without the configured role claim was accepted")
-	}
-	wrongAudience := signJWT(t, key, map[string]any{"iss": issuer, "sub": "admin-subject", "aud": "another-client", "exp": time.Now().Add(time.Hour).Unix()})
-	if _, err := provider.Verify(context.Background(), wrongAudience); err == nil {
-		t.Fatal("ID token with the wrong audience was accepted")
-	}
-	wrongIssuer := signJWT(t, key, map[string]any{"iss": "https://wrong.example", "sub": "admin-subject", "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix()})
-	if _, err := provider.Verify(context.Background(), wrongIssuer); err == nil {
-		t.Fatal("ID token with the wrong issuer was accepted")
 	}
 	if _, err := provider.Exchange(context.Background(), "valid-code", "pkce-verifier", "wrong-nonce"); err == nil {
 		t.Fatal("ID token with the wrong nonce was accepted")

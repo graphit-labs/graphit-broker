@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -21,6 +22,7 @@ const (
 	passwordSaltLength         = 16
 	passwordHashLength         = 32
 	passwordPepperMinimumBytes = 32
+	passwordMinimumCharacters  = 15
 
 	passwordArgon2MaxMemory      = 1024 * 1024
 	passwordArgon2MaxIterations  = 10
@@ -40,11 +42,8 @@ type passwordVerifier struct {
 // HashPassword creates a PHC-formatted Argon2id verifier bound to an external pepper. The caller
 // must discard both sensitive inputs after this function returns and store only the verifier.
 func HashPassword(password, pepper []byte) (string, error) {
-	if len(password) == 0 {
-		return "", errors.New("password must not be empty")
-	}
-	if len(password) > passwordMaxBytes {
-		return "", fmt.Errorf("password must not exceed %d bytes", passwordMaxBytes)
+	if err := validatePassword(password); err != nil {
+		return "", err
 	}
 	peppered, err := pepperPassword(password, pepper)
 	if err != nil {
@@ -135,7 +134,7 @@ func parseArgon2Parameters(value string) (uint32, uint32, uint8, error) {
 }
 
 func (v passwordVerifier) verify(password, pepper []byte) bool {
-	if len(password) == 0 || len(password) > passwordMaxBytes {
+	if validatePassword(password) != nil {
 		return false
 	}
 	peppered, err := pepperPassword(password, pepper)
@@ -146,6 +145,19 @@ func (v passwordVerifier) verify(password, pepper []byte) bool {
 	actual := argon2.IDKey(peppered, v.salt, v.iterations, v.memory, v.parallelism, uint32(len(v.hash)))
 	defer clear(actual)
 	return subtle.ConstantTimeCompare(actual, v.hash) == 1
+}
+
+func validatePassword(password []byte) error {
+	if !utf8.Valid(password) {
+		return errors.New("password must be valid UTF-8")
+	}
+	if utf8.RuneCount(password) < passwordMinimumCharacters {
+		return fmt.Errorf("password must contain at least %d characters", passwordMinimumCharacters)
+	}
+	if len(password) > passwordMaxBytes {
+		return fmt.Errorf("password must not exceed %d bytes", passwordMaxBytes)
+	}
+	return nil
 }
 
 func pepperPassword(password, pepper []byte) ([]byte, error) {
