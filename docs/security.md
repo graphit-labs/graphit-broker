@@ -35,6 +35,26 @@ concurrently per process by default, bounding memory and CPU cost. A bounded adm
 at most `max_concurrent * saturation_multiplier` running and waiting calls—eight with the defaults
 of two and four. Further calls are rejected before the KDF and do not count as password failures.
 
+Optional adaptive CAPTCHA adds an external proof before Argon2id when an admitted password attempt
+reaches `max(1, ceil(max_concurrent * trigger_multiplier))`; the default multiplier is `1.5`, while
+the feature itself is disabled by default. An explicit multiplier of `0` protects every attempt;
+positive fractions can activate protection before all Argon2id workers are occupied. Cloudflare
+Turnstile validates success, hostname, and a flow-specific action. Google reCAPTCHA v2 Checkbox
+validates success and hostname. Tokens are
+accepted only through server-side Siteverify, are bounded to 2048 bytes, and rely on the provider's
+expiry and single-use enforcement. The Broker never sends `remoteip`, because forwarded addresses
+cannot be trusted without an explicit trusted-proxy boundary. Missing proof does not cause an
+outbound request. Siteverify executes while holding one bounded authentication admission, uses a
+short timeout, follows no redirects, and fails closed without reaching the KDF. The secret key is
+redacted from administrative configuration responses.
+
+This threshold and the saturation queue are process-local, not cluster-global. Each replica must
+use the same provider/hostname policy, but an attacker can distribute load across replicas. For a
+multi-replica Internet deployment, complement the Broker with load-balancer/WAF controls and
+provider analytics. Enabling CAPTCHA adds browser JavaScript/iframe and backend egress dependencies
+on the selected provider. Provider outage affects only overloaded local-password login; OIDC and
+already-issued credentials do not depend on Siteverify.
+
 Human local identities require TOTP MFA by default. Password success creates only an opaque,
 short-lived, one-time SQL challenge bound by HMAC to the exact admin, OAuth, or device flow; it does
 not create a session, authorization code, or device approval. A temporary password must be changed

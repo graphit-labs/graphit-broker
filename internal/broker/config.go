@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -55,6 +56,7 @@ type AuthenticationConfig struct {
 	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
 	LocalLogin     LocalLoginConfig             `yaml:"local_login" json:"local_login"`
 	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
+	LocalCaptcha   LocalCaptchaConfig           `yaml:"local_captcha" json:"local_captcha"`
 	LocalMFA       LocalMFAConfig               `yaml:"local_mfa" json:"local_mfa"`
 	LocalTokens    LocalTokenConfig             `yaml:"local_tokens" json:"local_tokens"`
 	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
@@ -65,6 +67,17 @@ type LocalLoginConfig struct {
 }
 
 func (c LocalLoginConfig) isEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+type LocalCaptchaConfig struct {
+	Enabled             bool          `yaml:"enabled" json:"enabled"`
+	Provider            string        `yaml:"provider" json:"provider,omitempty"`
+	SiteKey             string        `yaml:"site_key" json:"site_key,omitempty"`
+	SecretKey           string        `yaml:"secret_key" json:"secret_key,omitempty"`
+	TriggerMultiplier   float64       `yaml:"trigger_multiplier" json:"trigger_multiplier"`
+	VerificationTimeout time.Duration `yaml:"verification_timeout" json:"verification_timeout"`
+}
+
+const defaultLocalCaptchaTriggerMultiplier = 1.5
 
 type LocalMFAConfig struct {
 	Required     *bool         `yaml:"required" json:"required"`
@@ -228,7 +241,11 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	var cfg Config
+	// Seed defaults whose zero value has explicit meaning before YAML decoding so
+	// an omitted field remains distinguishable from an explicitly configured zero.
+	cfg := Config{Authentication: AuthenticationConfig{LocalCaptcha: LocalCaptchaConfig{
+		TriggerMultiplier: defaultLocalCaptchaTriggerMultiplier,
+	}}}
 	decoder := yaml.NewDecoder(strings.NewReader(expanded))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
@@ -313,6 +330,7 @@ func (c *Config) defaults() {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
 	c.Authentication.LocalRateLimit.setDefaults()
+	c.Authentication.LocalCaptcha.setDefaults()
 	if c.Authentication.LocalLogin.Enabled == nil {
 		enabled := c.Administration.Enabled
 		c.Authentication.LocalLogin.Enabled = &enabled
@@ -505,6 +523,48 @@ func (c *LocalAuthenticationRateLimit) setDefaults() {
 	}
 }
 
+func (c *LocalCaptchaConfig) setDefaults() {
+	c.Provider = strings.ToLower(strings.TrimSpace(c.Provider))
+	if c.VerificationTimeout == 0 {
+		c.VerificationTimeout = 3 * time.Second
+	}
+}
+
+func (c LocalCaptchaConfig) validate(rateLimit LocalAuthenticationRateLimit, localLoginEnabled bool, publicURL string) error {
+	if c.Provider != "" && c.Provider != localCaptchaProviderTurnstile && c.Provider != localCaptchaProviderRecaptcha {
+		return fmt.Errorf("authentication.local_captcha.provider %q is unsupported (use turnstile or recaptcha)", c.Provider)
+	}
+	if !c.Enabled {
+		return nil
+	}
+	if math.IsNaN(c.TriggerMultiplier) || math.IsInf(c.TriggerMultiplier, 0) || c.TriggerMultiplier < 0 || c.TriggerMultiplier > float64(rateLimit.SaturationMultiplier) {
+		return errors.New("authentication.local_captcha.trigger_multiplier must be between 0 and local_rate_limit.saturation_multiplier")
+	}
+	if c.VerificationTimeout < 500*time.Millisecond || c.VerificationTimeout > 10*time.Second {
+		return errors.New("authentication.local_captcha.verification_timeout must be between 500ms and 10s")
+	}
+	if !localLoginEnabled {
+		return errors.New("authentication.local_captcha requires local_login.enabled")
+	}
+	if c.Provider == "" {
+		return errors.New("authentication.local_captcha.provider is required when enabled")
+	}
+	if strings.TrimSpace(c.SiteKey) == "" || strings.ContainsAny(c.SiteKey, "\r\n") {
+		return errors.New("authentication.local_captcha.site_key is required without line breaks when enabled")
+	}
+	if strings.TrimSpace(c.SecretKey) == "" || strings.ContainsAny(c.SecretKey, "\r\n") {
+		return errors.New("authentication.local_captcha.secret_key is required without line breaks when enabled")
+	}
+	if strings.TrimSpace(publicURL) == "" {
+		return errors.New("server.public_url is required when authentication.local_captcha is enabled")
+	}
+	return nil
+}
+
+func (c LocalCaptchaConfig) threshold(maxConcurrent int) int {
+	return max(1, int(math.Ceil(float64(maxConcurrent)*c.TriggerMultiplier)))
+}
+
 func (c LocalAuthenticationRateLimit) validate() error {
 	if c.MaxFailures <= 0 {
 		return errors.New("authentication.local_rate_limit.max_failures must be positive")
@@ -572,6 +632,9 @@ func (c Config) Validate() error {
 		return errors.New("database.conn_max_lifetime must be positive")
 	}
 	if err := c.Authentication.LocalRateLimit.validate(); err != nil {
+		return err
+	}
+	if err := c.Authentication.LocalCaptcha.validate(c.Authentication.LocalRateLimit, c.Authentication.LocalLogin.isEnabled(), c.Server.PublicURL); err != nil {
 		return err
 	}
 	if err := c.Authentication.LocalMFA.validate(); err != nil {

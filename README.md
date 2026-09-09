@@ -48,7 +48,10 @@ the user must replace the temporary password and enroll TOTP MFA at first login.
 with Google Authenticator and compatible applications; administrative MFA reset forces safe
 reenrollment after a lost device.
 failed checks are rate-limited per username, and concurrent Argon2id work plus its bounded admission
-queue are configurable. See [configuration](docs/configuration.md) and
+queue are configurable. Optional adaptive CAPTCHA can use Cloudflare Turnstile or Google reCAPTCHA
+v2 Checkbox when concurrent local authentication reaches a configured multiple of the Argon2id
+worker limit; a zero multiplier protects every attempt and positive fractions can start earlier. It
+is disabled by default. See [configuration](docs/configuration.md) and
 [administration bootstrap](docs/administration.md).
 
 Passwords are accepted only at browser/device login and are never reusable API Bearers. Desktop

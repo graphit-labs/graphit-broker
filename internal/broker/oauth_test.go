@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -341,6 +342,92 @@ func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
 	}
 	if err := service.control.db.QueryRow(`SELECT status FROM oauth_device_codes`).Scan(&deviceStatus); err != nil || deviceStatus != deviceStatusApproved {
 		t.Fatalf("device after MFA status=%q err=%v", deviceStatus, err)
+	}
+}
+
+func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing.T) {
+	for _, provider := range []string{localCaptchaProviderTurnstile, localCaptchaProviderRecaptcha} {
+		t.Run(provider, func(t *testing.T) {
+			service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+			defer service.Close()
+			defer httpServer.Close()
+			state := service.runtime()
+			state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: provider, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+			state.localPasswords.captcha = &stubLocalCaptchaVerifier{provider: provider, valid: "valid-proof"}
+			state.localPasswords.captchaThreshold = 1
+
+			verifier := strings.Repeat("v", 64)
+			digest := sha256.Sum256([]byte(verifier))
+			challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+			redirectURI := "http://127.0.0.1:49152/oauth/callback"
+			query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
+				"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"captcha-state"}, "scope": {localAPIScope}}
+			authorizeURL := httpServer.URL + "/oauth/authorize?" + query.Encode()
+
+			page, err := http.Get(authorizeURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pageBody, _ := io.ReadAll(page.Body)
+			_ = page.Body.Close()
+			expectedClass, expectedCSP := "cf-turnstile", "https://challenges.cloudflare.com"
+			if provider == localCaptchaProviderRecaptcha {
+				expectedClass, expectedCSP = "g-recaptcha", "https://www.google.com/recaptcha/"
+			}
+			if page.StatusCode != http.StatusOK || !bytes.Contains(pageBody, []byte(expectedClass)) || !bytes.Contains(pageBody, []byte("site-key")) || !strings.Contains(page.Header.Get("Content-Security-Policy"), expectedCSP) {
+				t.Fatalf("%s CAPTCHA page status=%d CSP=%q body=%s", provider, page.StatusCode, page.Header.Get("Content-Security-Policy"), pageBody)
+			}
+
+			missing := oauthForm(t, authorizeURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
+			missingBody, _ := io.ReadAll(missing.Body)
+			_ = missing.Body.Close()
+			if missing.StatusCode != http.StatusForbidden || !bytes.Contains(missingBody, []byte(expectedClass)) || bytes.Contains(missingBody, []byte("consumer-secret")) {
+				t.Fatalf("%s missing CAPTCHA status=%d body=%s", provider, missing.StatusCode, missingBody)
+			}
+
+			field := "cf-turnstile-response"
+			if provider == localCaptchaProviderRecaptcha {
+				field = "g-recaptcha-response"
+			}
+			valid := oauthFormWithClient(t, noRedirectClient(), authorizeURL, url.Values{
+				"username": {"consumer"}, "password": {"consumer-secret"}, field: {"valid-proof"},
+			})
+			_ = valid.Body.Close()
+			if valid.StatusCode != http.StatusFound {
+				t.Fatalf("%s valid CAPTCHA authorization status=%d", provider, valid.StatusCode)
+			}
+		})
+	}
+}
+
+func TestDeviceLocalLoginUsesDeviceCaptchaAction(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	state := service.runtime()
+	state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+	state.localPasswords.captcha = &stubLocalCaptchaVerifier{provider: localCaptchaProviderTurnstile, valid: "valid-proof"}
+	state.localPasswords.captchaThreshold = 1
+
+	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {localAPIScope}})
+	var device struct {
+		UserCode string `json:"user_code"`
+	}
+	if deviceResponse.StatusCode != http.StatusOK || json.NewDecoder(deviceResponse.Body).Decode(&device) != nil {
+		t.Fatalf("device authorization status=%d", deviceResponse.StatusCode)
+	}
+	_ = deviceResponse.Body.Close()
+
+	missing := oauthForm(t, httpServer.URL+"/oauth/device", url.Values{"user_code": {device.UserCode}, "username": {"consumer"}, "password": {"consumer-secret"}})
+	body, _ := io.ReadAll(missing.Body)
+	_ = missing.Body.Close()
+	if missing.StatusCode != http.StatusForbidden || !bytes.Contains(body, []byte(`data-action="device-login"`)) {
+		t.Fatalf("device CAPTCHA status=%d body=%s", missing.StatusCode, body)
+	}
+	valid := oauthForm(t, httpServer.URL+"/oauth/device", url.Values{"user_code": {device.UserCode}, "username": {"consumer"}, "password": {"consumer-secret"}, "cf-turnstile-response": {"valid-proof"}})
+	defer valid.Body.Close()
+	if valid.StatusCode != http.StatusOK {
+		t.Fatalf("valid device CAPTCHA status=%d", valid.StatusCode)
 	}
 }
 

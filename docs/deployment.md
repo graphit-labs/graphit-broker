@@ -28,6 +28,14 @@ docker compose up -d
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
 correctly and register the public `/oauth/oidc/callback` URL exactly with the IdP.
 
+If adaptive local-login CAPTCHA is enabled, `server.public_url` must be the exact HTTPS origin whose
+hostname is registered with the selected provider. Allow browser CSP access and backend egress only
+to `challenges.cloudflare.com` for Turnstile, or to Google's documented reCAPTCHA origins and
+`www.google.com` Siteverify for reCAPTCHA v2. Store the provider secret in the secret manager; only
+the site key is public. The CAPTCHA threshold is per process, so multiple replicas multiply both
+the local admission capacity and the number of attempts possible before each replica requires a
+challenge. Use load-balancer/WAF controls when a cluster-wide abuse envelope is required.
+
 ## Database selection
 
 SQLite needs the named `broker-state` volume and exactly one writable broker. PostgreSQL or MySQL

@@ -507,6 +507,62 @@ func TestAdminLocalLoginReturnsRetryAfterAfterDefaultFailureLimit(t *testing.T) 
 	}
 }
 
+func TestAdminLocalLoginRequiresAdaptiveCaptchaBeforePasswordWork(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	state := service.runtime()
+	state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "public-site-key", SecretKey: "private-secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+	verifier := &stubLocalCaptchaVerifier{provider: localCaptchaProviderTurnstile, valid: "valid-proof"}
+	state.localPasswords.captcha = verifier
+	state.localPasswords.captchaThreshold = 1
+	checks := 0
+	originalCheck := state.localPasswords.passwordCheck
+	state.localPasswords.passwordCheck = func(ctx context.Context, verifier passwordVerifier, pepper []byte, password string) bool {
+		checks++
+		return originalCheck(ctx, verifier, pepper, password)
+	}
+
+	page, err := http.Get(httpServer.URL + "/admin/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = page.Body.Close()
+	if !strings.Contains(page.Header.Get("Content-Security-Policy"), "https://challenges.cloudflare.com") {
+		t.Fatalf("admin CAPTCHA CSP=%q", page.Header.Get("Content-Security-Policy"))
+	}
+
+	options, err := http.Get(httpServer.URL + "/admin/api/v1/login-options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var optionsBody struct {
+		Captcha *localCaptchaChallenge `json:"captcha"`
+	}
+	if options.StatusCode != http.StatusOK || json.NewDecoder(options.Body).Decode(&optionsBody) != nil || optionsBody.Captcha == nil || optionsBody.Captcha.Provider != localCaptchaProviderTurnstile || optionsBody.Captcha.Action != localCaptchaActionAdmin {
+		t.Fatalf("login options status=%d body=%#v", options.StatusCode, optionsBody)
+	}
+	_ = options.Body.Close()
+
+	missing := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"consumer-secret"}`)
+	var missingBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+		Captcha localCaptchaChallenge `json:"captcha"`
+	}
+	if missing.StatusCode != http.StatusForbidden || json.NewDecoder(missing.Body).Decode(&missingBody) != nil || missingBody.Error.Code != "captcha_required" || missingBody.Captcha.SiteKey != "site-key" || checks != 0 {
+		t.Fatalf("missing CAPTCHA status=%d body=%#v password_checks=%d", missing.StatusCode, missingBody, checks)
+	}
+	_ = missing.Body.Close()
+
+	valid := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"consumer-secret","captcha_token":"valid-proof"}`)
+	defer valid.Body.Close()
+	if valid.StatusCode != http.StatusNoContent || checks != 1 {
+		t.Fatalf("valid CAPTCHA login status=%d password_checks=%d", valid.StatusCode, checks)
+	}
+}
+
 func TestAdminLocalLoginEnrollsMFAAndAdministrativeResetForcesReenrollment(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
@@ -753,6 +809,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, upstream.URL)
 	defer service.Close()
 	defer httpServer.Close()
+	service.runtime().config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderRecaptcha, SiteKey: "public-captcha-key", SecretKey: "private-captcha-secret", TriggerMultiplier: 1.5, VerificationTimeout: 3 * time.Second}
 
 	configResponse := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "root-token", "")
 	if configResponse.StatusCode != http.StatusOK || configResponse.Header.Get("ETag") != "" {
@@ -760,7 +817,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	}
 	configBody, _ := io.ReadAll(configResponse.Body)
 	_ = configResponse.Body.Close()
-	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTSECRET", testPasswordPepper, service.runtime().config.Database.DSN} {
+	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTSECRET", "private-captcha-secret", testPasswordPepper, service.runtime().config.Database.DSN} {
 		if bytes.Contains(configBody, []byte(secret)) {
 			t.Fatalf("configuration response leaked %q: %s", secret, configBody)
 		}
@@ -773,6 +830,9 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	}
 	if count := strings.Count(envelope.YAML, configuredSecret); count < 6 {
 		t.Fatalf("expected redacted placeholders, count=%d YAML=%s", count, envelope.YAML)
+	}
+	if !strings.Contains(envelope.YAML, "public-captcha-key") || !strings.Contains(envelope.YAML, "provider: recaptcha") {
+		t.Fatalf("non-secret CAPTCHA configuration missing from redacted YAML: %s", envelope.YAML)
 	}
 	update, _ := http.NewRequest(http.MethodPut, httpServer.URL+"/admin/api/v1/config", strings.NewReader(`{"yaml":"services: {}"}`))
 	update.Header.Set("Authorization", "Bearer root-token")

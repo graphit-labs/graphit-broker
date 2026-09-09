@@ -67,6 +67,8 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		enabled := cfg.Administration.Enabled
 		cfg.Authentication.LocalLogin.Enabled = &enabled
 	}
+	cfg.Authentication.LocalRateLimit.setDefaults()
+	cfg.Authentication.LocalCaptcha.setDefaults()
 	cfg.Authentication.LocalMFA.setDefaults()
 	cfg.Authentication.LocalTokens.setDefaults()
 	if cfg.Administration.CookieSecure == nil {
@@ -83,7 +85,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	var localPasswords *localPasswordAuthenticator
 	var localAuth *localAuthenticationService
 	if cfg.Authentication.LocalLogin.isEnabled() {
-		localPasswords, err = newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers)
+		localPasswords, err = newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers, cfg.Server.PublicURL)
 		if err != nil {
 			return nil, err
 		}

@@ -35,7 +35,8 @@ const adminSessionKey adminContextKey = "admin_session"
 func (s *Server) adminPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	captcha := s.runtime().config.Authentication.LocalCaptcha
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'"+localCaptchaScriptSources(captcha)+"; style-src 'unsafe-inline'; connect-src 'self'"+localCaptchaConnectSources(captcha)+"; img-src 'self' data:; frame-src "+localCaptchaFrameSources(captcha)+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -144,8 +145,9 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	var request struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		CaptchaToken string `json:"captcha_token"`
 	}
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
@@ -159,8 +161,13 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 	password := request.Password
 	request.Password = ""
 	state := s.runtime()
-	principal, err := state.localPasswords.Authenticate(r.Context(), request.Username, password)
+	principal, err := state.localPasswords.Authenticate(r.Context(), request.Username, password, localCaptchaAttempt{Token: request.CaptchaToken, Action: localCaptchaActionAdmin})
 	password = ""
+	request.CaptchaToken = ""
+	if challenge, required := captchaChallengeFromError(err); required {
+		writeAdminCaptchaRequired(w, r, challenge)
+		return
+	}
 	if retryAfter, limited := authenticationRetryAfter(err); limited {
 		writeAuthenticationRateLimit(w, r, retryAfter)
 		return
@@ -331,9 +338,24 @@ func (s *Server) adminLoginOptions(w http.ResponseWriter, r *http.Request) {
 		localCount, _ = s.control.EnabledLocalHumanCount(r.Context())
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]bool{
+	body := map[string]any{
 		"oidc":  state.adminOIDC != nil,
 		"local": localCount > 0,
+	}
+	if localCount > 0 {
+		if challenge := state.localPasswords.CaptchaChallenge(localCaptchaActionAdmin); challenge != nil {
+			body["captcha"] = challenge
+		}
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+func writeAdminCaptchaRequired(w http.ResponseWriter, r *http.Request, challenge localCaptchaChallenge) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error":      map[string]string{"code": "captcha_required", "message": "Complete human verification before signing in."},
+		"captcha":    challenge,
+		"request_id": requestID(r.Context()),
 	})
 }
 
@@ -944,6 +966,9 @@ func redactConfig(cfg Config) Config {
 	}
 	if cfg.Authentication.TokenPepper != "" {
 		cfg.Authentication.TokenPepper = configuredSecret
+	}
+	if cfg.Authentication.LocalCaptcha.SecretKey != "" {
+		cfg.Authentication.LocalCaptcha.SecretKey = configuredSecret
 	}
 	for i := range cfg.Authentication.OIDC {
 		if cfg.Authentication.OIDC[i].ClientSecret != "" {

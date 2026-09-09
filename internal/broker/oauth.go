@@ -16,12 +16,14 @@ import (
 
 const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
+const localCaptchaWidget = `{{if .Captcha}}{{if eq .Captcha.Provider "turnstile"}}<div class="cf-turnstile" data-sitekey="{{.Captcha.SiteKey}}" data-action="{{.Captcha.Action}}"></div><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{{else}}<div class="g-recaptcha" data-sitekey="{{.Captcha.SiteKey}}"></div><script src="https://www.google.com/recaptcha/api.js" async defer></script>{{end}}{{end}}`
+
 const localLoginForms = `{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
 {{if eq .Status "password-change"}}<p>You must replace the temporary password before continuing.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>New password <input name="new_password" type="password" minlength="15" autocomplete="new-password" required></label><label>Confirm password <input name="confirm_password" type="password" minlength="15" autocomplete="new-password" required></label><button type="submit">Change password</button></form>
 {{else if eq .Status "mfa-enrollment"}}<p>Set up MFA in Google Authenticator or another TOTP application, then enter the displayed code.</p><img src="{{.QRCodeDataURL}}" width="256" height="256" alt="TOTP enrollment QR code"><p>Manual key: <code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication code <input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><button type="submit">Confirm MFA</button></form>
 {{else if eq .Status "mfa"}}<p>Enter a six-digit authenticator code or one unused recovery code.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication or recovery code <input name="code" autocomplete="one-time-code" required></label><button type="submit">Verify</button></form>
 {{else if .RecoveryCodes}}<h2>Save your recovery codes</h2><p>Each code works once. They will not be shown again.</p><ul>{{range .RecoveryCodes}}<li><code>{{.}}</code></li>{{end}}</ul>{{if .Redirect}}<p><a href="{{.Redirect}}">Continue to Graphit CLI</a></p>{{else}}<p>Device authorized. You may close this page.</p>{{end}}
-	{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{else if .Local}}<form method="post"><input type="hidden" name="login_method" value="local"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Sign in locally</button></form>{{end}}{{end}}`
+	{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label>` + localCaptchaWidget + `<button type="submit">Authorize</button></form>{{else if .Local}}<form method="post"><input type="hidden" name="login_method" value="local"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label>` + localCaptchaWidget + `<button type="submit">Sign in locally</button></form>{{end}}{{end}}`
 
 var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Graphit</title></head><body><main><h1>Sign in to Graphit</h1><p>Choose an authentication method managed by this Graphit Broker.</p>{{if .OIDC}}<section><h2>Organization account</h2><form method="post"><button type="submit" name="login_method" value="oidc">Continue with OpenID Connect</button></form></section>{{end}}{{if or .Local .Status .RecoveryCodes}}<section><h2>Local account</h2><p>Your password is used only for this login and is never issued as an API credential.</p>` + localLoginForms + `</section>{{end}}</main></body></html>`))
 
@@ -33,6 +35,7 @@ type localLoginPageData struct {
 	RecoveryCodes                                             []string
 	Device, Approved                                          bool
 	Local, OIDC                                               bool
+	Captcha                                                   *localCaptchaChallenge
 }
 
 func (s *Server) oauthMetadata(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +80,9 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, localAuthorizationPage, localLoginPageData{Local: localEnabled, OIDC: oidcEnabled})
+		data := localLoginPageData{Local: localEnabled, OIDC: oidcEnabled}
+		data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
+		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -99,6 +104,12 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	binding := params.binding()
 	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeOAuth, binding)
+	if challenge, required := captchaChallengeFromError(authErr); required {
+		data := loginPageData(step, "Complete human verification before signing in.")
+		data.Local, data.OIDC, data.Captcha = localEnabled, oidcEnabled, &challenge
+		s.writeOAuthHTMLStatus(w, http.StatusForbidden, localAuthorizationPage, data)
+		return
+	}
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
 		data := loginPageData(step, "Too many authentication attempts. Try again later.")
@@ -112,6 +123,7 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(authErr, ErrUnauthenticated):
 			data := loginPageData(step, "Invalid local credentials.")
 			data.Local, data.OIDC = localEnabled, oidcEnabled
+			data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
 			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
 			data := loginPageData(step, authErr.Error())
@@ -405,7 +417,9 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, deviceVerificationPage, localLoginPageData{Device: true, Local: true, UserCode: r.URL.Query().Get("user_code")})
+		data := localLoginPageData{Device: true, Local: true, UserCode: r.URL.Query().Get("user_code")}
+		data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionDevice)
+		s.writeOAuthHTML(w, deviceVerificationPage, data)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -415,6 +429,12 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 	}
 	userCode := r.PostForm.Get("user_code")
 	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeDevice, normalizeUserCode(userCode))
+	if challenge, required := captchaChallengeFromError(authErr); required {
+		data := loginPageData(step, "Complete human verification before signing in.")
+		data.Device, data.Local, data.UserCode, data.Captcha = true, true, userCode, &challenge
+		s.writeOAuthHTMLStatus(w, http.StatusForbidden, deviceVerificationPage, data)
+		return
+	}
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
 		data := loginPageData(step, "Too many authentication attempts. Try again later.")
@@ -436,6 +456,9 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 		}
 		data := loginPageData(step, message)
 		data.Device, data.Local, data.UserCode = true, true, userCode
+		if errors.Is(authErr, ErrUnauthenticated) {
+			data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionDevice)
+		}
 		s.writeOAuthHTMLStatus(w, status, deviceVerificationPage, data)
 		return
 	}
@@ -472,8 +495,17 @@ func (s *Server) continueBrowserLocalLogin(r *http.Request, purpose, binding str
 		return s.runtime().localAuth.CompleteMFA(r.Context(), challenge, purpose, binding, r.PostForm.Get("code"))
 	}
 	password := r.PostForm.Get("password")
-	principal, err := s.runtime().localPasswords.Authenticate(r.Context(), strings.TrimSpace(r.PostForm.Get("username")), password)
+	action := localCaptchaActionOAuth
+	if purpose == localAuthPurposeDevice {
+		action = localCaptchaActionDevice
+	}
+	captchaToken := r.PostForm.Get("cf-turnstile-response")
+	if s.runtime().config.Authentication.LocalCaptcha.Provider == localCaptchaProviderRecaptcha {
+		captchaToken = r.PostForm.Get("g-recaptcha-response")
+	}
+	principal, err := s.runtime().localPasswords.Authenticate(r.Context(), strings.TrimSpace(r.PostForm.Get("username")), password, localCaptchaAttempt{Token: captchaToken, Action: action})
 	password = ""
+	captchaToken = ""
 	if err != nil {
 		return LocalAuthStep{}, err
 	}
@@ -657,7 +689,16 @@ func (s *Server) writeOAuthHTML(w http.ResponseWriter, page *template.Template, 
 func (s *Server) writeOAuthHTMLStatus(w http.ResponseWriter, status int, page *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	captcha := s.runtime().config.Authentication.LocalCaptcha
+	scriptSources := localCaptchaScriptSources(captcha)
+	if scriptSources == "" {
+		scriptSources = " 'none'"
+	}
+	connectSources := localCaptchaConnectSources(captcha)
+	if connectSources == "" {
+		connectSources = " 'none'"
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src"+scriptSources+"; style-src 'unsafe-inline'; connect-src"+connectSources+"; frame-src "+localCaptchaFrameSources(captcha)+"; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)

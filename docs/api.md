@@ -166,6 +166,15 @@ with `Retry-After` until the lockout expires. Authentication saturation is reach
 waiting local calls equal `max_concurrent * saturation_multiplier`; further calls return `429`
 without starting Argon2id or recording a password failure.
 
+When adaptive CAPTCHA is configured and the current request reaches
+`max(1, ceil(max_concurrent * trigger_multiplier))`, the initial password request must also contain a
+provider proof. `POST /admin/auth/local` returns `403` with error code `captcha_required` and a
+public `captcha` object containing `provider`, `site_key`, and—only for Turnstile—the flow `action`.
+Retry with the same username/password plus JSON field `captcha_token`. Browser forms use the native
+`cf-turnstile-response` or `g-recaptcha-response` field. A missing, rejected, expired, replayed,
+wrong-hostname/wrong-action proof, provider error, or timeout fails before Argon2id. Error responses
+never return the submitted password, CAPTCHA token, provider secret, or provider diagnostics.
+
 | Route | Action | Purpose |
 |---|---|---|
 | `GET /admin/api/v1/session` | `session.read` | identity, effective roles, `role_source`, actions, CSRF |
@@ -186,7 +195,13 @@ without starting Argon2id or recording a password failure.
 | `DELETE /admin/api/v1/local-users/{username}/credentials/{id}` | `users.write` | revoke a service credential |
 
 `GET /admin/api/v1/login-options` is public and reports whether OIDC and local-password login are
-available; it contains no credentials or identity data.
+available. When the next local attempt would require CAPTCHA, it also reports the same public
+`captcha` object so the UI can render the selected widget; it contains no credentials or identity
+data.
+
+`trigger_multiplier` defaults to `1.5` when omitted. An explicit `0` makes every initial
+local-password request require CAPTCHA; positive fractional values can place the threshold below
+`max_concurrent`.
 
 The configuration response replaces `authentication.token_pepper` and every OIDC client secret
 with `[configured-secret]`. Local-user responses omit password hashes entirely; no response exposes

@@ -70,6 +70,52 @@ authentication:
     saturation_multiplier: 4
 ```
 
+Adaptive CAPTCHA is deployment-owned, disabled by default, and supports exactly one provider at a
+time. `turnstile` renders Cloudflare Turnstile's managed widget; `recaptcha` renders Google
+reCAPTCHA v2 Checkbox:
+
+```yaml
+server:
+  public_url: https://broker.example.com
+authentication:
+  local_captcha:
+    enabled: false
+    provider: turnstile # or recaptcha
+    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+    trigger_multiplier: 1.5
+    verification_timeout: 3s
+```
+
+When enabled, `server.public_url`, `provider`, `site_key`, and `secret_key` are required. The
+provider is fixed to `turnstile` or `recaptcha`; Siteverify endpoints are not configurable. The
+trigger must be between `0` and `local_rate_limit.saturation_multiplier`, inclusive; the timeout
+must be between `500ms` and `10s`. The administration configuration response exposes the site key
+and operational settings but replaces the secret key with `[configured-secret]`.
+
+The threshold is `max(1, ceil(local_rate_limit.max_concurrent * trigger_multiplier))` per broker
+process. Omitting `trigger_multiplier` uses the default `1.5`; setting it explicitly to `0` requires
+CAPTCHA from the first attempt. Positive fractions allow the challenge to start before the Argon2id
+worker limit—for example, `max_concurrent: 4` with `trigger_multiplier: 0.5` starts on the second
+admitted attempt. With defaults `2 * 1.5`, the third admitted attempt requires CAPTCHA. The
+admission slot is reserved before Siteverify, so external verification calls share the existing bounded capacity;
+an absent proof causes no outbound call. A provider error or timeout fails the local login closed
+only while CAPTCHA is required. OIDC login remains available. CAPTCHA applies only to the initial
+password step of administration, Authorization Code, and Device Authorization—not password change
+or MFA. Neither provider receives an IP address because the broker has no trusted-proxy policy.
+
+Turnstile tokens are checked for success, exact hostname, and flow-specific action. reCAPTCHA v2
+tokens are checked for success and exact hostname; the checkbox protocol does not return an action.
+The providers enforce expiry and single use. Configure the same public hostname in the provider
+console and use separate site keys for development and production.
+
+Provider commercial limits can change. As checked on 2026-09-09, the
+[Turnstile Free plan](https://developers.cloudflare.com/turnstile/plans/) allows unlimited
+challenges and verification requests with up to 20 widgets and 10 hostnames per widget. Google
+[reCAPTCHA Essentials](https://docs.cloud.google.com/recaptcha/docs/billing-information) permits
+10,000 assessments per organization each month; without billing, requests fail after that quota,
+while billed tiers charge beyond it.
+
 Human local-user MFA is also deployment-owned and defaults to required:
 
 ```yaml

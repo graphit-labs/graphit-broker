@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -39,6 +40,9 @@ services:
 	if cfg.Authentication.LocalMFA.Required == nil || !*cfg.Authentication.LocalMFA.Required || cfg.Authentication.LocalMFA.Issuer != "Graphit Broker" || cfg.Authentication.LocalMFA.ChallengeTTL != 10*time.Minute {
 		t.Fatalf("local MFA defaults=%#v", cfg.Authentication.LocalMFA)
 	}
+	if cfg.Authentication.LocalCaptcha.Enabled || cfg.Authentication.LocalCaptcha.Provider != "" || cfg.Authentication.LocalCaptcha.TriggerMultiplier != defaultLocalCaptchaTriggerMultiplier || cfg.Authentication.LocalCaptcha.VerificationTimeout != 3*time.Second {
+		t.Fatalf("local CAPTCHA defaults=%#v", cfg.Authentication.LocalCaptcha)
+	}
 	if cfg.Authentication.TokenPepper != testPasswordPepper {
 		t.Fatal("environment value was not expanded")
 	}
@@ -48,6 +52,100 @@ services:
 	localTokens := cfg.Authentication.LocalTokens
 	if localTokens.Audience != "graphit-broker" || localTokens.CLIClientID != "graphit-cli" || localTokens.CLIRedirectPath != "/oauth/callback" || localTokens.AccessTTL != 10*time.Minute || localTokens.RefreshTTL != 30*24*time.Hour {
 		t.Fatalf("local token defaults=%#v", localTokens)
+	}
+}
+
+func TestLocalCaptchaSupportsTurnstileAndRecaptchaWithStrictConfiguration(t *testing.T) {
+	for _, provider := range []string{localCaptchaProviderTurnstile, localCaptchaProviderRecaptcha} {
+		t.Run(provider, func(t *testing.T) {
+			cfg, err := DecodeConfig(strings.NewReader(`
+server:
+  public_url: https://broker.example.com
+authentication:
+  token_pepper: 0123456789abcdef0123456789abcdef
+  local_login:
+    enabled: true
+  local_captcha:
+    enabled: true
+    provider: `+provider+`
+    site_key: public-site-key
+    secret_key: private-secret-key
+    trigger_multiplier: 2.5
+    verification_timeout: 2s
+`), func(string) string { return "" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			captcha := cfg.Authentication.LocalCaptcha
+			if !captcha.Enabled || captcha.Provider != provider || captcha.SiteKey != "public-site-key" || captcha.SecretKey != "private-secret-key" || captcha.TriggerMultiplier != 2.5 || captcha.VerificationTimeout != 2*time.Second {
+				t.Fatalf("local CAPTCHA config=%#v", captcha)
+			}
+		})
+	}
+
+	localLoginEnabled := true
+	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
+		TokenPepper: testPasswordPepper, LocalLogin: LocalLoginConfig{Enabled: &localLoginEnabled},
+		LocalCaptcha: LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site", SecretKey: "secret"},
+	}}
+	base.defaults()
+	for name, mutate := range map[string]func(*Config){
+		"unsupported provider": func(c *Config) { c.Authentication.LocalCaptcha.Provider = "other" },
+		"missing provider":     func(c *Config) { c.Authentication.LocalCaptcha.Provider = "" },
+		"missing site key":     func(c *Config) { c.Authentication.LocalCaptcha.SiteKey = "" },
+		"missing secret key":   func(c *Config) { c.Authentication.LocalCaptcha.SecretKey = "" },
+		"negative trigger":     func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = -.1 },
+		"NaN trigger":          func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = math.NaN() },
+		"infinite trigger":     func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = math.Inf(1) },
+		"unreachable trigger":  func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = 5 },
+		"short timeout":        func(c *Config) { c.Authentication.LocalCaptcha.VerificationTimeout = 100 * time.Millisecond },
+		"missing public URL":   func(c *Config) { c.Server.PublicURL = "" },
+		"disabled local login": func(c *Config) { disabled := false; c.Authentication.LocalLogin.Enabled = &disabled },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := base
+			mutate(&invalid)
+			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local_captcha") {
+				t.Fatalf("invalid CAPTCHA configuration accepted: %#v error=%v", invalid.Authentication.LocalCaptcha, err)
+			}
+		})
+	}
+}
+
+func TestLocalCaptchaTriggerMultiplierSupportsZeroAndFractions(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		configured     string
+		wantMultiplier float64
+		maxConcurrent  int
+		wantThreshold  int
+	}{
+		{name: "omitted uses default", wantMultiplier: defaultLocalCaptchaTriggerMultiplier, maxConcurrent: 2, wantThreshold: 3},
+		{name: "zero is always", configured: "    trigger_multiplier: 0\n", wantMultiplier: 0, maxConcurrent: 2, wantThreshold: 1},
+		{name: "fraction starts early", configured: "    trigger_multiplier: 0.5\n", wantMultiplier: .5, maxConcurrent: 4, wantThreshold: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := DecodeConfig(strings.NewReader(`
+server:
+  public_url: https://broker.example.com
+authentication:
+  token_pepper: 0123456789abcdef0123456789abcdef
+  local_login:
+    enabled: true
+  local_captcha:
+    enabled: true
+    provider: turnstile
+    site_key: public-site-key
+    secret_key: private-secret-key
+`+test.configured), func(string) string { return "" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			captcha := cfg.Authentication.LocalCaptcha
+			if captcha.TriggerMultiplier != test.wantMultiplier || captcha.threshold(test.maxConcurrent) != test.wantThreshold {
+				t.Fatalf("multiplier=%v threshold=%d", captcha.TriggerMultiplier, captcha.threshold(test.maxConcurrent))
+			}
+		})
 	}
 }
 

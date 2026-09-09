@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // localPasswordAuthenticator is deliberately separate from Authenticator: a
@@ -14,13 +15,28 @@ type localPasswordAuthenticator struct {
 	dummy             passwordVerifier
 	passwordWork      chan struct{}
 	passwordAdmission chan struct{}
+	admissionMu       sync.Mutex
 	rateLimiter       *localPasswordRateLimiter
+	captcha           localCaptchaVerifier
+	captchaThreshold  int
 	passwordCheck     func(context.Context, passwordVerifier, []byte, string) bool
 }
 
-func newLocalPasswordAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader) (*localPasswordAuthenticator, error) {
+func newLocalPasswordAuthenticator(ctx context.Context, cfg AuthenticationConfig, localUsers localUserReader, publicURLs ...string) (*localPasswordAuthenticator, error) {
+	publicURL := ""
+	if len(publicURLs) > 0 {
+		publicURL = publicURLs[0]
+	}
 	cfg.LocalRateLimit.setDefaults()
 	if err := cfg.LocalRateLimit.validate(); err != nil {
+		return nil, err
+	}
+	cfg.LocalCaptcha.setDefaults()
+	if err := cfg.LocalCaptcha.validate(cfg.LocalRateLimit, true, publicURL); err != nil {
+		return nil, err
+	}
+	captcha, err := newLocalCaptchaVerifier(cfg.LocalCaptcha, publicURL)
+	if err != nil {
 		return nil, err
 	}
 	capacity := cfg.LocalRateLimit.MaxConcurrent * cfg.LocalRateLimit.SaturationMultiplier
@@ -29,6 +45,8 @@ func newLocalPasswordAuthenticator(ctx context.Context, cfg AuthenticationConfig
 		passwordWork:      make(chan struct{}, cfg.LocalRateLimit.MaxConcurrent),
 		passwordAdmission: make(chan struct{}, capacity),
 		rateLimiter:       newLocalPasswordRateLimiter(cfg.LocalRateLimit, []byte(cfg.TokenPepper)),
+		captcha:           captcha,
+		captchaThreshold:  cfg.LocalCaptcha.threshold(cfg.LocalRateLimit.MaxConcurrent),
 		passwordCheck:     verifyPassword,
 	}
 	if len(cfg.TokenPepper) >= tokenPepperMinimumBytes {
@@ -54,7 +72,11 @@ func newLocalPasswordAuthenticator(ctx context.Context, cfg AuthenticationConfig
 	return a, nil
 }
 
-func (a *localPasswordAuthenticator) Authenticate(ctx context.Context, username, password string) (Principal, error) {
+func (a *localPasswordAuthenticator) Authenticate(ctx context.Context, username, password string, captchaAttempts ...localCaptchaAttempt) (Principal, error) {
+	captcha := localCaptchaAttempt{}
+	if len(captchaAttempts) > 0 {
+		captcha = captchaAttempts[0]
+	}
 	var user LocalUser
 	var err error
 	if a != nil && a.localUsers != nil {
@@ -63,7 +85,7 @@ func (a *localPasswordAuthenticator) Authenticate(ctx context.Context, username,
 	if err == nil && user.Enabled && user.Kind == humanIdentityKind {
 		verifier, parseErr := parsePasswordVerifier(user.PasswordHash)
 		if parseErr == nil {
-			authenticated, checkErr := a.check(ctx, username, verifier, password)
+			authenticated, checkErr := a.check(ctx, username, verifier, password, captcha)
 			if checkErr != nil {
 				return Principal{}, checkErr
 			}
@@ -74,22 +96,32 @@ func (a *localPasswordAuthenticator) Authenticate(ctx context.Context, username,
 		}
 	}
 	if a != nil && a.dummy.hash != nil {
-		if _, checkErr := a.check(ctx, username, a.dummy, password); checkErr != nil {
+		if _, checkErr := a.check(ctx, username, a.dummy, password, captcha); checkErr != nil {
 			return Principal{}, checkErr
 		}
 	}
 	return Principal{}, ErrUnauthenticated
 }
 
-func (a *localPasswordAuthenticator) check(ctx context.Context, username string, verifier passwordVerifier, password string) (bool, error) {
+func (a *localPasswordAuthenticator) check(ctx context.Context, username string, verifier passwordVerifier, password string, captcha localCaptchaAttempt) (bool, error) {
 	if err := a.rateLimiter.allow(username); err != nil {
 		return false, err
 	}
-	release, err := a.acquirePasswordWork(ctx)
+	releaseAdmission, occupancy, err := a.acquirePasswordAdmission(ctx)
 	if err != nil {
 		return false, err
 	}
-	defer release()
+	defer releaseAdmission()
+	if a.captcha != nil && occupancy >= a.captchaThreshold {
+		if err := a.captcha.Verify(ctx, captcha); err != nil {
+			return false, newCaptchaRequiredError(a.captcha, captcha.Action)
+		}
+	}
+	releaseWork, err := a.acquirePasswordWorker(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer releaseWork()
 	if err := a.rateLimiter.allow(username); err != nil {
 		return false, err
 	}
@@ -99,23 +131,61 @@ func (a *localPasswordAuthenticator) check(ctx context.Context, username string,
 }
 
 func (a *localPasswordAuthenticator) acquirePasswordWork(ctx context.Context) (func(), error) {
+	releaseAdmission, _, err := a.acquirePasswordAdmission(ctx)
+	if err != nil {
+		return nil, err
+	}
+	releaseWork, err := a.acquirePasswordWorker(ctx)
+	if err != nil {
+		releaseAdmission()
+		return nil, err
+	}
+	return func() { releaseWork(); releaseAdmission() }, nil
+}
+
+func (a *localPasswordAuthenticator) acquirePasswordAdmission(ctx context.Context) (func(), int, error) {
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, 0, ctx.Err()
 	default:
 	}
+	a.admissionMu.Lock()
 	select {
 	case a.passwordAdmission <- struct{}{}:
 	default:
-		return nil, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
+		a.admissionMu.Unlock()
+		return nil, 0, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
 	}
+	occupancy := len(a.passwordAdmission)
+	a.admissionMu.Unlock()
+	return func() {
+		a.admissionMu.Lock()
+		<-a.passwordAdmission
+		a.admissionMu.Unlock()
+	}, occupancy, nil
+}
+
+func (a *localPasswordAuthenticator) acquirePasswordWorker(ctx context.Context) (func(), error) {
 	select {
 	case a.passwordWork <- struct{}{}:
 	case <-ctx.Done():
-		<-a.passwordAdmission
 		return nil, ctx.Err()
 	}
-	return func() { <-a.passwordWork; <-a.passwordAdmission }, nil
+	return func() { <-a.passwordWork }, nil
+}
+
+func (a *localPasswordAuthenticator) CaptchaChallenge(action string) *localCaptchaChallenge {
+	if a == nil || a.captcha == nil {
+		return nil
+	}
+	a.admissionMu.Lock()
+	required := len(a.passwordAdmission)+1 >= a.captchaThreshold
+	a.admissionMu.Unlock()
+	if !required {
+		return nil
+	}
+	challenge := a.captcha.Challenge(action)
+	return &challenge
 }
 
 func verifyPassword(_ context.Context, verifier passwordVerifier, pepper []byte, password string) bool {

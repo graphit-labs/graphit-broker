@@ -24,6 +24,13 @@ authentication:
     lockout: 5m
     max_concurrent: 2
     saturation_multiplier: 4
+  local_captcha:
+    enabled: false
+    provider: turnstile # or recaptcha
+    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+    trigger_multiplier: 1.5
+    verification_timeout: 3s
   local_mfa:
     required: true
     issuer: Graphit Broker
@@ -59,6 +66,15 @@ session cookies. They are `Secure` by default; only an explicit
 `administration.cookie_secure: false` disables that attribute for loopback HTTP development.
 State-changing cookie requests require the per-session `X-CSRF-Token`. Direct bearer requests use
 the normal broker authenticator and do not need CSRF.
+
+When adaptive CAPTCHA is enabled, the local credential panel renders the selected Cloudflare
+Turnstile or Google reCAPTCHA v2 Checkbox widget only when the per-process authentication admission
+reaches its configured threshold. A request that crosses the threshold receives
+`captcha_required`, clears the submitted password, and must be retried with a new provider proof.
+The threshold uses `max(1, ceil(max_concurrent * trigger_multiplier))`: omitting the multiplier uses
+`1.5`, while explicitly setting `0` keeps the widget active from the first login attempt.
+The password-change and MFA panels do not render CAPTCHA. Provider timeouts fail local login closed
+while the threshold remains reached; organization OIDC login is independent and remains usable.
 
 ## First local administrator
 

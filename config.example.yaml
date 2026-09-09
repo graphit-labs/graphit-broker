@@ -34,6 +34,19 @@ authentication:
     lockout: 5m
     max_concurrent: 2
     saturation_multiplier: 4
+  # Optional adaptive bot protection for the first local-password step. Select `turnstile`
+  # (Cloudflare managed widget) or `recaptcha` (Google reCAPTCHA v2 Checkbox). The attempt that
+  # raises per-process admission to max(1, ceil(max_concurrent * trigger_multiplier)) must pass
+  # the provider before Argon2id. Use 0 to require CAPTCHA from the first attempt, or a positive
+  # fraction to start before max_concurrent. Provider failures fail closed only while required.
+  # server.public_url is mandatory when enabled and its hostname is checked on every proof.
+  local_captcha:
+    enabled: false
+    provider: "turnstile" # or "recaptcha"
+    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+    trigger_multiplier: 1.5
+    verification_timeout: 3s
   # Human local users must enroll a Google Authenticator-compatible TOTP factor by default.
   # Enrollment and verification challenges are short-lived and bound to the login flow.
   local_mfa:
