@@ -536,7 +536,7 @@ func (s *ControlStore) invalidateLocalArtifactsTx(ctx context.Context, tx *sql.T
 		args  []any
 	}{
 		{`UPDATE local_tokens SET revoked_at=? WHERE subject=? AND revoked_at=?`, []any{now, subject, ""}},
-		{`DELETE FROM oauth_authorization_codes WHERE subject=?`, []any{subject}},
+		{`DELETE FROM oidc_auth_requests WHERE identity_subject=?`, []any{subject}},
 		{`DELETE FROM local_auth_challenges WHERE subject=?`, []any{subject}},
 	}
 	if !preservePendingDevice {

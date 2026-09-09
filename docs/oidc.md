@@ -56,11 +56,28 @@ for that identity do not participate. An absent/empty role claim therefore leave
 `user` role; malformed or unsafe role values are rejected. The `admin` role is an ordinary
 privileged role, not a different authentication path.
 
-## Browser flow
+## Browser flows and Broker issuer
 
-OIDC may start from `GET /admin/auth/login` for administration or from the OIDC choice on
-`GET /oauth/authorize` for Graphit Code. Both create random state, nonce, PKCE verifier, and
-browser-binding values. The
+The Broker is itself an OpenID Provider for Graphit Code. Graphit Code always uses standard
+Authorization Code + PKCE against the Broker issuer, regardless of whether the Broker authenticates
+the person with a local password or the configured upstream issuer. With both methods enabled the
+Broker renders the choice; with only upstream OIDC it redirects immediately; with only local login
+it renders only the local form.
+
+```text
+Graphit Code ── Authorization Code + PKCE ──> Broker OpenID Provider
+                                               ├─ local password/change/TOTP
+                                               └─ upstream OIDC client ──> organization IdP
+Graphit Code <── Broker code/ID/access/refresh tokens ───────────────────┘
+```
+
+In both branches, the issuer visible to Graphit Code is the Broker and the returned subject is the
+stable Broker `sub`. The upstream issuer and its authorization code, client secret, ID token,
+access token, and refresh token are never returned to Graphit Code. The local branch implements an
+OIDC login outcome without turning the password into an API credential.
+
+Upstream OIDC may start from `GET /admin/auth/login` for administration or from the upstream choice
+inside the Broker authorization. Both create random state, nonce, PKCE verifier, and browser-binding values. The
 binding is held in an `HttpOnly`, `SameSite=Lax` cookie whose per-flow name permits concurrent
 logins. Only HMAC-protected state and binding are stored in SQL, using
 `authentication.token_pepper` and domains distinct from session and password domains. The callback
@@ -68,7 +85,9 @@ requires both values and consumes the flow once; a missing/wrong binding does no
 state. It then exchanges the code using the
 configured confidential client, verifies the ID token and nonce, maps the same subject/attribute
 selectors, then either creates a short-lived administration cookie session or resumes the pending
-Graphit Code authorization and returns a one-time code to its loopback callback.
+Broker authorization. The OIDC provider library then returns a one-time code to Graphit Code's
+loopback callback and signs an EdDSA ID token whose `sub` is derived from the canonical underlying
+identity, independent of mutable username.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
 

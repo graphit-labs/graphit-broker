@@ -679,6 +679,9 @@ func (c Config) Validate() error {
 	if loginProviders > 1 {
 		return errors.New("authentication.oidc must configure at most one browser login client")
 	}
+	if (c.Authentication.LocalLogin.isEnabled() || loginProviders > 0) && strings.TrimSpace(c.Server.PublicURL) == "" {
+		return errors.New("server.public_url is required when browser authentication is enabled")
+	}
 	if c.Administration.Enabled || c.Authentication.LocalLogin.isEnabled() || loginProviders > 0 {
 		if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
 			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when browser authentication is enabled", tokenPepperMinimumBytes)
@@ -762,7 +765,7 @@ func (c Config) Validate() error {
 		}
 	}
 	if c.Server.PublicURL != "" {
-		if err := validateHTTPSURL(c.Server.PublicURL, "server public URL"); err != nil {
+		if err := validatePublicURL(c.Server.PublicURL); err != nil {
 			return err
 		}
 	}
@@ -864,6 +867,17 @@ func validateHTTPSURL(raw, name string) error {
 	u, _ := url.Parse(raw)
 	if u.Scheme != "https" {
 		return fmt.Errorf("%s must use HTTPS", name)
+	}
+	return nil
+}
+
+func validatePublicURL(raw string) error {
+	if err := validateHTTPSURL(raw, "server public URL"); err != nil {
+		return err
+	}
+	u, _ := url.Parse(strings.TrimSpace(raw))
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("server public URL must be an HTTPS origin without path, query, or fragment")
 	}
 	return nil
 }

@@ -1,12 +1,11 @@
 package broker
 
 import (
+	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"html/template"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -38,35 +37,15 @@ type localLoginPageData struct {
 	Captcha                                                   *localCaptchaChallenge
 }
 
-func (s *Server) oauthMetadata(w http.ResponseWriter, r *http.Request) {
-	issuer := s.publicURL(r)
-	methods, _ := s.oauthLoginMethods(r)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                issuer,
-		"authorization_endpoint":                issuer + "/oauth/authorize",
-		"token_endpoint":                        issuer + "/oauth/token",
-		"device_authorization_endpoint":         issuer + "/oauth/device/authorize",
-		"revocation_endpoint":                   issuer + "/oauth/revoke",
-		"userinfo_endpoint":                     issuer + "/oauth/userinfo",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token", deviceGrantType},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{localAPIScope, offlineAccessScope},
-		"client_id":                             s.runtime().config.Authentication.LocalTokens.CLIClientID,
-		"redirect_uri_path":                     s.runtime().config.Authentication.LocalTokens.CLIRedirectPath,
-		"login_methods_supported":               methods,
-	})
-}
-
-func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
+func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if s.control == nil {
 		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization is unavailable")
 		return
 	}
-	params, err := s.localAuthorizationRequest(r)
-	if err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	requestID := strings.TrimSpace(r.URL.Query().Get("id"))
+	authRequest, err := s.oidcProvider.storage.AuthRequestByID(r.Context(), requestID)
+	if err != nil || authRequest.Done() {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OpenID authorization request is invalid or expired")
 		return
 	}
 	methods, err := s.oauthLoginMethods(r)
@@ -80,6 +59,10 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
+		if oidcEnabled && !localEnabled {
+			s.startOAuthOIDC(w, r, requestID)
+			return
+		}
 		data := localLoginPageData{Local: localEnabled, OIDC: oidcEnabled}
 		data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
@@ -95,14 +78,14 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OIDC login is unavailable")
 			return
 		}
-		s.startOAuthOIDC(w, r, params)
+		s.startOAuthOIDC(w, r, requestID)
 		return
 	}
 	if !localEnabled {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "local login is unavailable")
 		return
 	}
-	binding := params.binding()
+	binding := requestID
 	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeOAuth, binding)
 	if challenge, required := captchaChallengeFromError(authErr); required {
 		data := loginPageData(step, "Complete human verification before signing in.")
@@ -144,11 +127,11 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
-	redirect, err := s.issueOAuthAuthorizationCode(r, params, step.Principal)
-	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist authorization code")
+	if err := s.oidcProvider.storage.AuthorizeRequest(r.Context(), requestID, step.Principal, s.localAuthenticationMethods(r.Context(), step.Principal)); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete OpenID authorization")
 		return
 	}
+	redirect := s.oidcProvider.op.AuthorizationEndpoint().Absolute(s.publicURL(r)) + "/callback?id=" + url.QueryEscape(requestID)
 	w.Header().Set("Cache-Control", "no-store")
 	if len(step.RecoveryCodes) > 0 {
 		data := loginPageData(step, "")
@@ -160,43 +143,18 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
-type localAuthorizationParams struct {
-	clientID, redirectURI, codeChallenge, state string
-	scopes                                      []string
+func (s *Server) localAuthenticationMethods(ctx context.Context, principal Principal) []string {
+	methods := []string{"pwd"}
+	if s.control != nil {
+		if user, err := s.control.LocalUserBySubject(ctx, principal.Subject); err == nil && user.MFAEnabled {
+			methods = append(methods, "otp")
+		}
+	}
+	return methods
 }
 
 type oauthOIDCContinuation struct {
-	ClientID, RedirectURI, CodeChallenge, State string
-	Scopes                                      []string
-}
-
-func (p localAuthorizationParams) binding() string {
-	return strings.Join([]string{p.clientID, p.redirectURI, p.codeChallenge, p.state, strings.Join(p.scopes, " ")}, "\n")
-}
-
-func (s *Server) localAuthorizationRequest(r *http.Request) (localAuthorizationParams, error) {
-	query := r.URL.Query()
-	params := localAuthorizationParams{clientID: strings.TrimSpace(query.Get("client_id")), redirectURI: strings.TrimSpace(query.Get("redirect_uri")),
-		codeChallenge: strings.TrimSpace(query.Get("code_challenge")), state: query.Get("state")}
-	if query.Get("response_type") != "code" {
-		return params, errors.New("response_type must be code")
-	}
-	cfg := s.runtime().config.Authentication.LocalTokens
-	if params.clientID != cfg.CLIClientID {
-		return params, errors.New("unknown client_id")
-	}
-	if err := validateLoopbackRedirect(params.redirectURI, cfg.CLIRedirectPath); err != nil {
-		return params, err
-	}
-	if query.Get("code_challenge_method") != "S256" || !validPKCEChallenge(params.codeChallenge) {
-		return params, errors.New("PKCE S256 code_challenge is required")
-	}
-	if params.state == "" || len(params.state) > 512 {
-		return params, errors.New("state is required and must not exceed 512 bytes")
-	}
-	var err error
-	params.scopes, err = requestedLocalScopes(query.Get("scope"))
-	return params, err
+	RequestID string `json:"request_id"`
 }
 
 func (s *Server) oauthLoginMethods(r *http.Request) ([]string, error) {
@@ -217,7 +175,7 @@ func (s *Server) oauthLoginMethods(r *http.Request) ([]string, error) {
 	return methods, nil
 }
 
-func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, params localAuthorizationParams) {
+func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestID string) {
 	rawState, err := randomURLToken(32)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
@@ -238,7 +196,7 @@ func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, params l
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
 		return
 	}
-	continuation, err := json.Marshal(oauthOIDCContinuation{ClientID: params.clientID, RedirectURI: params.redirectURI, CodeChallenge: params.codeChallenge, State: params.state, Scopes: params.scopes})
+	continuation, err := json.Marshal(oauthOIDCContinuation{RequestID: requestID})
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
 		return
@@ -254,7 +212,7 @@ func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, params l
 }
 
 func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request, flow OIDCFlow, identity AdminIdentity) {
-	params, err := s.paramsFromOIDCFlow(flow)
+	requestID, err := s.requestIDFromOIDCFlow(r.Context(), flow)
 	if err != nil {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_request", "OIDC authorization continuation is invalid")
 		return
@@ -262,95 +220,47 @@ func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request,
 	principal := Principal{Issuer: identity.Issuer, Subject: identity.Subject, Name: identity.Name, Email: identity.Email,
 		Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams, Roles: identity.Roles,
 		RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}
-	redirect, err := s.issueOAuthAuthorizationCode(r, params, principal)
-	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist authorization code")
+	if err := s.oidcProvider.storage.AuthorizeRequest(r.Context(), requestID, principal, []string{"federated"}); err != nil {
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete OpenID authorization")
 		return
 	}
+	redirect := s.oidcProvider.op.AuthorizationEndpoint().Absolute(s.publicURL(r)) + "/callback?id=" + url.QueryEscape(requestID)
 	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
-func (s *Server) paramsFromOIDCFlow(flow OIDCFlow) (localAuthorizationParams, error) {
+func (s *Server) requestIDFromOIDCFlow(ctx context.Context, flow OIDCFlow) (string, error) {
 	var saved oauthOIDCContinuation
 	if flow.Purpose != oidcPurposeOAuth || json.Unmarshal([]byte(flow.Continuation), &saved) != nil {
-		return localAuthorizationParams{}, errors.New("invalid OIDC continuation")
+		return "", errors.New("invalid OIDC continuation")
 	}
-	params := localAuthorizationParams{clientID: saved.ClientID, redirectURI: saved.RedirectURI, codeChallenge: saved.CodeChallenge, state: saved.State, scopes: cleanStrings(saved.Scopes)}
-	cfg := s.runtime().config.Authentication.LocalTokens
-	if params.clientID != cfg.CLIClientID || validateLoopbackRedirect(params.redirectURI, cfg.CLIRedirectPath) != nil || !validPKCEChallenge(params.codeChallenge) || params.state == "" || len(params.state) > 512 {
-		return localAuthorizationParams{}, errors.New("invalid OIDC continuation")
+	if saved.RequestID == "" {
+		return "", errors.New("invalid OIDC continuation")
 	}
-	if _, err := requestedLocalScopes(strings.Join(params.scopes, " ")); err != nil {
-		return localAuthorizationParams{}, err
-	}
-	return params, nil
-}
-
-func (s *Server) issueOAuthAuthorizationCode(r *http.Request, params localAuthorizationParams, principal Principal) (string, error) {
-	code, err := randomURLToken(32)
-	if err != nil {
+	if _, err := s.oidcProvider.storage.AuthRequestByID(ctx, saved.RequestID); err != nil {
 		return "", err
 	}
-	grant := AuthorizationCodeGrant{LocalTokenGrant: LocalTokenGrant{Principal: principal, Subject: principal.Subject, LocalUserRevision: principal.LocalUserRevision,
-		ClientID: params.clientID, Audience: s.runtime().config.Authentication.LocalTokens.Audience, Scopes: params.scopes},
-		RedirectURI: params.redirectURI, CodeChallenge: params.codeChallenge}
-	grant.ExpiresAt = time.Now().Add(s.runtime().config.Authentication.LocalTokens.AuthorizationTTL)
-	if err := s.control.SaveAuthorizationCode(r.Context(), code, grant); err != nil {
-		return "", err
-	}
-	redirect, err := url.Parse(params.redirectURI)
-	if err != nil {
-		return "", err
-	}
-	query := redirect.Query()
-	query.Set("code", code)
-	query.Set("state", params.state)
-	redirect.RawQuery = query.Encode()
-	return redirect.String(), nil
+	return saved.RequestID, nil
 }
 
 func (s *Server) redirectOAuthFailure(w http.ResponseWriter, r *http.Request, flow OIDCFlow, code string) bool {
-	params, err := s.paramsFromOIDCFlow(flow)
+	requestID, err := s.requestIDFromOIDCFlow(r.Context(), flow)
 	if err != nil {
 		return false
 	}
-	redirect, err := url.Parse(params.redirectURI)
+	request, err := s.oidcProvider.storage.AuthRequestByID(r.Context(), requestID)
+	if err != nil {
+		return false
+	}
+	redirect, err := url.Parse(request.GetRedirectURI())
 	if err != nil {
 		return false
 	}
 	query := redirect.Query()
 	query.Set("error", code)
-	query.Set("state", params.state)
+	query.Set("state", request.GetState())
 	redirect.RawQuery = query.Encode()
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 	return true
-}
-
-func validateLoopbackRedirect(raw, expectedPath string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != expectedPath {
-		return errors.New("redirect_uri must be the configured HTTP loopback callback path")
-	}
-	host := parsed.Hostname()
-	if host != "127.0.0.1" && host != "::1" {
-		return errors.New("redirect_uri must use a loopback IP literal")
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil || port < 1 || port > 65535 {
-		return errors.New("redirect_uri must include the CLI loopback port")
-	}
-	if net.ParseIP(host) == nil {
-		return errors.New("redirect_uri loopback host is invalid")
-	}
-	return nil
-}
-
-func validPKCEChallenge(value string) bool {
-	if len(value) != 43 {
-		return false
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	return err == nil && len(decoded) == 32
 }
 
 func requestedLocalScopes(raw string) ([]string, error) {
@@ -362,7 +272,7 @@ func requestedLocalScopes(raw string) ([]string, error) {
 		return nil, errors.New("scope graphit.use is required")
 	}
 	for _, value := range values {
-		if value != localAPIScope && value != offlineAccessScope {
+		if value != localAPIScope {
 			return nil, errors.New("unsupported scope " + value)
 		}
 	}
@@ -517,7 +427,34 @@ func loginPageData(step LocalAuthStep, message string) localLoginPageData {
 		Secret: step.Secret, QRCodeDataURL: template.URL(step.QRCodeDataURL), RecoveryCodes: step.RecoveryCodes} // #nosec G203 -- generated PNG data URL only.
 }
 
-func (s *Server) oauthToken(w http.ResponseWriter, r *http.Request) {
+func (s *Server) oauthTokenGateway(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	if err := r.ParseForm(); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
+		return
+	}
+	if r.PostForm.Get("grant_type") == deviceGrantType {
+		s.oauthDeviceToken(w, r)
+		return
+	}
+	s.oidcProvider.handler.ServeHTTP(w, r)
+}
+
+func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			redirectURI = r.PostForm.Get("redirect_uri")
+		}
+	}
+	if parsed, err := url.Parse(redirectURI); err == nil && parsed.Port() == "0" {
+		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		return
+	}
+	s.oidcProvider.handler.ServeHTTP(w, r)
+}
+
+func (s *Server) oauthDeviceToken(w http.ResponseWriter, r *http.Request) {
 	if !requireForm(w, r) {
 		return
 	}
@@ -526,23 +463,11 @@ func (s *Server) oauthToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
 		return
 	}
-	var grant LocalTokenGrant
-	var err error
-	switch r.PostForm.Get("grant_type") {
-	case "authorization_code":
-		if !validPKCEVerifier(r.PostForm.Get("code_verifier")) {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "authorization grant is invalid")
-			return
-		}
-		grant, err = s.control.ConsumeAuthorizationCode(r.Context(), r.PostForm.Get("code"), clientID, r.PostForm.Get("redirect_uri"), r.PostForm.Get("code_verifier"))
-	case deviceGrantType:
-		grant, err = s.control.PollDeviceAuthorization(r.Context(), r.PostForm.Get("device_code"), clientID)
-	case "refresh_token":
-		grant, err = s.control.ConsumeRefreshToken(r.Context(), r.PostForm.Get("refresh_token"), clientID)
-	default:
+	if r.PostForm.Get("grant_type") != deviceGrantType {
 		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant_type")
 		return
 	}
+	grant, err := s.control.PollDeviceAuthorization(r.Context(), r.PostForm.Get("device_code"), clientID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAuthorizationPending):
@@ -557,19 +482,6 @@ func (s *Server) oauthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.oauthIssueTokenPair(w, r, grant)
-}
-
-func validPKCEVerifier(value string) bool {
-	if len(value) < 43 || len(value) > 128 {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("-._~", r) {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func (s *Server) oauthIssueTokenPair(w http.ResponseWriter, r *http.Request, grant LocalTokenGrant) {
@@ -600,67 +512,14 @@ func (s *Server) oauthIssueTokenPair(w http.ResponseWriter, r *http.Request, gra
 	accessRaw := localAccessTokenPrefix + accessSecret
 	grant.Audience, grant.ClientID = cfg.Audience, cfg.CLIClientID
 	grant.ExpiresAt = time.Now().Add(cfg.AccessTTL)
-	if grant.RefreshExpiresAt.IsZero() {
-		grant.RefreshExpiresAt = time.Now().Add(cfg.RefreshTTL)
-	}
-	if grant.FamilyID == "" {
-		grant.FamilyID, err = randomURLToken(16)
-		if err != nil {
-			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue token family")
-			return
-		}
-	}
-	refreshRaw, refreshID := "", ""
-	if containsString(grant.Scopes, offlineAccessScope) {
-		refreshSecret, refreshErr := randomURLToken(32)
-		if refreshErr != nil {
-			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue refresh token")
-			return
-		}
-		refreshRaw = localRefreshTokenPrefix + refreshSecret
-		refreshID, err = randomURLToken(12)
-		if err != nil {
-			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue refresh token")
-			return
-		}
-	}
-	if err := s.control.SaveTokenPair(r.Context(), accessRaw, accessID, refreshRaw, refreshID, grant); err != nil {
+	if err := s.control.SaveTokenPair(r.Context(), accessRaw, accessID, "", "", grant); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist access token")
 		return
 	}
 	response := map[string]any{"access_token": accessRaw, "token_type": "Bearer", "expires_in": int64(cfg.AccessTTL / time.Second), "scope": strings.Join(cleanStrings(grant.Scopes), " ")}
-	response["identity"] = map[string]any{"issuer": principal.Issuer, "subject": principal.Subject, "name": principal.Name, "email": principal.Email,
-		"username": principal.Username, "organization": principal.Organization, "teams": cleanStrings(principal.Teams), "roles": cleanStrings(principal.Roles)}
-	if refreshRaw != "" {
-		response["refresh_token"] = refreshRaw
-	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, response)
-}
-
-func (s *Server) oauthRevoke(w http.ResponseWriter, r *http.Request) {
-	if !requireForm(w, r) {
-		return
-	}
-	if err := s.control.RevokeRawToken(r.Context(), r.PostForm.Get("token")); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not revoke token")
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-}
-
-func (s *Server) oauthUserinfo(w http.ResponseWriter, r *http.Request) {
-	principal := principalFromContext(r.Context())
-	if principal.IsAnonymous() {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "a valid broker access token is required")
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]any{"issuer": principal.Issuer, "subject": principal.Subject, "name": principal.Name,
-		"email": principal.Email, "username": principal.Username, "organization": principal.Organization,
-		"teams": cleanStrings(principal.Teams), "roles": cleanStrings(principal.Roles)})
 }
 
 func requireForm(w http.ResponseWriter, r *http.Request) bool {

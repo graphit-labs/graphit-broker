@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	coreoidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -21,6 +23,31 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
+	metadataResponse, err := http.Get(httpServer.URL + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata struct {
+		Issuer                string   `json:"issuer"`
+		AuthorizationEndpoint string   `json:"authorization_endpoint"`
+		TokenEndpoint         string   `json:"token_endpoint"`
+		UserinfoEndpoint      string   `json:"userinfo_endpoint"`
+		JWKSURI               string   `json:"jwks_uri"`
+		GrantTypes            []string `json:"grant_types_supported"`
+		CodeChallenges        []string `json:"code_challenge_methods_supported"`
+		TokenAuthMethods      []string `json:"token_endpoint_auth_methods_supported"`
+		SigningAlgorithms     []string `json:"id_token_signing_alg_values_supported"`
+	}
+	if metadataResponse.StatusCode != http.StatusOK || json.NewDecoder(metadataResponse.Body).Decode(&metadata) != nil {
+		t.Fatalf("OpenID discovery status=%d", metadataResponse.StatusCode)
+	}
+	_ = metadataResponse.Body.Close()
+	if metadata.Issuer != httpServer.URL || metadata.AuthorizationEndpoint != httpServer.URL+"/oauth/authorize" || metadata.TokenEndpoint != httpServer.URL+"/oauth/token" ||
+		metadata.UserinfoEndpoint != httpServer.URL+"/oauth/userinfo" || metadata.JWKSURI != httpServer.URL+"/oauth/keys" ||
+		!containsString(metadata.GrantTypes, "authorization_code") || !containsString(metadata.GrantTypes, "refresh_token") ||
+		!containsString(metadata.CodeChallenges, "S256") || !containsString(metadata.TokenAuthMethods, "none") || !containsString(metadata.SigningAlgorithms, "EdDSA") {
+		t.Fatalf("incomplete OpenID discovery: %#v", metadata)
+	}
 
 	verifier := strings.Repeat("v", 64)
 	digest := sha256.Sum256([]byte(verifier))
@@ -36,6 +63,14 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 		t.Fatalf("wrong PKCE status=%d", wrong.StatusCode)
 	}
 	_ = wrong.Body.Close()
+	corrected := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
+		"redirect_uri": {redirectURI}, "code_verifier": {verifier},
+	})
+	if corrected.StatusCode != http.StatusOK {
+		t.Fatalf("authorization code correction status=%d", corrected.StatusCode)
+	}
+	_ = corrected.Body.Close()
 	replay := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier},
@@ -63,20 +98,38 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	var tokens struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
-		Identity     struct {
-			Issuer, Subject, Username string
-		} `json:"identity"`
+		IDToken      string `json:"id_token"`
 	}
 	if tokenResponse.StatusCode != http.StatusOK || json.NewDecoder(tokenResponse.Body).Decode(&tokens) != nil {
 		t.Fatalf("token exchange status=%d", tokenResponse.StatusCode)
 	}
 	_ = tokenResponse.Body.Close()
-	if !strings.HasPrefix(tokens.AccessToken, localAccessTokenPrefix) || !strings.HasPrefix(tokens.RefreshToken, localRefreshTokenPrefix) {
+	if tokens.AccessToken == "" || strings.HasPrefix(tokens.AccessToken, localAccessTokenPrefix) || !strings.HasPrefix(tokens.RefreshToken, localRefreshTokenPrefix) || tokens.IDToken == "" {
 		t.Fatalf("issued tokens=%#v", tokens)
 	}
-	if tokens.Identity.Issuer != localIdentityIssuer || tokens.Identity.Subject != "consumer-subject" || tokens.Identity.Username != "consumer" {
-		t.Fatalf("local token identity=%#v", tokens.Identity)
+	providerContext := coreoidc.InsecureIssuerURLContext(context.Background(), httpServer.URL)
+	provider, err := coreoidc.NewProvider(providerContext, httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
+	verified, err := provider.Verifier(&coreoidc.Config{ClientID: "graphit-cli"}).Verify(providerContext, tokens.IDToken)
+	if err != nil {
+		t.Fatalf("verify Broker ID token: %v", err)
+	}
+	var claims map[string]any
+	if err := verified.Claims(&claims); err != nil || claims["nonce"] != "client-nonce" || claims["preferred_username"] != "consumer" || !strings.HasPrefix(verified.Subject, "gb_sub_") {
+		t.Fatalf("local ID token claims=%#v subject=%q err=%v", claims, verified.Subject, err)
+	}
+	if principal, err := service.oidcProvider.storage.AuthenticateAccessToken(context.Background(), tokens.AccessToken, service.oidcProvider.op.Crypto()); err != nil || principal.Username != "consumer" {
+		t.Fatalf("authenticate Broker access token principal=%#v err=%v", principal, err)
+	}
+	userinfo := bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", tokens.AccessToken, "")
+	var userinfoClaims map[string]any
+	if userinfo.StatusCode != http.StatusOK || json.NewDecoder(userinfo.Body).Decode(&userinfoClaims) != nil ||
+		userinfoClaims["sub"] != verified.Subject || userinfoClaims["preferred_username"] != "consumer" {
+		t.Fatalf("local userinfo status=%d claims=%#v", userinfo.StatusCode, userinfoClaims)
+	}
+	_ = userinfo.Body.Close()
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", tokens.AccessToken, http.StatusOK)
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", "consumer:consumer-secret", http.StatusUnauthorized)
 
@@ -117,7 +170,7 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	}
 	_ = revocableResponse.Body.Close()
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", revocable.AccessToken, http.StatusOK)
-	revoked := oauthForm(t, httpServer.URL+"/oauth/revoke", url.Values{"token": {revocable.AccessToken}})
+	revoked := oauthForm(t, httpServer.URL+"/oauth/revoke", url.Values{"token": {revocable.AccessToken}, "client_id": {"graphit-cli"}})
 	if revoked.StatusCode != http.StatusOK {
 		t.Fatalf("revocation status=%d", revoked.StatusCode)
 	}
@@ -130,8 +183,8 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	}
 }
 
-func TestBrokerOAuthPageOffersConfiguredMethodsAndCompletesOIDC(t *testing.T) {
-	service, httpServer, provider := newAdminTestServer(t, "http://127.0.0.1:1")
+func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testing.T) {
+	service, httpServer, upstream := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
 
@@ -140,9 +193,16 @@ func TestBrokerOAuthPageOffersConfiguredMethodsAndCompletesOIDC(t *testing.T) {
 	redirectURI := "http://127.0.0.1:49152/oauth/callback"
 	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"},
-		"state": {"graphit-state"}, "scope": {"graphit.use offline_access"}}
+		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid profile email graphit.use offline_access"}}
 
-	page, err := http.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	client := noRedirectClient()
+	start, err := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	if err != nil || start.StatusCode != http.StatusFound {
+		t.Fatalf("authorization start status=%s err=%v", statusText(start), err)
+	}
+	loginURL := absoluteTestURL(httpServer.URL, start.Header.Get("Location"))
+	_ = start.Body.Close()
+	page, err := client.Get(loginURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,16 +212,21 @@ func TestBrokerOAuthPageOffersConfiguredMethodsAndCompletesOIDC(t *testing.T) {
 		t.Fatalf("authorization methods status=%d body=%s", page.StatusCode, pageBody)
 	}
 
-	client := noRedirectClient()
-	start := oauthFormWithClient(t, client, httpServer.URL+"/oauth/authorize?"+query.Encode(), url.Values{"login_method": {"oidc"}})
-	if start.StatusCode != http.StatusFound || !strings.HasPrefix(start.Header.Get("Location"), "https://identity.example/authorize?") {
-		t.Fatalf("OIDC start status=%d location=%q", start.StatusCode, start.Header.Get("Location"))
+	oidcStart := oauthFormWithClient(t, client, loginURL, url.Values{"login_method": {"oidc"}})
+	if oidcStart.StatusCode != http.StatusFound || !strings.HasPrefix(oidcStart.Header.Get("Location"), "https://identity.example/authorize?") {
+		t.Fatalf("OIDC start status=%d location=%q", oidcStart.StatusCode, oidcStart.Header.Get("Location"))
 	}
-	_ = start.Body.Close()
+	_ = oidcStart.Body.Close()
 
-	callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(upstream.state) + "&code=valid-code")
 	if err != nil || callback.StatusCode != http.StatusFound {
 		t.Fatalf("OIDC callback status=%s err=%v", statusText(callback), err)
+	}
+	opCallback := absoluteTestURL(httpServer.URL, callback.Header.Get("Location"))
+	_ = callback.Body.Close()
+	callback, err = client.Get(opCallback)
+	if err != nil || callback.StatusCode != http.StatusFound {
+		t.Fatalf("OP callback status=%s err=%v", statusText(callback), err)
 	}
 	location, err := url.Parse(callback.Header.Get("Location"))
 	_ = callback.Body.Close()
@@ -172,21 +237,58 @@ func TestBrokerOAuthPageOffersConfiguredMethodsAndCompletesOIDC(t *testing.T) {
 	tokenResponse := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"},
 		"code": {location.Query().Get("code")}, "redirect_uri": {redirectURI}, "code_verifier": {verifier}})
 	var token struct {
-		AccessToken string                     `json:"access_token"`
-		Identity    BrokerOAuthIdentityForTest `json:"identity"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		IDToken      string `json:"id_token"`
 	}
 	if tokenResponse.StatusCode != http.StatusOK || json.NewDecoder(tokenResponse.Body).Decode(&token) != nil {
 		t.Fatalf("OIDC token status=%d", tokenResponse.StatusCode)
 	}
 	_ = tokenResponse.Body.Close()
-	if token.Identity.Issuer != "https://identity.example" || token.Identity.Subject != "root-subject" || token.Identity.Username != "root" {
-		t.Fatalf("OIDC token identity=%#v", token.Identity)
+	providerContext := coreoidc.InsecureIssuerURLContext(context.Background(), httpServer.URL)
+	provider, err := coreoidc.NewProvider(providerContext, httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := provider.Verifier(&coreoidc.Config{ClientID: "graphit-cli"}).Verify(providerContext, token.IDToken)
+	var claims map[string]any
+	verifiedSubject := ""
+	if err == nil {
+		err = verified.Claims(&claims)
+		verifiedSubject = verified.Subject
+	}
+	if err != nil || claims["preferred_username"] != "root" || claims["nonce"] != "graphit-nonce" || !strings.HasPrefix(verifiedSubject, "gb_sub_") {
+		t.Fatalf("OIDC token claims=%#v subject=%q err=%v", claims, verifiedSubject, err)
+	}
+	if token.RefreshToken == "" {
+		t.Fatal("upstream-authenticated Broker OIDC login omitted refresh token")
 	}
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", token.AccessToken, http.StatusOK)
 	userinfo := bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", token.AccessToken, "")
-	var verified BrokerOAuthIdentityForTest
-	if userinfo.StatusCode != http.StatusOK || json.NewDecoder(userinfo.Body).Decode(&verified) != nil || verified.Subject != "root-subject" {
-		t.Fatalf("userinfo status=%d identity=%#v", userinfo.StatusCode, verified)
+	var userinfoClaims map[string]any
+	if userinfo.StatusCode != http.StatusOK || json.NewDecoder(userinfo.Body).Decode(&userinfoClaims) != nil || userinfoClaims["sub"] != verifiedSubject || userinfoClaims["preferred_username"] != "root" {
+		t.Fatalf("userinfo status=%d claims=%#v", userinfo.StatusCode, userinfoClaims)
+	}
+	_ = userinfo.Body.Close()
+	refreshResponse := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "client_id": {"graphit-cli"}, "refresh_token": {token.RefreshToken},
+	})
+	var refreshed struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if refreshResponse.StatusCode != http.StatusOK || json.NewDecoder(refreshResponse.Body).Decode(&refreshed) != nil {
+		t.Fatalf("upstream-authenticated refresh status=%d", refreshResponse.StatusCode)
+	}
+	_ = refreshResponse.Body.Close()
+	if refreshed.AccessToken == "" || refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
+		t.Fatalf("upstream-authenticated refresh did not rotate: %#v", refreshed)
+	}
+	userinfo = bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", refreshed.AccessToken, "")
+	userinfoClaims = map[string]any{}
+	if userinfo.StatusCode != http.StatusOK || json.NewDecoder(userinfo.Body).Decode(&userinfoClaims) != nil ||
+		userinfoClaims["sub"] != verifiedSubject || userinfoClaims["preferred_username"] != "root" {
+		t.Fatalf("refreshed upstream userinfo status=%d claims=%#v", userinfo.StatusCode, userinfoClaims)
 	}
 	_ = userinfo.Body.Close()
 
@@ -194,33 +296,41 @@ func TestBrokerOAuthPageOffersConfiguredMethodsAndCompletesOIDC(t *testing.T) {
 	localDisabled := false
 	disabled.config.Authentication.LocalLogin.Enabled = &localDisabled
 	service.state.Store(&disabled)
-	onlyOIDC, _ := http.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
-	onlyOIDCBody, _ := io.ReadAll(onlyOIDC.Body)
-	_ = onlyOIDC.Body.Close()
-	if strings.Contains(string(onlyOIDCBody), "Sign in locally") || !strings.Contains(string(onlyOIDCBody), "Continue with OpenID Connect") {
-		t.Fatalf("disabled local login page=%s", onlyOIDCBody)
+	onlyOIDCStart, _ := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	onlyOIDCLogin := absoluteTestURL(httpServer.URL, onlyOIDCStart.Header.Get("Location"))
+	_ = onlyOIDCStart.Body.Close()
+	onlyOIDC, _ := client.Get(onlyOIDCLogin)
+	if onlyOIDC.StatusCode != http.StatusFound || !strings.HasPrefix(onlyOIDC.Header.Get("Location"), "https://identity.example/authorize?") {
+		t.Fatalf("OIDC-only login status=%d location=%q", onlyOIDC.StatusCode, onlyOIDC.Header.Get("Location"))
 	}
+	_ = onlyOIDC.Body.Close()
 
 	localOnly := *service.runtime()
 	localEnabled := true
 	localOnly.config.Authentication.LocalLogin.Enabled = &localEnabled
 	localOnly.adminOIDC = nil
 	service.state.Store(&localOnly)
-	onlyLocal, _ := http.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	onlyLocalStart, _ := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	onlyLocalLogin := absoluteTestURL(httpServer.URL, onlyLocalStart.Header.Get("Location"))
+	_ = onlyLocalStart.Body.Close()
+	onlyLocal, _ := client.Get(onlyLocalLogin)
 	onlyLocalBody, _ := io.ReadAll(onlyLocal.Body)
 	_ = onlyLocal.Body.Close()
 	if !strings.Contains(string(onlyLocalBody), "Sign in locally") || strings.Contains(string(onlyLocalBody), "Continue with OpenID Connect") {
 		t.Fatalf("local-only login page=%s", onlyLocalBody)
 	}
-	unavailableOIDC := oauthFormWithClient(t, client, httpServer.URL+"/oauth/authorize?"+query.Encode(), url.Values{"login_method": {"oidc"}})
+	unavailableOIDC := oauthFormWithClient(t, client, onlyLocalLogin, url.Values{"login_method": {"oidc"}})
 	if unavailableOIDC.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unavailable OIDC method status=%d", unavailableOIDC.StatusCode)
 	}
 	_ = unavailableOIDC.Body.Close()
 }
 
-type BrokerOAuthIdentityForTest struct {
-	Issuer, Subject, Username string
+func absoluteTestURL(base, target string) string {
+	if strings.HasPrefix(target, "/") {
+		return base + target
+	}
+	return target
 }
 
 func TestDeviceAuthorizationRequiresApprovalAndIsOneTime(t *testing.T) {
@@ -283,16 +393,17 @@ func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 	redirectURI := "http://127.0.0.1:49152/oauth/callback"
 	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"mfa-state"}, "scope": {localAPIScope}}
-	authorizeURL := httpServer.URL + "/oauth/authorize?" + query.Encode()
-	started := oauthForm(t, authorizeURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"mfa-state"}, "nonce": {"mfa-nonce"}, "scope": {"openid profile " + localAPIScope}}
+	client := noRedirectClient()
+	loginURL := startOIDCLogin(t, client, httpServer.URL, query)
+	started := oauthFormWithClient(t, client, loginURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
 	startedBody, _ := io.ReadAll(started.Body)
 	_ = started.Body.Close()
 	if started.StatusCode != http.StatusOK {
 		t.Fatalf("MFA enrollment start status=%d body=%s", started.StatusCode, startedBody)
 	}
 	var codeCount int
-	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oauth_authorization_codes`).Scan(&codeCount); err != nil || codeCount != 0 {
+	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oidc_auth_requests WHERE code_hash IS NOT NULL`).Scan(&codeCount); err != nil || codeCount != 0 {
 		t.Fatalf("authorization code existed before MFA count=%d err=%v", codeCount, err)
 	}
 	tokenMatch := regexp.MustCompile(`name="challenge_token" value="([^"]+)"`).FindSubmatch(startedBody)
@@ -304,14 +415,14 @@ func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	confirmed := oauthForm(t, authorizeURL, url.Values{"challenge_token": {string(tokenMatch[1])}, "code": {totpCode}})
+	confirmed := oauthFormWithClient(t, client, loginURL, url.Values{"challenge_token": {string(tokenMatch[1])}, "code": {totpCode}})
 	confirmedBody, _ := io.ReadAll(confirmed.Body)
 	_ = confirmed.Body.Close()
 	if confirmed.StatusCode != http.StatusOK {
 		t.Fatalf("MFA authorization completion status=%d body=%s", confirmed.StatusCode, confirmedBody)
 	}
-	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oauth_authorization_codes`).Scan(&codeCount); err != nil || codeCount != 1 {
-		t.Fatalf("authorization code after MFA count=%d err=%v", codeCount, err)
+	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oidc_auth_requests WHERE request_json LIKE '%"done":true%'`).Scan(&codeCount); err != nil || codeCount != 1 {
+		t.Fatalf("completed authorization after MFA count=%d err=%v", codeCount, err)
 	}
 	recoveryMatch := regexp.MustCompile(`<li><code>([^<]+)</code></li>`).FindSubmatch(confirmedBody)
 	if len(recoveryMatch) != 2 {
@@ -361,10 +472,11 @@ func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing
 			challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 			redirectURI := "http://127.0.0.1:49152/oauth/callback"
 			query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-				"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"captcha-state"}, "scope": {localAPIScope}}
-			authorizeURL := httpServer.URL + "/oauth/authorize?" + query.Encode()
+				"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"captcha-state"}, "nonce": {"captcha-nonce"}, "scope": {"openid " + localAPIScope}}
+			client := noRedirectClient()
+			loginURL := startOIDCLogin(t, client, httpServer.URL, query)
 
-			page, err := http.Get(authorizeURL)
+			page, err := client.Get(loginURL)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -378,7 +490,7 @@ func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing
 				t.Fatalf("%s CAPTCHA page status=%d CSP=%q body=%s", provider, page.StatusCode, page.Header.Get("Content-Security-Policy"), pageBody)
 			}
 
-			missing := oauthForm(t, authorizeURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
+			missing := oauthFormWithClient(t, client, loginURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
 			missingBody, _ := io.ReadAll(missing.Body)
 			_ = missing.Body.Close()
 			if missing.StatusCode != http.StatusForbidden || !bytes.Contains(missingBody, []byte(expectedClass)) || bytes.Contains(missingBody, []byte("consumer-secret")) {
@@ -389,7 +501,7 @@ func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing
 			if provider == localCaptchaProviderRecaptcha {
 				field = "g-recaptcha-response"
 			}
-			valid := oauthFormWithClient(t, noRedirectClient(), authorizeURL, url.Values{
+			valid := oauthFormWithClient(t, client, loginURL, url.Values{
 				"username": {"consumer"}, "password": {"consumer-secret"}, field: {"valid-proof"},
 			})
 			_ = valid.Body.Close()
@@ -509,10 +621,10 @@ func TestLocalAuthorizationRejectsNonLoopbackOrInvalidPort(t *testing.T) {
 	verifier := strings.Repeat("v", 64)
 	digest := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
-	for _, redirectURI := range []string{"https://127.0.0.1:49152/oauth/callback", "http://localhost:49152/oauth/callback", "http://127.0.0.1:0/oauth/callback", "http://127.0.0.1:49152/other"} {
+	for _, redirectURI := range []string{"http://127.0.0.1:0/oauth/callback", "http://127.0.0.1:49152/other", "https://example.com/oauth/callback"} {
 		query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-			"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "scope": {localAPIScope}}
-		response, err := http.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+			"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "nonce": {"client-nonce"}, "scope": {"openid " + localAPIScope}}
+		response, err := noRedirectClient().Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -521,6 +633,17 @@ func TestLocalAuthorizationRejectsNonLoopbackOrInvalidPort(t *testing.T) {
 			t.Fatalf("redirect %q status=%d", redirectURI, response.StatusCode)
 		}
 	}
+}
+
+func startOIDCLogin(t *testing.T, client *http.Client, baseURL string, query url.Values) string {
+	t.Helper()
+	response, err := client.Get(baseURL + "/oauth/authorize?" + query.Encode())
+	if err != nil || response.StatusCode != http.StatusFound {
+		t.Fatalf("OpenID authorization start status=%s err=%v", statusText(response), err)
+	}
+	target := absoluteTestURL(baseURL, html.UnescapeString(response.Header.Get("Location")))
+	_ = response.Body.Close()
+	return target
 }
 
 func TestLocalAccessTokenEnforcesAudienceScopeExpiryAndUserRevision(t *testing.T) {
@@ -567,18 +690,40 @@ func TestLocalAccessTokenEnforcesAudienceScopeExpiryAndUserRevision(t *testing.T
 
 func authorizeLocalCLI(t *testing.T, baseURL, redirectURI, challenge, scope string) string {
 	t.Helper()
+	if !strings.Contains(scope, "openid") {
+		scope = "openid profile email " + scope
+	}
 	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "scope": {scope}}
-	request, _ := http.NewRequest(http.MethodPost, baseURL+"/oauth/authorize?"+query.Encode(), strings.NewReader(url.Values{"username": {"consumer"}, "password": {"consumer-secret"}}.Encode()))
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "nonce": {"client-nonce"}, "scope": {scope}}
+	client := noRedirectClient()
+	start, err := client.Get(baseURL + "/oauth/authorize?" + query.Encode())
+	if err != nil || start.StatusCode != http.StatusFound {
+		t.Fatalf("authorization start status=%s err=%v", statusText(start), err)
+	}
+	loginURL := start.Header.Get("Location")
+	_ = start.Body.Close()
+	if strings.HasPrefix(loginURL, "/") {
+		loginURL = baseURL + loginURL
+	}
+	request, _ := http.NewRequest(http.MethodPost, loginURL, strings.NewReader(url.Values{"username": {"consumer"}, "password": {"consumer-secret"}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := noRedirectClient().Do(request)
+	response, err := client.Do(request)
 	if err != nil || response.StatusCode != http.StatusFound {
 		t.Fatalf("authorization status=%s err=%v", statusText(response), err)
 	}
+	callbackURL := response.Header.Get("Location")
 	_ = response.Body.Close()
+	if strings.HasPrefix(callbackURL, "/") {
+		callbackURL = baseURL + callbackURL
+	}
+	response, err = client.Get(callbackURL)
+	if err != nil || response.StatusCode != http.StatusFound {
+		t.Fatalf("authorization callback status=%s err=%v", statusText(response), err)
+	}
 	location, err := url.Parse(response.Header.Get("Location"))
+	_ = response.Body.Close()
 	if err != nil || location.Query().Get("state") != "client-state" || location.Query().Get("code") == "" {
-		t.Fatalf("authorization redirect=%q err=%v", response.Header.Get("Location"), err)
+		t.Fatalf("authorization redirect=%q err=%v", location, err)
 	}
 	return location.Query().Get("code")
 }

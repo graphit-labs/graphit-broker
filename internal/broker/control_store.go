@@ -25,7 +25,7 @@ const (
 	humanIdentityKind       = "human"
 	serviceIdentityKind     = "service"
 	localIdentityIssuer     = "local"
-	schemaVersion           = 8
+	schemaVersion           = 9
 	tokenPepperMinimumBytes = 32
 	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
 	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
@@ -170,8 +170,8 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS local_mfa (subject VARCHAR(512) PRIMARY KEY, secret_ciphertext TEXT NOT NULL, last_totp_step BIGINT NOT NULL, confirmed_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS local_mfa_recovery_codes (subject VARCHAR(512) NOT NULL, code_hash VARCHAR(64) NOT NULL, created_at VARCHAR(40) NOT NULL, PRIMARY KEY(subject, code_hash), FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
 		`CREATE TABLE IF NOT EXISTS local_auth_challenges (challenge_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, purpose VARCHAR(32) NOT NULL, binding_hash VARCHAR(64) NOT NULL, stage VARCHAR(32) NOT NULL, secret_ciphertext TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL, FOREIGN KEY(subject) REFERENCES local_users(subject) ON DELETE CASCADE)`,
-		`CREATE TABLE IF NOT EXISTS local_tokens (token_hash VARCHAR(64) PRIMARY KEY, token_id VARCHAR(128) NOT NULL UNIQUE, token_kind VARCHAR(16) NOT NULL, subject VARCHAR(512) NOT NULL, principal_json TEXT NOT NULL, client_id VARCHAR(128) NOT NULL, audience VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, family_id VARCHAR(128) NOT NULL, expires_at VARCHAR(40) NOT NULL, revoked_at VARCHAR(40) NOT NULL, consumed_at VARCHAR(40) NOT NULL, last_used_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS oauth_authorization_codes (code_hash VARCHAR(64) PRIMARY KEY, subject VARCHAR(512) NOT NULL, principal_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, client_id VARCHAR(128) NOT NULL, redirect_uri VARCHAR(2048) NOT NULL, code_challenge VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS local_tokens (token_hash VARCHAR(64) PRIMARY KEY, token_id VARCHAR(128) NOT NULL UNIQUE, token_kind VARCHAR(16) NOT NULL, subject VARCHAR(512) NOT NULL, oidc_subject VARCHAR(128) NOT NULL, principal_json TEXT NOT NULL, client_id VARCHAR(128) NOT NULL, audience VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, local_user_revision BIGINT NOT NULL, family_id VARCHAR(128) NOT NULL, auth_time VARCHAR(40) NOT NULL, expires_at VARCHAR(40) NOT NULL, revoked_at VARCHAR(40) NOT NULL, consumed_at VARCHAR(40) NOT NULL, last_used_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS oidc_auth_requests (request_hash VARCHAR(64) PRIMARY KEY, identity_subject VARCHAR(512) NOT NULL, request_json TEXT NOT NULL, code_hash VARCHAR(64) UNIQUE, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS oauth_device_codes (device_hash VARCHAR(64) PRIMARY KEY, user_hash VARCHAR(64) NOT NULL UNIQUE, client_id VARCHAR(128) NOT NULL, scopes_json TEXT NOT NULL, subject VARCHAR(512) NOT NULL, local_user_revision BIGINT NOT NULL, status VARCHAR(16) NOT NULL, interval_seconds BIGINT NOT NULL, last_poll_at VARCHAR(40) NOT NULL, expires_at VARCHAR(40) NOT NULL, created_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_acl_state (id SMALLINT PRIMARY KEY, revision BIGINT NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS resource_grants (id VARCHAR(128) PRIMARY KEY, name VARCHAR(256) NOT NULL, access_kind VARCHAR(32) NOT NULL, principal VARCHAR(512) NOT NULL, s3_route VARCHAR(128) NOT NULL, created_at VARCHAR(40) NOT NULL, updated_at VARCHAR(40) NOT NULL)`,
@@ -1159,7 +1159,7 @@ func (s *ControlStore) Cleanup(ctx context.Context) error {
 	for _, statement := range []string{
 		`DELETE FROM admin_sessions WHERE expires_at <= ?`,
 		`DELETE FROM local_auth_challenges WHERE expires_at <= ?`,
-		`DELETE FROM oauth_authorization_codes WHERE expires_at <= ?`,
+		`DELETE FROM oidc_auth_requests WHERE expires_at <= ?`,
 		`DELETE FROM oauth_device_codes WHERE expires_at <= ?`,
 		`DELETE FROM local_tokens WHERE expires_at <= ?`,
 	} {

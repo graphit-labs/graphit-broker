@@ -46,9 +46,14 @@ flows, then scale.
 
 ## Rotation
 
-- OIDC signing keys follow issuer JWKS rotation.
-- OIDC issuer/browser-client changes should be updated in unified authentication configuration and tested before removing
-  old IdP values.
+- Upstream OIDC validation keys follow the upstream issuer's JWKS rotation.
+- The Broker OpenID Provider's Ed25519 signing key, opaque-token encryption key, and stable-subject
+  derivation are separate keys derived from `authentication.token_pepper`. The current development
+  implementation publishes one signing key and has no online key ring: changing the pepper rotates
+  all three at restart and deliberately invalidates every Broker-issued token, local credential,
+  administration session, pending flow, and derived Broker subject.
+- Upstream OIDC issuer/browser-client changes should be updated in unified authentication
+  configuration and tested before removing old IdP values.
 - S3 route keys can be rotated by updating the route; already issued URLs remain valid until their
   short expiry.
 - AI API keys are rotated at the provider/secret manager, followed by a deployment restart.
@@ -60,9 +65,10 @@ flows, then scale.
 
 ## Incident response
 
-For a leaked OIDC token, revoke/expire it at the IdP. For a leaked local access, refresh, or service
-token, call `/oauth/revoke` or revoke the service credential in administration; changing or
-disabling the owning local identity also invalidates it.
+For a leaked upstream OIDC token, revoke or expire it at that upstream IdP. For a leaked
+Broker-issued OIDC access or refresh token, call `/oauth/revoke`; refresh-token reuse also revokes
+its complete family. Revoke a service credential through administration. Changing or disabling the
+owning local identity increments its revision and invalidates its existing sessions and tokens.
 For a leaked S3 or AI key, rotate it at the upstream, update deployment secrets, and restart. For
 database exposure, invalidate live admin sessions, reset local passwords, and restore trusted
 users/grants/roles. Deployment secrets are not stored in SQL; rotate the authentication pepper if compromise may include both SQL

@@ -26,7 +26,9 @@ docker compose up -d
 ```
 
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
-correctly and register the public `/oauth/oidc/callback` URL exactly with the IdP.
+correctly. Set `server.public_url` to the externally visible HTTPS origin; that exact value becomes
+the Broker's OpenID issuer. When upstream OIDC browser login is enabled, register the public
+`/oauth/oidc/callback` URL exactly with the upstream IdP.
 
 If adaptive local-login CAPTCHA is enabled, `server.public_url` must be the exact HTTPS origin whose
 hostname is registered with the selected provider. Allow browser CSP access and backend egress only
@@ -127,18 +129,34 @@ load them only when CUDA is selected. macOS embeds CoreML in its main ONNX dylib
 
 ## OIDC
 
-Use:
+The Broker has two distinct OIDC roles that share one deployment configuration:
 
-- a native/public Graphit login client using Authorization Code + PKCE;
-- a broker API audience/resource for consumer access;
-- optionally RFC 8693 token exchange when MCP and broker audiences differ;
-- confidential browser-client fields on the same broker OIDC issuer, unless the UI is deliberately local-password-only.
+1. It is the OpenID Provider consumed by Graphit Code. Its issuer is `server.public_url`; it
+   publishes standard discovery, authorization, token, JWKS, userinfo, revocation, introspection,
+   and end-session endpoints. The configured `authentication.local_tokens.cli_client_id` is a
+   public/native client using Authorization Code, PKCE S256, state, nonce, and a dynamic loopback
+   redirect whose path is `cli_redirect_path`.
+2. It may be an OIDC client of one upstream organization IdP. Browser-client fields on at most one
+   `authentication.oidc` entry enable that method and use the exact public
+   `/oauth/oidc/callback`. The same issuer entry validates consumer bearer tokens; there is no
+   administration-specific OIDC block.
 
-Grant only required scopes and map stable claims. Claim mappings accept exact top-level keys or
-RFC 9535 JSONPath. If `authentication.oidc[].role_claim` is enabled, its additional roles replace
-SQL assignments for that canonical identity; every authenticated principal still receives `user`.
-Bootstrap a new database with `--bootstrap-admin` after configuring the single
+Graphit Code first reads `/.well-known/graphit-broker`, then uses only the standard OpenID Provider
+metadata and endpoints. The Broker-owned authorization page offers local and upstream OIDC login
+when both exist, shows only local when that is the sole method, and redirects immediately when only
+upstream OIDC exists. An upstream token is never returned to Graphit Code: after successful
+authentication, the Broker issues its own EdDSA ID token and opaque access/refresh tokens.
+
+Grant only required upstream scopes and map stable claims. Claim mappings accept exact top-level
+keys or RFC 9535 JSONPath. If `authentication.oidc[].role_claim` is enabled, its additional roles
+replace SQL assignments for that canonical identity; every authenticated principal still receives
+`user`. Bootstrap a new database with `--bootstrap-admin` after configuring the single
 `authentication.token_pepper` when OIDC does not already provide an administrator.
+
+Changing the pepper is not a routine signing-key rollover. It changes the Broker signing and
+encryption keys and derived subjects, invalidates all local passwords/tokens/sessions/flows, and
+requires a coordinated whole-deployment recovery. This development version has no migration or
+compatibility reader for prior database/authentication schemas.
 
 ## Rollout
 
@@ -146,8 +164,10 @@ Bootstrap a new database with `--bootstrap-admin` after configuring the single
 2. Validate the new config with `--check-config`.
 3. Start one instance and wait for `/readyz`.
 4. Inspect discovery and its authorization revision.
-5. Test anonymous denial, one allowed user, one denied user, Hub discovery, S3 read/write as
-   applicable, embeddings, rerank, and admin login.
+5. Verify both discovery documents and JWKS; test every enabled login method through a complete
+   Graphit Code Authorization Code exchange and refresh rotation. Also test anonymous denial, one
+   allowed user, one denied user, Hub discovery, S3 read/write as applicable, embeddings, rerank,
+   and admin login.
 6. Add remote-database replicas only after the single instance is healthy.
 
 Configuration changes require a deployment update and broker restart. Grant changes are

@@ -22,8 +22,8 @@ SQL-backed local passwords are HMAC-prehashed with the single external
 `authentication.token_pepper` and then verified against salted Argon2id PHC verifiers. The pepper
 is not embedded in SQL or the PHC. Password verification occurs only at the local administrative,
 Authorization Code, or Device Authorization login boundary and performs at most one expensive KDF.
-A password is never accepted by the API Bearer authenticator. System-generated OIDC state,
-administration sessions, local OAuth grants/tokens, and service credentials are stored as
+A password is never accepted by the API Bearer authenticator. System-generated upstream OIDC state,
+administration sessions, Broker OIDC grants/token identifiers, and service credentials are stored as
 HMAC-SHA-256 values using an external deployment pepper and separate domains. Anonymous access
 requires an explicit `anonymous` grant.
 
@@ -56,7 +56,8 @@ on the selected provider. Provider outage affects only overloaded local-password
 already-issued credentials do not depend on Siteverify.
 
 Human local identities require TOTP MFA by default. Password success creates only an opaque,
-short-lived, one-time SQL challenge bound by HMAC to the exact admin, OAuth, or device flow; it does
+short-lived, one-time SQL challenge bound by HMAC to the exact administration, Broker OIDC, or
+device flow; it does
 not create a session, authorization code, or device approval. A temporary password must be changed
 before MFA. The TOTP secret is encrypted at rest with AES-256-GCM using a domain-separated key
 derived from `authentication.token_pepper` and subject-bound authenticated data. Recovery codes are
@@ -70,8 +71,18 @@ authenticated browser session; phishing-resistant MFA would require a future Web
 Queued calls recheck per-username lockout before KDF work. Successful checks do not consume failure
 quota.
 
-Local desktop login requires Authorization Code with PKCE S256 and an exact loopback callback path;
-headless login requires an approved, expiring device code. Access tokens are opaque, audience- and
+The Broker's public/native OpenID Connect client registration requires Authorization Code with PKCE S256,
+unpredictable state and nonce, and an exact loopback callback path with a nonzero dynamic port.
+The mature ZITADEL Go OIDC provider library owns protocol parsing, discovery, authorization, token,
+JWKS, userinfo, introspection, revocation, and end-session behavior. Request objects are disabled,
+CORS is disabled, and ID tokens are signed with an Ed25519 key derived in a dedicated pepper domain.
+The stable Broker `sub` is an HMAC-derived identifier over the canonical underlying issuer/subject,
+so local and upstream identities cannot collide and username changes do not change authorization identity.
+The Broker issuer is `server.public_url`. Graphit Code bootstraps its public client settings from
+Broker discovery and thereafter follows only standard OIDC discovery/endpoints; it never receives
+the upstream issuer configuration, client secret, password, or IdP token. Headless login remains a
+separate OAuth Device Authorization flow and does not issue an ID token or refresh token. Browser
+OIDC access tokens are opaque, audience- and
 scope-bound, and expire after ten minutes by default. Optional refresh tokens rotate on each use;
 reuse revokes the whole family. Automation uses passwordless service identities with independent,
 expiring credentials that can be listed by metadata and revoked individually. All local tokens are
@@ -84,9 +95,10 @@ Password preprocessing uses a dedicated domain and
 Argon2id then receives that fixed-size result and a random per-verifier salt. A pepper must contain
 at least 32 bytes. An ENV/secret-manager reference separates it from the SQL verifier. If both SQL
 and deployment secrets leak, treat local passwords as exposed to offline guessing. Rotating the
-pepper invalidates all local passwords, administration sessions, local OAuth grants/tokens, and
+pepper invalidates all local passwords, administration sessions, Broker OIDC grants/tokens, and
 service credentials; set new passwords and issue new credentials through a controlled recovery
-procedure.
+procedure. Pepper rotation also rotates the Broker signing/encryption keys and derived subjects, so
+it is an explicit whole-deployment credential and identity reset rather than an online key rollover.
 
 For HTTP MCP, Graphit first validates the end-user token for its MCP audience and preserves that
 bearer in request context. The broker validates it again. When Graphit uses RFC 8693 exchange, the
@@ -106,7 +118,7 @@ subject; local users always use SQL assignments. Cookie sessions require CSRF on
 There is no superadmin bypass: the one-time CLI bootstrap inserts a normal local user and `admin`
 assignment in SQL.
 
-Browser OIDC login additionally binds each state to a 256-bit secret held in an `HttpOnly`,
+Upstream browser OIDC login additionally binds each state to a 256-bit secret held in an `HttpOnly`,
 `SameSite=Lax` per-flow cookie. Administration cookies are `Secure` by default; disabling that
 attribute requires explicit development configuration. SQL stores only a domain-separated HMAC of that binding. A callback
 without the matching browser cookie fails without consuming the valid state, which prevents login
@@ -118,8 +130,8 @@ When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source.
 
 ## Data at rest
 
-The SQL database contains local identities and Argon2id PHCs, roles, grants, and HMAC-protected OIDC
-state, local OAuth grants/tokens, service credentials, and live session keys. It does not contain
+The SQL database contains local identities and Argon2id PHCs, roles, grants, HMAC-protected upstream
+OIDC state, Broker authorization requests/token identifiers, service credentials, and live session keys. It does not contain
 raw passwords, raw codes/tokens, `config.yml`, or resolved OIDC/upstream/S3
 secrets, plaintext passwords, or the authentication pepper. Encrypt storage/backups and restrict database/network access. SQLite parent/file modes are
 `0700`/`0600`; PostgreSQL/MySQL access must be protected by database roles and TLS/network policy.

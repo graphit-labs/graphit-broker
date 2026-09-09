@@ -32,7 +32,11 @@ func (failingGrantReader) ResourceGrants(context.Context) (PolicyDocument, error
 
 func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
 	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
-	return newServerFromRuntime(runtime, control)
+	server, err := newServerFromRuntime(runtime, control)
+	if err != nil {
+		panic(err)
+	}
+	return server
 }
 
 func defaultTestRules() []ACLRuleConfig {
@@ -328,7 +332,7 @@ func TestServerEmbeddingInputTypeDefaultsToDocumentAndRejectsUnknownValue(t *tes
 func testServerConfig(embeddingURL, rerankURL string) Config {
 	return Config{
 		Database:       DatabaseConfig{Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute},
-		Server:         ServerConfig{MaxRequestBytes: 1 << 20},
+		Server:         ServerConfig{PublicURL: "https://broker.example.com", MaxRequestBytes: 1 << 20},
 		Authentication: AuthenticationConfig{TokenPepper: testTokenPepper},
 		Services: ServicesConfig{
 			Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "default", Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: HTTPUpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},

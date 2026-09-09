@@ -46,8 +46,8 @@ empty database. The command reads only a temporary password, creates the fixed f
 refuses to overwrite any existing local user. Passwords require at least 15 Unicode characters;
 the user must replace the temporary password and enroll TOTP MFA at first login. The QR code works
 with Google Authenticator and compatible applications; administrative MFA reset forces safe
-reenrollment after a lost device.
-failed checks are rate-limited per username, and concurrent Argon2id work plus its bounded admission
+reenrollment after a lost device. Failed checks are rate-limited per username, and concurrent
+Argon2id work plus its bounded admission
 queue are configurable. Optional adaptive CAPTCHA can use Cloudflare Turnstile or Google reCAPTCHA
 v2 Checkbox when concurrent local authentication reaches a configured multiple of the Argon2id
 worker limit; a zero multiplier protects every attempt and positive fractions can start earlier. It
@@ -55,7 +55,8 @@ is disabled by default. See [configuration](docs/configuration.md) and
 [administration bootstrap](docs/administration.md).
 
 Passwords are accepted only at browser/device login and are never reusable API Bearers. Desktop
-CLI login uses Authorization Code with PKCE, headless login uses Device Authorization, and
+CLI login uses the Broker as a standard OpenID Provider with Authorization Code, PKCE, nonce and
+EdDSA ID-token verification; headless login uses Device Authorization, and
 automation uses passwordless service identities with independently expiring/revocable credentials.
 
 RBAC applies throughout the broker. Every authenticated OIDC or local principal receives the

@@ -827,7 +827,7 @@ func (s *Server) requireAdministration(action string, next http.Handler) http.Ha
 				return
 			}
 		} else if raw := bearerToken(r); raw != "" {
-			principal, err := s.runtime().authenticator.Authenticate(r.Context(), raw)
+			principal, err := s.authenticateCredential(r.Context(), raw)
 			if err != nil {
 				if retryAfter, limited := authenticationRetryAfter(err); limited {
 					writeAuthenticationRateLimit(w, r, retryAfter)

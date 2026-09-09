@@ -2,7 +2,7 @@
 
 The broker has one SQL database selected by the deployment. It stores local users and Argon2id PHC
 verifiers, resource grants and revision, system roles and assignments, OIDC login state,
-administration sessions, local OAuth grants/tokens, and service credentials. It never stores
+administration sessions, Broker OIDC authorization/token state, and service credentials. It never stores
 `config.yml`, the expanded configuration, the authentication pepper, raw passwords, or raw token
 and code values. It stores domain-separated HMACs for those random credentials and their
 subject/client/audience/scope/expiry/revocation metadata, but no other deployment secrets. Local
@@ -13,13 +13,15 @@ persisted.
 Local TOTP secrets are stored only as AES-256-GCM ciphertext. Recovery codes and local login
 challenges are stored only as domain-separated HMAC values; challenge records are short-lived and
 carry the user revision, purpose, binding, and stage. No plaintext TOTP secret, recovery code,
-password, session token, OAuth grant, or service credential is persisted.
+password, session token, authorization grant, or service credential is persisted.
 
 OIDC login rows contain separate HMAC-SHA-256 values for the state and the browser-binding secret;
 the raw values are never stored. Both HMACs use `authentication.token_pepper` with distinct
 cryptographic domains, and a callback consumes a row only when both values match.
 
-Authorization codes and device codes are short-lived and one-time. Access and refresh tokens are
+OIDC authorization requests store a domain-separated HMAC of the request ID, serialized protocol
+state, and later a one-time code HMAC; raw request IDs and codes are not persisted. Authorization
+codes and device codes are short-lived and one-time. Access and refresh tokens are
 bound to the owning local identity revision. Refresh-token rows retain their family identifier so
 reuse can revoke every related token. Service credential rows retain a non-secret ID, expiry,
 revocation, and last-use timestamps for administration without exposing the secret again.

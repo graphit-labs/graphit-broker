@@ -913,7 +913,9 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 
 func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.Server, *fakeAdminOIDC) {
 	t.Helper()
+	httpServer := httptest.NewUnstartedServer(nil)
 	cfg := testServerConfig(embeddingURL, "http://127.0.0.1:1")
+	cfg.Server.PublicURL = "http://" + httpServer.Listener.Addr().String()
 	cfg.Authentication = AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{
 		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"}, SubjectClaim: "sub", UsernameClaim: "preferred_username",
 		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/oauth/oidc/callback", Scopes: []string{"openid", "profile", "email"},
@@ -970,7 +972,9 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 		service.Close()
 		t.Fatal(err)
 	}
-	return service, httptest.NewServer(service), provider
+	httpServer.Config.Handler = service
+	httpServer.Start()
+	return service, httpServer, provider
 }
 
 func bearerRequest(t *testing.T, method, endpoint, token, body string) *http.Response {

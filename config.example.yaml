@@ -16,12 +16,12 @@ server:
   max_request_bytes: 4194304
 
 authentication:
-  # One deployment pepper protects local password preprocessing, browser sessions, OIDC state,
-  # local OAuth grants/tokens, and service credentials with distinct cryptographic domains.
+  # One deployment pepper protects local password preprocessing, browser sessions/upstream flows,
+  # OIDC subject/signing/encryption domains, local tokens, and service credentials with distinct domains.
   # It is never stored in SQL.
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
   # SQL-backed human login is enabled by default when administration is enabled. Set false for
-  # an OIDC-only broker, or set true explicitly when OAuth login is needed without administration.
+  # an upstream-OIDC-only broker, or set true explicitly when Broker OIDC login is needed without administration.
   local_login:
     enabled: true
   # Failed local-password checks are limited per username. At most max_concurrent expensive
@@ -53,8 +53,8 @@ authentication:
     required: true
     issuer: "Graphit Broker"
     challenge_ttl: 10m
-  # Local human passwords are accepted only by browser/device login. The broker then issues
-  # opaque, HMAC-protected credentials with the lifetimes below. Desktop callbacks must use the
+  # Local human passwords are accepted only by browser/device login. The Broker acts as the
+  # OpenID Provider and issues signed ID tokens plus opaque access/refresh credentials. Desktop callbacks use the
   # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.
   local_tokens:
     audience: "graphit-broker"
@@ -70,7 +70,8 @@ authentication:
     - issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
       required_scopes: ["graphit.use"]
-      # The same issuer and claim mapping authenticate broker consumers, Graphit Code, and administrators.
+      # This issuer validates consumer bearers and supplies the optional upstream browser method
+      # used by both Broker-managed Graphit Code login and administration login.
       client_id: "${BROKER_OIDC_CLIENT_ID:?set the confidential browser client ID}"
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
       redirect_url: "${BROKER_OIDC_REDIRECT_URL:?set the exact /oauth/oidc/callback URL}"

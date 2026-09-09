@@ -10,7 +10,7 @@ returns `403`, and disabled capabilities return `404`.
 - `GET /healthz` — process liveness.
 - `GET /readyz` — runtime/database readiness.
 - `GET /.well-known/graphit-broker` — public capability negotiation.
-- `GET /.well-known/oauth-authorization-server` — Graphit Code OAuth metadata when local or OIDC browser login is enabled.
+- `GET /.well-known/openid-configuration` — standard OpenID Provider discovery when local or upstream OIDC browser login is enabled.
 
 Example discovery:
 
@@ -21,9 +21,11 @@ Example discovery:
   "authentication": {
     "schemes": ["anonymous", "bearer"],
     "audiences": ["graphit-broker"],
-    "authorization_server": "https://broker.example/.well-known/oauth-authorization-server",
+    "type": "openid_connect",
+    "issuer": "https://broker.example",
     "client_id": "graphit-cli",
-    "login_methods": ["local", "oidc"]
+    "scopes": ["openid", "profile", "email", "graphit.use", "offline_access"],
+    "redirect_uri_path": "/oauth/callback"
   },
   "services": {
     "hub_access": {
@@ -208,24 +210,36 @@ with `[configured-secret]`. Local-user responses omit password hashes entirely; 
 the pepper. Role assignments use canonical `issuer|subject` values, and every authenticated
 principal has the effective default `user` role.
 
-## Graphit Code OAuth API
+## Graphit Code OpenID Connect API
 
-- `GET/POST /oauth/authorize` — broker-owned login page, local/OIDC method selection, and one-time Authorization Code issuance;
+- `GET /.well-known/openid-configuration` — standard provider metadata;
+- `GET /oauth/keys` — Ed25519 JSON Web Key Set used to verify ID tokens;
+- `GET/POST /oauth/authorize` — standard authorization endpoint; transfers control to the Broker-owned local/upstream method page;
+- `GET /oauth/authorize/callback` — resumes the library-owned authorization after the selected method succeeds;
 - `GET /oauth/oidc/callback` — completes an upstream OIDC login and resumes the Graphit Code authorization;
 - `POST /oauth/device/authorize` — create a device/user code pair for headless CLI login;
 - `GET/POST /oauth/device` — user-facing device approval;
-- `POST /oauth/token` — exchange an authorization code, approved device code, or rotating refresh token;
-- `POST /oauth/revoke` — revoke an access, refresh, or service token without revealing whether it existed.
-- `GET /oauth/userinfo` — resolve a broker-issued access token to its verified identity.
+- `POST /oauth/token` — standard Authorization Code or rotating refresh-token exchange; it also accepts the separate access-token-only device grant;
+- `POST /oauth/revoke` — revoke a Broker-issued OIDC access or refresh token without revealing whether it existed;
+- `GET/POST /oauth/userinfo` — standard claims for a broker-issued access token.
+- `POST /oauth/introspect` — standard token introspection for the configured public client.
+- `GET/POST /oauth/end-session` — standard OpenID RP-initiated logout endpoint.
 
-OAuth POST bodies use `application/x-www-form-urlencoded`. The public CLI has no client secret.
-Authorization Code requires PKCE S256 and an exact configured path on an explicit loopback IP and
-port. Graphit Code discovers the authorization start URL and client contract from the Broker; it
-does not receive the upstream IdP configuration. Issued opaque access tokens contain the
-`graphit.use` scope, are audience-bound and expire after ten
+The Broker is an OpenID Provider implemented with `github.com/zitadel/oidc/v3`. The public native
+client uses Authorization Code, PKCE S256, `state`, `nonce`, and no client secret. Its callback has
+the configured exact path on a dynamic loopback port. Graphit Code learns issuer, client ID, scopes,
+and callback path from Broker discovery, then uses only standard OIDC discovery and endpoints; it
+never receives upstream IdP configuration. The ID token is signed with EdDSA and exposes a stable,
+pairwise-style `sub` derived from the underlying canonical identity. Issued opaque access tokens
+contain the `graphit.use` scope, are audience-bound and expire after ten
 minutes by default. Requesting `offline_access` produces a refresh token with rotation and family
 reuse detection. Token responses are `Cache-Control: no-store`; SQL contains only domain-separated
 HMACs of raw codes and tokens.
+
+The device grant is deliberately separate from the Graphit Code browser login contract. It issues
+only a short-lived local API access token and rejects `offline_access`; it does not produce an ID
+token or a refresh token. Passwordless `gb_sc_...` service credentials are managed and revoked by
+the local-user administration API, not by the public OIDC client.
 
 Grant writes require `If-Match` with the current ETag. A stale revision returns `409`; a missing
 precondition returns `428`. There is no configuration write endpoint; update deployment

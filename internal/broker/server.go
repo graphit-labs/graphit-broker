@@ -29,10 +29,11 @@ type runtimeState struct {
 }
 
 type Server struct {
-	state   atomic.Pointer[runtimeState]
-	control *ControlStore
-	handler http.Handler
-	ready   atomic.Bool
+	state        atomic.Pointer[runtimeState]
+	control      *ControlStore
+	oidcProvider *brokerOIDCProvider
+	handler      http.Handler
+	ready        atomic.Bool
 }
 
 type contextKey string
@@ -58,7 +59,11 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 		}
 		return nil, err
 	}
-	s := newServerFromRuntime(runtime, control)
+	s, err := newServerFromRuntime(runtime, control)
+	if err != nil {
+		_ = control.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -124,24 +129,41 @@ func browserLoginOIDC(configs []OIDCIssuerConfig) (OIDCIssuerConfig, bool) {
 	return OIDCIssuerConfig{}, false
 }
 
-func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server {
+func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server, error) {
 	s := &Server{control: control}
 	s.state.Store(runtime)
 	s.ready.Store(true)
+	if control != nil && strings.TrimSpace(runtime.config.Server.PublicURL) != "" && (runtime.config.Authentication.LocalLogin.isEnabled() || runtime.adminOIDC != nil) {
+		provider, err := newBrokerOIDCProvider(runtime.config, control)
+		if err != nil {
+			return nil, err
+		}
+		s.oidcProvider = provider
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
-	if runtime.config.Authentication.LocalLogin.isEnabled() || runtime.adminOIDC != nil {
-		mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.oauthMetadata)
-		mux.HandleFunc("GET /oauth/authorize", s.oauthAuthorize)
-		mux.HandleFunc("POST /oauth/authorize", s.oauthAuthorize)
+	if s.oidcProvider != nil {
+		mux.Handle("GET /.well-known/openid-configuration", s.oidcProvider.handler)
+		mux.HandleFunc("GET /oauth/authorize", s.oidcAuthorize)
+		mux.HandleFunc("POST /oauth/authorize", s.oidcAuthorize)
+		mux.Handle("GET /oauth/authorize/callback", s.oidcProvider.handler)
+		mux.HandleFunc("GET "+oidcLoginPath, s.oidcLogin)
+		mux.HandleFunc("POST "+oidcLoginPath, s.oidcLogin)
 		mux.HandleFunc("POST /oauth/device/authorize", s.oauthDeviceAuthorize)
 		mux.HandleFunc("GET /oauth/device", s.oauthDeviceVerification)
 		mux.HandleFunc("POST /oauth/device", s.oauthDeviceVerification)
-		mux.HandleFunc("POST /oauth/token", s.oauthToken)
-		mux.HandleFunc("POST /oauth/revoke", s.oauthRevoke)
-		mux.Handle("GET /oauth/userinfo", s.resolvePrincipal(http.HandlerFunc(s.oauthUserinfo)))
+		mux.HandleFunc("POST /oauth/token", s.oauthTokenGateway)
+		mux.Handle("POST /oauth/revoke", s.oidcProvider.handler)
+		mux.Handle("GET /oauth/userinfo", s.oidcProvider.handler)
+		mux.Handle("POST /oauth/userinfo", s.oidcProvider.handler)
+		mux.Handle("POST /oauth/introspect", s.oidcProvider.handler)
+		mux.Handle("GET /oauth/end-session", s.oidcProvider.handler)
+		mux.Handle("POST /oauth/end-session", s.oidcProvider.handler)
+		mux.Handle("GET /oauth/keys", s.oidcProvider.handler)
+	}
+	if runtime.adminOIDC != nil {
 		mux.HandleFunc("GET /oauth/oidc/callback", s.adminCallback)
 	}
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
@@ -182,7 +204,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.Handle("DELETE /admin/api/v1/local-users/{username}/credentials/{credential}", s.requireAdministration("users.write", http.HandlerFunc(s.adminServiceCredential)))
 	}
 	s.handler = s.observability(mux)
-	return s
+	return s, nil
 }
 
 func (s *Server) runtime() *runtimeState { return s.state.Load() }
@@ -253,9 +275,11 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(methods) > 0 {
-		authentication["authorization_server"] = s.publicURL(r) + "/.well-known/oauth-authorization-server"
+		authentication["type"] = "openid_connect"
+		authentication["issuer"] = s.publicURL(r)
 		authentication["client_id"] = state.config.Authentication.LocalTokens.CLIClientID
-		authentication["login_methods"] = methods
+		authentication["scopes"] = append([]string(nil), brokerOIDCScopes...)
+		authentication["redirect_uri_path"] = state.config.Authentication.LocalTokens.CLIRedirectPath
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.publicURL(r),
 		"authentication": authentication, "services": services})
@@ -500,7 +524,7 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "authorization must use one bearer credential", requestID(r.Context()))
 			return
 		}
-		principal, err := s.runtime().authenticator.Authenticate(r.Context(), raw)
+		principal, err := s.authenticateCredential(r.Context(), raw)
 		if err != nil {
 			if retryAfter, limited := authenticationRetryAfter(err); limited {
 				writeAuthenticationRateLimit(w, r, retryAfter)
@@ -513,6 +537,15 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), principalKey, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (s *Server) authenticateCredential(ctx context.Context, raw string) (Principal, error) {
+	if s.oidcProvider != nil {
+		if principal, err := s.oidcProvider.storage.AuthenticateAccessToken(ctx, raw, s.oidcProvider.op.Crypto()); err == nil {
+			return principal, nil
+		}
+	}
+	return s.runtime().authenticator.Authenticate(ctx, raw)
 }
 
 func writeAuthenticationRateLimit(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {

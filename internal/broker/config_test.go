@@ -112,6 +112,26 @@ authentication:
 	}
 }
 
+func TestServerPublicURLMustBeHTTPSOrigin(t *testing.T) {
+	enabled := true
+	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
+		TokenPepper: testPasswordPepper, LocalLogin: LocalLoginConfig{Enabled: &enabled},
+	}}
+	base.defaults()
+	for _, raw := range []string{
+		"http://broker.example.com",
+		"https://broker.example.com/base",
+		"https://broker.example.com?tenant=one",
+		"https://broker.example.com#fragment",
+	} {
+		invalid := base
+		invalid.Server.PublicURL = raw
+		if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "server public URL") {
+			t.Fatalf("invalid server.public_url %q accepted: %v", raw, err)
+		}
+	}
+}
+
 func TestLocalCaptchaTriggerMultiplierSupportsZeroAndFractions(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -151,6 +171,8 @@ authentication:
 
 func TestAdministrationCookieSecureCanBeExplicitlyDisabled(t *testing.T) {
 	cfg, err := DecodeConfig(strings.NewReader(`
+server:
+  public_url: https://broker.example.com
 authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
 administration:
@@ -242,6 +264,8 @@ func TestAdministrationConfigRejectsRemoteHTTPCallback(t *testing.T) {
 database:
   driver: sqlite
   dsn: /tmp/broker.db
+server:
+  public_url: https://broker.example.com
 authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
   oidc:
@@ -297,6 +321,8 @@ func TestAdministrationAllowsLocalUsersWithoutOIDC(t *testing.T) {
 database:
   driver: sqlite
   dsn: /tmp/broker.db
+server:
+  public_url: https://broker.example.com
 authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
 administration:
