@@ -147,7 +147,10 @@ The response never contains bucket, region, base prefix, access key, or secret k
 
 Administration accepts a secure session cookie created by OIDC or by validating an existing
 username-selected SQL local-user password at `POST /admin/auth/local` with JSON fields
-`username` and `password`. State changes require the session CSRF
+`username` and `password`. A `200` response can require `password-change`, `mfa-enrollment`, or
+`mfa`; continue at `POST /admin/auth/local/continue` with the opaque `challenge_token` plus either
+`new_password` or `code`. MFA enrollment returns an `otpauth_uri`, QR data URL, and manual secret;
+successful enrollment returns recovery codes once. State changes require the session CSRF
 token. The password is used only to create a session and is never accepted as a Bearer credential.
 A valid OIDC, local access, or service Bearer is accepted directly through the token authenticator.
 Protected routes are:
@@ -175,6 +178,7 @@ without starting Argon2id or recording a password failure.
 | `GET/POST/DELETE /admin/api/v1/role-assignments` | role action | manage exact-sub assignments |
 | `GET/POST /admin/api/v1/local-users` | `users.read` / `users.write` | list or create SQL local users |
 | `PUT/DELETE /admin/api/v1/local-users/{username}` | `users.write` | update or remove a local user |
+| `POST /admin/api/v1/local-users/{username}/mfa/reset` | `users.write` | revoke and require reenrollment of a human user's MFA |
 | `GET/POST /admin/api/v1/local-users/{username}/credentials` | `users.read` / `users.write` | list or issue credentials for a service identity |
 | `DELETE /admin/api/v1/local-users/{username}/credentials/{id}` | `users.write` | revoke a service credential |
 

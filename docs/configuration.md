@@ -61,6 +61,20 @@ authentication:
     saturation_multiplier: 4
 ```
 
+Human local-user MFA is also deployment-owned and defaults to required:
+
+```yaml
+authentication:
+  local_mfa:
+    required: true
+    issuer: Graphit Broker
+    challenge_ttl: 10m
+```
+
+`issuer` is the label shown in TOTP applications. Challenges expire after `challenge_ttl`, which
+must be between 2 and 30 minutes. Set `required: false` only when another deployment control
+explicitly accepts single-factor local login; password-change enforcement remains active.
+
 Five failures for one username within the window block that username for five minutes. There is no
 failure counter or lockout across usernames. At most two expensive Argon2id checks run concurrently
 per broker process. The saturation limit is `max_concurrent * saturation_multiplier` and includes

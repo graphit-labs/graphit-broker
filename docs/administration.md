@@ -24,6 +24,10 @@ authentication:
     lockout: 5m
     max_concurrent: 2
     saturation_multiplier: 4
+  local_mfa:
+    required: true
+    issuer: Graphit Broker
+    challenge_ttl: 10m
   local_tokens:
     audience: graphit-broker
     cli_client_id: graphit-cli
@@ -71,7 +75,8 @@ cat /run/secrets/broker-first-admin-password | \
   graphit-broker --config config.yaml --bootstrap-admin-stdin
 ```
 
-Both commands accept only a password containing at least 15 Unicode characters. They create the fixed local username and subject `admin`,
+Both commands accept only a password containing at least 15 Unicode characters. The supplied
+password is temporary and must be replaced at the first login. They create the fixed local username and subject `admin`,
 persist only its peppered Argon2id PHC, assign the `admin` role, and refuse to run when any local
 user already exists. The pepper remains solely in deployment configuration. There is deliberately
 no migration or compatibility path in this development version; recreate an incompatible database
@@ -85,7 +90,8 @@ The UI shows sections according to effective role permissions:
 2. **Configuration** shows the redacted deployment YAML read-only.
 3. **Resource grants** manages the deny-by-default project capability policy with revision fencing.
 4. **Local users** manages human identities and passwordless service identities, including
-   one-time display, listing, and revocation of service credentials.
+   forced password change, administrative MFA reset, and one-time display, listing, and revocation
+   of service credentials.
 5. **Roles** manages role definitions and assignments to canonical `issuer|subject` identities.
 
 User responses never contain password PHCs or the deployment pepper. Subject is immutable; username
@@ -116,13 +122,24 @@ the verified principal's subject, username, organization, or teams.
 - `POST /admin/api/v1/local-users`
 - `PUT /admin/api/v1/local-users/{username}`
 - `DELETE /admin/api/v1/local-users/{username}`
+- `POST /admin/api/v1/local-users/{username}/mfa/reset`
 
 Create requires `username`, immutable `subject`, and `kind`. `kind: human` requires `password`;
 `kind: service` rejects passwords. Attributes, `roles`, and `enabled` are optional. Update is a
 complete identity-attribute replacement with an optional password for human identities (empty
-keeps the current verifier). The API hashes password input immediately with
+keeps the current verifier). Every password supplied at create/bootstrap or by an administrator is
+temporary. Set `password_change_required: true` to force another change at the next login without
+replacing the password. The flag cannot be cleared administratively: only a successful password
+change by that user clears it. The API hashes password input immediately with
 `authentication.token_pepper` and never returns it. New passwords require at least 15 Unicode
 characters and have no character-class composition rules.
+
+MFA is required for human local users by default. On first login, the UI displays a QR code and
+manual `otpauth://` secret compatible with Google Authenticator and other TOTP applications. Login
+continues only after the first six-digit code is confirmed. Ten one-time recovery codes are then
+shown once. Reset MFA only when recovering a user who lost the factor: it deletes the old TOTP
+secret and recovery codes, increments the identity revision, revokes active local tokens and login
+flows, and forces a new enrollment at the next login. Service identities do not use MFA.
 
 Service credentials are managed at:
 

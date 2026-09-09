@@ -54,8 +54,15 @@ type ServerConfig struct {
 type AuthenticationConfig struct {
 	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
 	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
+	LocalMFA       LocalMFAConfig               `yaml:"local_mfa" json:"local_mfa"`
 	LocalTokens    LocalTokenConfig             `yaml:"local_tokens" json:"local_tokens"`
 	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
+}
+
+type LocalMFAConfig struct {
+	Required     *bool         `yaml:"required" json:"required"`
+	Issuer       string        `yaml:"issuer" json:"issuer"`
+	ChallengeTTL time.Duration `yaml:"challenge_ttl" json:"challenge_ttl"`
 }
 
 type LocalTokenConfig struct {
@@ -301,6 +308,7 @@ func (c *Config) defaults() {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
 	c.Authentication.LocalRateLimit.setDefaults()
+	c.Authentication.LocalMFA.setDefaults()
 	c.Authentication.LocalTokens.setDefaults()
 	if c.Administration.SessionTTL == 0 {
 		c.Administration.SessionTTL = 8 * time.Hour
@@ -416,6 +424,32 @@ func (c *LocalTokenConfig) setDefaults() {
 	}
 }
 
+func (c *LocalMFAConfig) setDefaults() {
+	if c.Required == nil {
+		required := true
+		c.Required = &required
+	}
+	if strings.TrimSpace(c.Issuer) == "" {
+		c.Issuer = "Graphit Broker"
+	}
+	if c.ChallengeTTL == 0 {
+		c.ChallengeTTL = 10 * time.Minute
+	}
+}
+
+func (c LocalMFAConfig) validate() error {
+	issuer := strings.TrimSpace(c.Issuer)
+	if issuer == "" || len(issuer) > 128 || strings.ContainsAny(issuer, "\r\n") {
+		return errors.New("authentication.local_mfa.issuer must contain 1 to 128 characters without line breaks")
+	}
+	if c.ChallengeTTL < 2*time.Minute || c.ChallengeTTL > 30*time.Minute {
+		return errors.New("authentication.local_mfa.challenge_ttl must be between 2m and 30m")
+	}
+	return nil
+}
+
+func (c LocalMFAConfig) isRequired() bool { return c.Required == nil || *c.Required }
+
 func (c LocalTokenConfig) validate() error {
 	if !safeSegment(c.Audience) || !safeSegment(c.CLIClientID) {
 		return errors.New("authentication.local_tokens audience and cli_client_id must be safe names")
@@ -529,6 +563,9 @@ func (c Config) Validate() error {
 		return errors.New("database.conn_max_lifetime must be positive")
 	}
 	if err := c.Authentication.LocalRateLimit.validate(); err != nil {
+		return err
+	}
+	if err := c.Authentication.LocalMFA.validate(); err != nil {
 		return err
 	}
 	if err := c.Authentication.LocalTokens.validate(); err != nil {

@@ -30,6 +30,12 @@ authentication:
     lockout: 5m
     max_concurrent: 2
     saturation_multiplier: 4
+  # Human local users must enroll a Google Authenticator-compatible TOTP factor by default.
+  # Enrollment and verification challenges are short-lived and bound to the login flow.
+  local_mfa:
+    required: true
+    issuer: "Graphit Broker"
+    challenge_ttl: 10m
   # Local human passwords are accepted only by browser/device login. The broker then issues
   # opaque, HMAC-protected credentials with the lifetimes below. Desktop callbacks must use the
   # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.

@@ -36,6 +36,9 @@ services:
 	if cfg.Authentication.LocalRateLimit.MaxFailures != 5 || cfg.Authentication.LocalRateLimit.Window != time.Minute || cfg.Authentication.LocalRateLimit.Lockout != 5*time.Minute || cfg.Authentication.LocalRateLimit.MaxConcurrent != 2 || cfg.Authentication.LocalRateLimit.SaturationMultiplier != 4 {
 		t.Fatalf("local authentication rate limit defaults=%#v", cfg.Authentication.LocalRateLimit)
 	}
+	if cfg.Authentication.LocalMFA.Required == nil || !*cfg.Authentication.LocalMFA.Required || cfg.Authentication.LocalMFA.Issuer != "Graphit Broker" || cfg.Authentication.LocalMFA.ChallengeTTL != 10*time.Minute {
+		t.Fatalf("local MFA defaults=%#v", cfg.Authentication.LocalMFA)
+	}
 	if cfg.Authentication.TokenPepper != testPasswordPepper {
 		t.Fatal("environment value was not expanded")
 	}
@@ -61,6 +64,22 @@ administration:
 	}
 	if cfg.Administration.CookieSecure == nil || *cfg.Administration.CookieSecure {
 		t.Fatalf("administration.cookie_secure=%v", cfg.Administration.CookieSecure)
+	}
+}
+
+func TestLocalMFACanBeExplicitlyDisabledAndConfigured(t *testing.T) {
+	cfg, err := DecodeConfig(strings.NewReader(`
+authentication:
+  local_mfa:
+    required: false
+    issuer: Example Broker
+    challenge_ttl: 5m
+`), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Authentication.LocalMFA.Required == nil || *cfg.Authentication.LocalMFA.Required || cfg.Authentication.LocalMFA.Issuer != "Example Broker" || cfg.Authentication.LocalMFA.ChallengeTTL != 5*time.Minute {
+		t.Fatalf("local MFA config=%#v", cfg.Authentication.LocalMFA)
 	}
 }
 

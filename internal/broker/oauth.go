@@ -15,9 +15,23 @@ import (
 
 const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
-var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Graphit CLI</title></head><body><main><h1>Authorize Graphit CLI</h1><p>Sign in with a local human account. Your password is used only for this login and is never issued as an API credential.</p>{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}<form method="post"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form></main></body></html>`))
+const localLoginForms = `{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
+{{if eq .Status "password-change"}}<p>You must replace the temporary password before continuing.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>New password <input name="new_password" type="password" minlength="15" autocomplete="new-password" required></label><label>Confirm password <input name="confirm_password" type="password" minlength="15" autocomplete="new-password" required></label><button type="submit">Change password</button></form>
+{{else if eq .Status "mfa-enrollment"}}<p>Set up MFA in Google Authenticator or another TOTP application, then enter the displayed code.</p><img src="{{.QRCodeDataURL}}" width="256" height="256" alt="TOTP enrollment QR code"><p>Manual key: <code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication code <input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><button type="submit">Confirm MFA</button></form>
+{{else if eq .Status "mfa"}}<p>Enter a six-digit authenticator code or one unused recovery code.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication or recovery code <input name="code" autocomplete="one-time-code" required></label><button type="submit">Verify</button></form>
+{{else if .RecoveryCodes}}<h2>Save your recovery codes</h2><p>Each code works once. They will not be shown again.</p><ul>{{range .RecoveryCodes}}<li><code>{{.}}</code></li>{{end}}</ul>{{if .Redirect}}<p><a href="{{.Redirect}}">Continue to Graphit CLI</a></p>{{else}}<p>Device authorized. You may close this page.</p>{{end}}
+{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{else}}<form method="post"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{end}}{{end}}`
 
-var deviceVerificationPage = template.Must(template.New("device").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize device</title></head><body><main><h1>Authorize device</h1>{{if .Approved}}<p>Device authorized. You may close this page.</p>{{else}}<p>Enter the code shown by the CLI and sign in with a local human account.</p>{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label><button type="submit">Authorize</button></form>{{end}}</main></body></html>`))
+var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize Graphit CLI</title></head><body><main><h1>Authorize Graphit CLI</h1><p>Sign in with a local human account. Your password is used only for this login and is never issued as an API credential.</p>` + localLoginForms + `</main></body></html>`))
+
+var deviceVerificationPage = template.Must(template.New("device").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize device</title></head><body><main><h1>Authorize device</h1>{{if .Approved}}<p>Device authorized. You may close this page.</p>{{else}}<p>Enter the code shown by the CLI and sign in with a local human account.</p>` + localLoginForms + `{{end}}</main></body></html>`))
+
+type localLoginPageData struct {
+	Error, Status, ChallengeToken, Secret, UserCode, Redirect string
+	QRCodeDataURL                                             template.URL
+	RecoveryCodes                                             []string
+	Device, Approved                                          bool
+}
 
 func (s *Server) oauthMetadata(w http.ResponseWriter, r *http.Request) {
 	issuer := s.publicURL(r)
@@ -46,7 +60,7 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, localAuthorizationPage, map[string]any{})
+		s.writeOAuthHTML(w, localAuthorizationPage, localLoginPageData{})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -54,18 +68,32 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid authorization form")
 		return
 	}
-	username, password := strings.TrimSpace(r.PostForm.Get("username")), r.PostForm.Get("password")
-	principal, authErr := s.runtime().localPasswords.Authenticate(r.Context(), username, password)
-	password = ""
+	binding := params.binding()
+	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeOAuth, binding)
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
-		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, map[string]any{"Error": "Too many authentication attempts. Try again later."})
+		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, loginPageData(step, "Too many authentication attempts. Try again later."))
 		return
 	}
-	if authErr != nil || principal.AuthMethod != "local-password" {
-		s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, map[string]any{"Error": "Invalid local credentials."})
+	if authErr != nil {
+		var inputError *localAuthInputError
+		switch {
+		case errors.Is(authErr, ErrUnauthenticated):
+			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, loginPageData(step, "Invalid local credentials."))
+		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
+			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, loginPageData(step, authErr.Error()))
+		case errors.As(authErr, &inputError):
+			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, loginPageData(step, inputError.Error()))
+		default:
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete local authorization")
+		}
 		return
 	}
+	if step.Status != "complete" {
+		s.writeOAuthHTML(w, localAuthorizationPage, loginPageData(step, ""))
+		return
+	}
+	principal := step.Principal
 	code, err := randomURLToken(32)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not create authorization code")
@@ -86,12 +114,22 @@ func (s *Server) oauthAuthorize(w http.ResponseWriter, r *http.Request) {
 	query.Set("state", params.state)
 	redirect.RawQuery = query.Encode()
 	w.Header().Set("Cache-Control", "no-store")
+	if len(step.RecoveryCodes) > 0 {
+		data := loginPageData(step, "")
+		data.Redirect = redirect.String()
+		s.writeOAuthHTML(w, localAuthorizationPage, data)
+		return
+	}
 	http.Redirect(w, r, redirect.String(), http.StatusFound)
 }
 
 type localAuthorizationParams struct {
 	clientID, redirectURI, codeChallenge, state string
 	scopes                                      []string
+}
+
+func (p localAuthorizationParams) binding() string {
+	return strings.Join([]string{p.clientID, p.redirectURI, p.codeChallenge, p.state, strings.Join(p.scopes, " ")}, "\n")
 }
 
 func (s *Server) localAuthorizationRequest(r *http.Request) (localAuthorizationParams, error) {
@@ -206,33 +244,84 @@ func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.writeOAuthHTML(w, deviceVerificationPage, map[string]any{"UserCode": r.URL.Query().Get("user_code")})
+		s.writeOAuthHTML(w, deviceVerificationPage, localLoginPageData{Device: true, UserCode: r.URL.Query().Get("user_code")})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		s.writeOAuthHTMLStatus(w, http.StatusBadRequest, deviceVerificationPage, map[string]any{"Error": "Invalid verification form."})
+		s.writeOAuthHTMLStatus(w, http.StatusBadRequest, deviceVerificationPage, localLoginPageData{Device: true, Error: "Invalid verification form."})
 		return
 	}
 	userCode := r.PostForm.Get("user_code")
-	username, password := strings.TrimSpace(r.PostForm.Get("username")), r.PostForm.Get("password")
-	principal, authErr := s.runtime().localPasswords.Authenticate(r.Context(), username, password)
-	password = ""
+	step, authErr := s.continueBrowserLocalLogin(r, localAuthPurposeDevice, normalizeUserCode(userCode))
 	if retryAfter, limited := authenticationRetryAfter(authErr); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
-		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, deviceVerificationPage, map[string]any{"UserCode": userCode, "Error": "Too many authentication attempts. Try again later."})
+		data := loginPageData(step, "Too many authentication attempts. Try again later.")
+		data.Device, data.UserCode = true, userCode
+		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, deviceVerificationPage, data)
 		return
 	}
-	if authErr != nil || principal.AuthMethod != "local-password" {
-		s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, deviceVerificationPage, map[string]any{"UserCode": userCode, "Error": "Invalid local credentials."})
+	if authErr != nil {
+		var inputError *localAuthInputError
+		message := "Could not complete local authorization."
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(authErr, ErrUnauthenticated):
+			message, status = "Invalid local credentials.", http.StatusUnauthorized
+		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
+			message, status = authErr.Error(), http.StatusUnauthorized
+		case errors.As(authErr, &inputError):
+			message, status = inputError.Error(), http.StatusBadRequest
+		}
+		data := loginPageData(step, message)
+		data.Device, data.UserCode = true, userCode
+		s.writeOAuthHTMLStatus(w, status, deviceVerificationPage, data)
 		return
 	}
+	if step.Status != "complete" {
+		data := loginPageData(step, "")
+		data.Device, data.UserCode = true, userCode
+		s.writeOAuthHTML(w, deviceVerificationPage, data)
+		return
+	}
+	principal := step.Principal
 	user, err := s.control.LocalUserBySubject(r.Context(), principal.Subject)
 	if err != nil || s.control.ApproveDeviceAuthorization(r.Context(), userCode, user) != nil {
-		s.writeOAuthHTMLStatus(w, http.StatusBadRequest, deviceVerificationPage, map[string]any{"UserCode": userCode, "Error": "The device code is invalid or expired."})
+		s.writeOAuthHTMLStatus(w, http.StatusBadRequest, deviceVerificationPage, localLoginPageData{Device: true, UserCode: userCode, Error: "The device code is invalid or expired."})
 		return
 	}
-	s.writeOAuthHTML(w, deviceVerificationPage, map[string]any{"Approved": true})
+	if len(step.RecoveryCodes) > 0 {
+		data := loginPageData(step, "")
+		data.Device, data.UserCode = true, userCode
+		s.writeOAuthHTML(w, deviceVerificationPage, data)
+		return
+	}
+	s.writeOAuthHTML(w, deviceVerificationPage, localLoginPageData{Device: true, Approved: true})
+}
+
+func (s *Server) continueBrowserLocalLogin(r *http.Request, purpose, binding string) (LocalAuthStep, error) {
+	challenge := r.PostForm.Get("challenge_token")
+	if challenge != "" {
+		if password := r.PostForm.Get("new_password"); password != "" {
+			if password != r.PostForm.Get("confirm_password") {
+				return LocalAuthStep{Status: localAuthStagePassword, ChallengeToken: challenge}, &localAuthInputError{message: "password confirmation does not match"}
+			}
+			return s.runtime().localAuth.CompletePasswordChange(r.Context(), challenge, purpose, binding, password)
+		}
+		return s.runtime().localAuth.CompleteMFA(r.Context(), challenge, purpose, binding, r.PostForm.Get("code"))
+	}
+	password := r.PostForm.Get("password")
+	principal, err := s.runtime().localPasswords.Authenticate(r.Context(), strings.TrimSpace(r.PostForm.Get("username")), password)
+	password = ""
+	if err != nil {
+		return LocalAuthStep{}, err
+	}
+	return s.runtime().localAuth.Begin(r.Context(), principal, purpose, binding)
+}
+
+func loginPageData(step LocalAuthStep, message string) localLoginPageData {
+	return localLoginPageData{Error: message, Status: step.Status, ChallengeToken: step.ChallengeToken,
+		Secret: step.Secret, QRCodeDataURL: template.URL(step.QRCodeDataURL), RecoveryCodes: step.RecoveryCodes} // #nosec G203 -- generated PNG data URL only.
 }
 
 func (s *Server) oauthToken(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +474,7 @@ func (s *Server) writeOAuthHTML(w http.ResponseWriter, page *template.Template, 
 func (s *Server) writeOAuthHTMLStatus(w http.ResponseWriter, status int, page *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)

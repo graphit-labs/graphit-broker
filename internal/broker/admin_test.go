@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
 type fakeAdminOIDC struct {
@@ -505,9 +508,65 @@ func TestAdminLocalLoginReturnsRetryAfterAfterDefaultFailureLimit(t *testing.T) 
 	}
 }
 
+func TestAdminLocalLoginEnrollsMFAAndAdministrativeResetForcesReenrollment(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	required := true
+	service.runtime().localAuth.config.Required = &required
+	if _, err := service.control.db.Exec(`UPDATE local_users SET password_change_required=1 WHERE username='consumer'`); err != nil {
+		t.Fatal(err)
+	}
+
+	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"consumer-secret"}`)
+	var passwordStep LocalAuthStep
+	if login.StatusCode != http.StatusOK || json.NewDecoder(login.Body).Decode(&passwordStep) != nil || passwordStep.Status != localAuthStagePassword {
+		t.Fatalf("password step status=%d step=%#v", login.StatusCode, passwordStep)
+	}
+	_ = login.Body.Close()
+	changed := postJSON(t, httpServer.URL+"/admin/auth/local/continue", fmt.Sprintf(`{"challenge_token":%q,"new_password":"consumer-permanent"}`, passwordStep.ChallengeToken))
+	var enrollment LocalAuthStep
+	if changed.StatusCode != http.StatusOK || json.NewDecoder(changed.Body).Decode(&enrollment) != nil || enrollment.Status != localAuthStageEnroll || enrollment.Secret == "" || enrollment.QRCodeDataURL == "" {
+		t.Fatalf("enrollment status=%d step=%#v", changed.StatusCode, enrollment)
+	}
+	_ = changed.Body.Close()
+	code, err := totp.GenerateCode(enrollment.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := postJSON(t, httpServer.URL+"/admin/auth/local/continue", fmt.Sprintf(`{"challenge_token":%q,"code":%q}`, enrollment.ChallengeToken, code))
+	var complete LocalAuthStep
+	if verified.StatusCode != http.StatusOK || json.NewDecoder(verified.Body).Decode(&complete) != nil || complete.Status != "complete" || len(complete.RecoveryCodes) != localMFARecoveryCodeCount || len(verified.Cookies()) == 0 {
+		t.Fatalf("MFA completion status=%d step=%#v cookies=%#v", verified.StatusCode, complete, verified.Cookies())
+	}
+	cookie := verified.Cookies()[0]
+	_ = verified.Body.Close()
+
+	reset := bearerRequest(t, http.MethodPost, httpServer.URL+"/admin/api/v1/local-users/consumer/mfa/reset", "root-token", "")
+	if reset.StatusCode != http.StatusNoContent {
+		t.Fatalf("MFA reset status=%d", reset.StatusCode)
+	}
+	_ = reset.Body.Close()
+	stale, _ := http.NewRequest(http.MethodGet, httpServer.URL+"/admin/api/v1/session", nil)
+	stale.AddCookie(cookie)
+	staleResponse, err := http.DefaultClient.Do(stale)
+	if err != nil || staleResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("session after MFA reset status=%s err=%v", statusText(staleResponse), err)
+	}
+	_ = staleResponse.Body.Close()
+	relogin := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"consumer","password":"consumer-permanent"}`)
+	var reenrollment LocalAuthStep
+	if relogin.StatusCode != http.StatusOK || json.NewDecoder(relogin.Body).Decode(&reenrollment) != nil || reenrollment.Status != localAuthStageEnroll || reenrollment.Secret == enrollment.Secret {
+		t.Fatalf("reenrollment status=%d step=%#v", relogin.StatusCode, reenrollment)
+	}
+	_ = relogin.Body.Close()
+}
+
 func TestLocalOnlyUserCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
 	cfg.Authentication.TokenPepper = testPasswordPepper
+	requireMFA := false
+	cfg.Authentication.LocalMFA.Required = &requireMFA
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
 	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour,
 		CLI: GraphitCLIConfig{ProviderName: "local-broker", ProfileName: "local-root"}}
@@ -537,8 +596,14 @@ func TestLocalOnlyUserCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	}
 
 	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"admin","password":"bootstrap-password"}`)
+	var passwordStep LocalAuthStep
+	if login.StatusCode != http.StatusOK || json.NewDecoder(login.Body).Decode(&passwordStep) != nil || passwordStep.Status != localAuthStagePassword {
+		t.Fatalf("local bootstrap password step status=%d step=%#v", login.StatusCode, passwordStep)
+	}
+	_ = login.Body.Close()
+	login = postJSON(t, httpServer.URL+"/admin/auth/local/continue", fmt.Sprintf(`{"challenge_token":%q,"new_password":"bootstrap-password-replaced"}`, passwordStep.ChallengeToken))
 	if login.StatusCode != http.StatusNoContent || len(login.Cookies()) == 0 {
-		t.Fatalf("local bootstrap login status=%d cookies=%#v", login.StatusCode, login.Cookies())
+		t.Fatalf("local bootstrap login completion status=%d cookies=%#v", login.StatusCode, login.Cookies())
 	}
 	cookie := login.Cookies()[0]
 	_ = login.Body.Close()
@@ -655,8 +720,9 @@ func TestAdminLocalUserCRUDIsProtectedAndNeverReturnsPasswordHash(t *testing.T) 
 	}
 	_ = put.Body.Close()
 	login := postJSON(t, httpServer.URL+"/admin/auth/local", `{"username":"alice-renamed","password":"replacement-secret"}`)
-	if login.StatusCode != http.StatusNoContent {
-		t.Fatalf("updated local user login status=%d", login.StatusCode)
+	var step LocalAuthStep
+	if login.StatusCode != http.StatusOK || json.NewDecoder(login.Body).Decode(&step) != nil || step.Status != localAuthStagePassword {
+		t.Fatalf("updated local user login status=%d step=%#v", login.StatusCode, step)
 	}
 	_ = login.Body.Close()
 	deleted := bearerRequest(t, http.MethodDelete, httpServer.URL+"/admin/api/v1/local-users/alice-renamed", "root-token", "")
@@ -793,6 +859,8 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"}, SubjectClaim: "sub", UsernameClaim: "preferred_username",
 		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/admin/auth/callback", Scopes: []string{"openid", "profile", "email"},
 	}}}
+	requireMFA := false
+	cfg.Authentication.LocalMFA.Required = &requireMFA
 	cfg.Services.Embeddings.Upstream.APIKey = "embedding-secret"
 	cfg.Services.Rerank.Upstream.APIKey = "rerank-secret"
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
@@ -813,6 +881,10 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 		control.Close()
 		t.Fatal(err)
 	}
+	if _, err := control.db.Exec(`UPDATE local_users SET password_change_required=0 WHERE username='consumer'`); err != nil {
+		control.Close()
+		t.Fatal(err)
+	}
 	localConfig := cfg.Authentication
 	localConfig.OIDC = nil
 	localAuthenticator, err := NewAuthenticator(context.Background(), localConfig, control)
@@ -829,6 +901,11 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	}
 	runtime := *service.runtime()
 	runtime.localPasswords = localPasswords
+	runtime.localAuth, err = newLocalAuthenticationService(cfg.Authentication, control, localPasswords)
+	if err != nil {
+		service.Close()
+		t.Fatal(err)
+	}
 	service.state.Store(&runtime)
 	if err := service.control.AssignRole(context.Background(), "https://identity.example|root-subject", adminRole); err != nil {
 		service.Close()

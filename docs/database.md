@@ -10,6 +10,11 @@ sessions store the user's revision so identity/password/state
 changes force reauthentication. In-memory AI result caches and generated pre-signed URLs are not
 persisted.
 
+Local TOTP secrets are stored only as AES-256-GCM ciphertext. Recovery codes and local login
+challenges are stored only as domain-separated HMAC values; challenge records are short-lived and
+carry the user revision, purpose, binding, and stage. No plaintext TOTP secret, recovery code,
+password, session token, OAuth grant, or service credential is persisted.
+
 OIDC login rows contain separate HMAC-SHA-256 values for the state and the browser-binding secret;
 the raw values are never stored. Both HMACs use `authentication.token_pepper` with distinct
 cryptographic domains, and a callback consumes a row only when both values match.

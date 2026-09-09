@@ -21,6 +21,7 @@ type runtimeState struct {
 	config         Config
 	authenticator  Authenticator
 	localPasswords *localPasswordAuthenticator
+	localAuth      *localAuthenticationService
 	acl            *ACL
 	ai             *AIService
 	presigner      PresignService
@@ -62,6 +63,7 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 }
 
 func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
+	cfg.Authentication.LocalMFA.setDefaults()
 	cfg.Authentication.LocalTokens.setDefaults()
 	if cfg.Administration.CookieSecure == nil {
 		secure := true
@@ -74,6 +76,11 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		return nil, err
 	}
 	localPasswords, err := newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers)
+	if err != nil {
+		return nil, err
+	}
+	control, _ := grants.(*ControlStore)
+	localAuth, err := newLocalAuthenticationService(cfg.Authentication, control, localPasswords)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +101,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		return nil, err
 	}
 	cfg.Services = ai.EffectiveServices()
-	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords,
+	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords, localAuth: localAuth,
 		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
 }
 
@@ -137,6 +144,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.HandleFunc("GET /admin/auth/login", s.adminLogin)
 		mux.HandleFunc("GET /admin/auth/callback", s.adminCallback)
 		mux.HandleFunc("POST /admin/auth/local", s.adminLocalLogin)
+		mux.HandleFunc("POST /admin/auth/local/continue", s.adminLocalLoginContinue)
 		mux.HandleFunc("POST /admin/auth/logout", s.adminLogout)
 		mux.HandleFunc("GET /admin/api/v1/login-options", s.adminLoginOptions)
 		mux.Handle("GET /admin/api/v1/session", s.requireAdministration("session.read", http.HandlerFunc(s.adminSession)))
@@ -157,6 +165,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) *Server 
 		mux.Handle("POST /admin/api/v1/local-users", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUsers)))
 		mux.Handle("PUT /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
 		mux.Handle("DELETE /admin/api/v1/local-users/{username}", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUser)))
+		mux.Handle("POST /admin/api/v1/local-users/{username}/mfa/reset", s.requireAdministration("users.write", http.HandlerFunc(s.adminLocalUserMFAReset)))
 		mux.Handle("GET /admin/api/v1/local-users/{username}/credentials", s.requireAdministration("users.read", http.HandlerFunc(s.adminServiceCredentials)))
 		mux.Handle("POST /admin/api/v1/local-users/{username}/credentials", s.requireAdministration("users.write", http.HandlerFunc(s.adminServiceCredentials)))
 		mux.Handle("DELETE /admin/api/v1/local-users/{username}/credentials/{credential}", s.requireAdministration("users.write", http.HandlerFunc(s.adminServiceCredential)))

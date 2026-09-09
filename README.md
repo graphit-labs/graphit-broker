@@ -42,8 +42,11 @@ this development version. Recreate the database when the schema version changes.
 
 Local identities live in SQL. Set `authentication.token_pepper` from a secret manager, then run
 `graphit-broker --config config.yaml --bootstrap-admin` (or `--bootstrap-admin-stdin`) once on an
-empty database. The command reads only the password, creates the fixed first username `admin`, and
+empty database. The command reads only a temporary password, creates the fixed first username `admin`, and
 refuses to overwrite any existing local user. Passwords require at least 15 Unicode characters;
+the user must replace the temporary password and enroll TOTP MFA at first login. The QR code works
+with Google Authenticator and compatible applications; administrative MFA reset forces safe
+reenrollment after a lost device.
 failed checks are rate-limited per username, and concurrent Argon2id work plus its bounded admission
 queue are configurable. See [configuration](docs/configuration.md) and
 [administration bootstrap](docs/administration.md).

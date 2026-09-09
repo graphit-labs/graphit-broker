@@ -34,6 +34,19 @@ There is deliberately no cross-username failure lockout. At most two Argon2id ch
 concurrently per process by default, bounding memory and CPU cost. A bounded admission queue holds
 at most `max_concurrent * saturation_multiplier` running and waiting calls—eight with the defaults
 of two and four. Further calls are rejected before the KDF and do not count as password failures.
+
+Human local identities require TOTP MFA by default. Password success creates only an opaque,
+short-lived, one-time SQL challenge bound by HMAC to the exact admin, OAuth, or device flow; it does
+not create a session, authorization code, or device approval. A temporary password must be changed
+before MFA. The TOTP secret is encrypted at rest with AES-256-GCM using a domain-separated key
+derived from `authentication.token_pepper` and subject-bound authenticated data. Recovery codes are
+random, shown once, and stored only as subject-bound HMAC-SHA-256 values. Accepted TOTP time steps
+are persisted to reject replay, and MFA failures use an independent per-username limiter.
+
+An administrative MFA reset deletes the factor and recovery codes and increments the local identity
+revision, invalidating existing sessions, tokens, grants, and unfinished challenges before forcing
+reenrollment. TOTP does not protect against a real-time phishing proxy or theft of an already
+authenticated browser session; phishing-resistant MFA would require a future WebAuthn/passkey flow.
 Queued calls recheck per-username lockout before KDF work. Successful checks do not consume failure
 quota.
 

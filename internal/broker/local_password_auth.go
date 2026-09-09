@@ -85,34 +85,37 @@ func (a *localPasswordAuthenticator) check(ctx context.Context, username string,
 	if err := a.rateLimiter.allow(username); err != nil {
 		return false, err
 	}
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	default:
+	release, err := a.acquirePasswordWork(ctx)
+	if err != nil {
+		return false, err
 	}
-	select {
-	case a.passwordAdmission <- struct{}{}:
-		defer func() { <-a.passwordAdmission }()
-	default:
-		return false, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
-	}
-	select {
-	case a.passwordWork <- struct{}{}:
-		defer func() { <-a.passwordWork }()
-	case <-ctx.Done():
-		return false, ctx.Err()
-	}
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	default:
-	}
+	defer release()
 	if err := a.rateLimiter.allow(username); err != nil {
 		return false, err
 	}
 	authenticated := a.passwordCheck(ctx, verifier, a.tokenPepper, password)
 	a.rateLimiter.record(username, authenticated)
 	return authenticated, nil
+}
+
+func (a *localPasswordAuthenticator) acquirePasswordWork(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	select {
+	case a.passwordAdmission <- struct{}{}:
+	default:
+		return nil, &authenticationRateLimitError{retryAfter: concurrentAuthenticationRetryAfter}
+	}
+	select {
+	case a.passwordWork <- struct{}{}:
+	case <-ctx.Done():
+		<-a.passwordAdmission
+		return nil, ctx.Err()
+	}
+	return func() { <-a.passwordWork; <-a.passwordAdmission }, nil
 }
 
 func verifyPassword(_ context.Context, verifier passwordVerifier, pepper []byte, password string) bool {

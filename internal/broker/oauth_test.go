@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pquerna/otp/totp"
 )
 
 func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T) {
@@ -166,6 +169,80 @@ func TestDeviceAuthorizationRequiresApprovalAndIsOneTime(t *testing.T) {
 		t.Fatalf("device code replay status=%d", replay.StatusCode)
 	}
 	_ = replay.Body.Close()
+}
+
+func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	required := true
+	service.runtime().localAuth.config.Required = &required
+
+	verifier := strings.Repeat("v", 64)
+	digest := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	redirectURI := "http://127.0.0.1:49152/oauth/callback"
+	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"mfa-state"}, "scope": {localAPIScope}}
+	authorizeURL := httpServer.URL + "/oauth/authorize?" + query.Encode()
+	started := oauthForm(t, authorizeURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
+	startedBody, _ := io.ReadAll(started.Body)
+	_ = started.Body.Close()
+	if started.StatusCode != http.StatusOK {
+		t.Fatalf("MFA enrollment start status=%d body=%s", started.StatusCode, startedBody)
+	}
+	var codeCount int
+	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oauth_authorization_codes`).Scan(&codeCount); err != nil || codeCount != 0 {
+		t.Fatalf("authorization code existed before MFA count=%d err=%v", codeCount, err)
+	}
+	tokenMatch := regexp.MustCompile(`name="challenge_token" value="([^"]+)"`).FindSubmatch(startedBody)
+	secretMatch := regexp.MustCompile(`Manual key: <code>([^<]+)</code>`).FindSubmatch(startedBody)
+	if len(tokenMatch) != 2 || len(secretMatch) != 2 {
+		t.Fatalf("enrollment fields missing from page: %s", startedBody)
+	}
+	totpCode, err := totp.GenerateCode(string(secretMatch[1]), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed := oauthForm(t, authorizeURL, url.Values{"challenge_token": {string(tokenMatch[1])}, "code": {totpCode}})
+	confirmedBody, _ := io.ReadAll(confirmed.Body)
+	_ = confirmed.Body.Close()
+	if confirmed.StatusCode != http.StatusOK {
+		t.Fatalf("MFA authorization completion status=%d body=%s", confirmed.StatusCode, confirmedBody)
+	}
+	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM oauth_authorization_codes`).Scan(&codeCount); err != nil || codeCount != 1 {
+		t.Fatalf("authorization code after MFA count=%d err=%v", codeCount, err)
+	}
+	recoveryMatch := regexp.MustCompile(`<li><code>([^<]+)</code></li>`).FindSubmatch(confirmedBody)
+	if len(recoveryMatch) != 2 {
+		t.Fatalf("recovery code missing after enrollment: %s", confirmedBody)
+	}
+
+	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {localAPIScope}})
+	var device struct {
+		DeviceCode string `json:"device_code"`
+		UserCode   string `json:"user_code"`
+	}
+	if deviceResponse.StatusCode != http.StatusOK || json.NewDecoder(deviceResponse.Body).Decode(&device) != nil {
+		t.Fatalf("device authorization status=%d", deviceResponse.StatusCode)
+	}
+	_ = deviceResponse.Body.Close()
+	deviceStarted := oauthForm(t, httpServer.URL+"/oauth/device", url.Values{"user_code": {device.UserCode}, "username": {"consumer"}, "password": {"consumer-secret"}})
+	deviceStartedBody, _ := io.ReadAll(deviceStarted.Body)
+	_ = deviceStarted.Body.Close()
+	deviceChallenge := regexp.MustCompile(`name="challenge_token" value="([^"]+)"`).FindSubmatch(deviceStartedBody)
+	var deviceStatus string
+	if err := service.control.db.QueryRow(`SELECT status FROM oauth_device_codes`).Scan(&deviceStatus); err != nil || deviceStatus != deviceStatusPending || len(deviceChallenge) != 2 {
+		t.Fatalf("device before MFA status=%q challenge=%q err=%v", deviceStatus, deviceChallenge, err)
+	}
+	deviceComplete := oauthForm(t, httpServer.URL+"/oauth/device", url.Values{"user_code": {device.UserCode}, "challenge_token": {string(deviceChallenge[1])}, "code": {string(recoveryMatch[1])}})
+	_ = deviceComplete.Body.Close()
+	if deviceComplete.StatusCode != http.StatusOK {
+		t.Fatalf("device MFA completion status=%d", deviceComplete.StatusCode)
+	}
+	if err := service.control.db.QueryRow(`SELECT status FROM oauth_device_codes`).Scan(&deviceStatus); err != nil || deviceStatus != deviceStatusApproved {
+		t.Fatalf("device after MFA status=%q err=%v", deviceStatus, err)
+	}
 }
 
 func TestServiceCredentialIsShownOnceRevocableAndRevisionBound(t *testing.T) {

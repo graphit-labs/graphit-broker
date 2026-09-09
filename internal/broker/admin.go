@@ -118,7 +118,7 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil {
+	if s.control == nil || s.runtime().localAuth == nil {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 		return
 	}
@@ -158,9 +158,69 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
 		return
 	}
+	step, err := state.localAuth.Begin(r.Context(), principal, localAuthPurposeAdmin, "")
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "local_login_failed", "the local broker credentials are invalid", requestID(r.Context()))
+		return
+	}
+	s.finishAdminLocalLogin(w, r, step)
+}
+
+func (s *Server) adminLocalLoginContinue(w http.ResponseWriter, r *http.Request) {
+	if s.control == nil || s.runtime().localAuth == nil {
+		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "content_type_required", "local login requires application/json", requestID(r.Context()))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	var request struct {
+		ChallengeToken string `json:"challenge_token"`
+		NewPassword    string `json:"new_password"`
+		Code           string `json:"code"`
+	}
+	if err := s.decodeRequest(w, r, &request); err != nil {
+		return
+	}
+	var step LocalAuthStep
+	var err error
+	if request.NewPassword != "" {
+		step, err = s.runtime().localAuth.CompletePasswordChange(r.Context(), request.ChallengeToken, localAuthPurposeAdmin, "", request.NewPassword)
+		request.NewPassword = ""
+	} else {
+		step, err = s.runtime().localAuth.CompleteMFA(r.Context(), request.ChallengeToken, localAuthPurposeAdmin, "", request.Code)
+	}
+	request.Code = ""
+	if retryAfter, limited := authenticationRetryAfter(err); limited {
+		writeAuthenticationRateLimit(w, r, retryAfter)
+		return
+	}
+	if err != nil {
+		var inputError *localAuthInputError
+		switch {
+		case errors.Is(err, ErrLocalChallengeInvalid), errors.Is(err, ErrLocalMFACodeInvalid):
+			writeError(w, http.StatusUnauthorized, "local_login_step_failed", err.Error(), requestID(r.Context()))
+		case errors.As(err, &inputError):
+			writeError(w, http.StatusBadRequest, "local_login_step_failed", inputError.Error(), requestID(r.Context()))
+		default:
+			writeError(w, http.StatusInternalServerError, "local_login_failed", "could not complete local login", requestID(r.Context()))
+		}
+		return
+	}
+	s.finishAdminLocalLogin(w, r, step)
+}
+
+func (s *Server) finishAdminLocalLogin(w http.ResponseWriter, r *http.Request, step LocalAuthStep) {
+	if step.Status != "complete" {
+		writeJSON(w, http.StatusOK, step)
+		return
+	}
+	principal := step.Principal
 	session := AdminSession{Issuer: principal.Issuer, Subject: principal.Subject, Username: principal.Username,
 		Organization: principal.Organization, Teams: principal.Teams, Name: principal.Name, Email: principal.Email,
-		LocalUserRevision: user.Revision}
+		LocalUserRevision: principal.LocalUserRevision}
 	allowed, err := s.authorizeAdmin(r.Context(), session, "session.read")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "authorization_failed", "could not authorize local login", requestID(r.Context()))
@@ -171,6 +231,10 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.createAdminSession(w, r, session) {
+		return
+	}
+	if len(step.RecoveryCodes) > 0 {
+		writeJSON(w, http.StatusOK, step)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -569,16 +633,17 @@ func (s *Server) adminAssignments(w http.ResponseWriter, r *http.Request) {
 }
 
 type localUserRequest struct {
-	Username     string   `json:"username"`
-	Subject      string   `json:"subject"`
-	Kind         string   `json:"kind"`
-	Password     string   `json:"password"`
-	Name         string   `json:"name"`
-	Email        string   `json:"email"`
-	Organization string   `json:"organization"`
-	Teams        []string `json:"teams"`
-	Roles        []string `json:"roles"`
-	Enabled      *bool    `json:"enabled"`
+	Username               string   `json:"username"`
+	Subject                string   `json:"subject"`
+	Kind                   string   `json:"kind"`
+	Password               string   `json:"password"`
+	Name                   string   `json:"name"`
+	Email                  string   `json:"email"`
+	Organization           string   `json:"organization"`
+	Teams                  []string `json:"teams"`
+	Roles                  []string `json:"roles"`
+	Enabled                *bool    `json:"enabled"`
+	PasswordChangeRequired *bool    `json:"password_change_required"`
 }
 
 func (s *Server) adminLocalUsers(w http.ResponseWriter, r *http.Request) {
@@ -659,7 +724,17 @@ func (s *Server) localUserFromRequest(request localUserRequest, passwordRequired
 	return LocalUser{Username: strings.TrimSpace(request.Username), Subject: strings.TrimSpace(request.Subject), Kind: kind,
 		PasswordHash: passwordHash, Name: strings.TrimSpace(request.Name), Email: strings.TrimSpace(request.Email),
 		Organization: strings.TrimSpace(request.Organization), Teams: cleanStrings(request.Teams),
-		Roles: cleanStrings(request.Roles), Enabled: enabled}, nil
+		Roles: cleanStrings(request.Roles), Enabled: enabled,
+		PasswordChanged:        len(passwordHash) > 0,
+		PasswordChangeRequired: request.PasswordChangeRequired != nil && *request.PasswordChangeRequired}, nil
+}
+
+func (s *Server) adminLocalUserMFAReset(w http.ResponseWriter, r *http.Request) {
+	if err := s.control.ResetLocalMFA(r.Context(), strings.TrimSpace(r.PathValue("username"))); err != nil {
+		writeError(w, http.StatusBadRequest, "mfa_reset_failed", err.Error(), requestID(r.Context()))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) adminServiceCredentials(w http.ResponseWriter, r *http.Request) {
