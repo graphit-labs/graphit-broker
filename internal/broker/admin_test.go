@@ -817,7 +817,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	}
 	configBody, _ := io.ReadAll(configResponse.Body)
 	_ = configResponse.Body.Close()
-	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTSECRET", "private-captcha-secret", testPasswordPepper, service.runtime().config.Database.DSN} {
+	for _, secret := range []string{"admin-client-secret", "consumer-secret", "embedding-secret", "rerank-secret", "TESTACCESS", "TESTSECRET", "private-captcha-secret", testPasswordPepper, service.runtime().config.Database.DSN} {
 		if bytes.Contains(configBody, []byte(secret)) {
 			t.Fatalf("configuration response leaked %q: %s", secret, configBody)
 		}

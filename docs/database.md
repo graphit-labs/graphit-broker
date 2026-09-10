@@ -7,7 +7,7 @@ administration sessions, Broker OIDC authorization/token state, and service cred
 and code values. It stores domain-separated HMACs for those random credentials and their
 subject/client/audience/scope/expiry/revocation metadata, but no other deployment secrets. Local
 sessions store the user's revision so identity/password/state
-changes force reauthentication. In-memory AI result caches and generated pre-signed URLs are not
+changes force reauthentication. In-memory AI result caches and issued STS credentials are not
 persisted.
 
 Local TOTP secrets are stored only as AES-256-GCM ciphertext. Recovery codes and local login

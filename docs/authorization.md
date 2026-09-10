@@ -3,7 +3,7 @@
 Resource grants are the sole project-capability authorization source for consumer operations.
 They live in normalized SQL tables and are independent from system RBAC roles. The broker
 loads current grants for every consequential request, so a committed change applies to the next
-Hub resolution, S3 pre-sign, embedding, or rerank request.
+Hub resolution, S3 credential issuance, embedding, or rerank request.
 
 ## Identity
 
@@ -58,48 +58,48 @@ roles select broker/UI actions but do not make a resource grant match.
 Grants are additive. No match means deny. If matching S3 grants select different routes, the
 request is rejected instead of guessing.
 
-## How S3 grants select a route
+## How S3 grants become an STS policy
 
-The S3 pre-sign request contains `project`, an HTTP-style `operation` (`get`, `head`, `list`,
-`put`, or `delete`), and a logical `key`. It deliberately has no client-controlled route field.
-The bearer credential, or the absence of one, has already established the principal before route
-selection begins.
+`POST /v1/s3/credentials` accepts only `{}` and requires an authenticated bearer. Identity and all
+scope come from the verified principal and the current SQL grant snapshot. A client cannot submit a
+project, operation, prefix, route, role, bucket, endpoint, duration, or policy.
 
-The broker maps the requested verb to authorization operations in this order:
+For each matching rule, the broker includes an authorization operation when `capabilities` contains
+`s3` or `s3:<operation>` and `s3_operations` is empty, contains `*`, or contains that operation.
+Projects and prefix templates are then rendered into logical object prefixes. An omitted project
+list means every project. With no explicit `s3_prefixes`, an exact project becomes
+`v2/projects/<project>`; `global`, `*`, or an omitted project list becomes `v2` because it can cover
+the global namespace too.
 
-| Requested operation | Authorization operations tried in order |
+All matching S3 rules are additive and must select one route. An explicit `s3_route` selects it;
+an empty value uses `default_route`. If the same principal matches rules for different routes, the
+request fails closed because one credential response contains one bucket, region, and endpoint.
+Use distinct principals when separate storage topologies are required.
+
+The broker joins every logical prefix to the route's physical `base_prefix` and maps permissions to
+AWS/MinIO actions:
+
+| Grant operation | Session actions |
 |---|---|
-| `get`, `head`, `list` | `read`, `write`, `publish` |
-| `put` | `write`, `publish` |
-| `delete` | `delete`, `publish` |
+| `read` | prefix-constrained `ListBucket`, `GetObject` (including HEAD and Range GET) |
+| `write` | read actions plus `PutObject` and multipart upload actions |
+| `publish` | write actions plus `DeleteObject` |
+| `delete` | `DeleteObject` only |
 
-For each authorization operation, a grant matches only when all applicable selectors agree:
+`GetBucketLocation` is limited to the selected bucket. Object resources and list-prefix conditions
+carry the rendered paths. The broker passes the resulting JSON as an inline `AssumeRole` session
+policy, so effective permissions are the intersection of the route role/user policy and current
+Graphit grants. AWS STS limits that inline policy to 2048 bytes; the broker groups equal action sets
+but rejects a larger result rather than dropping restrictions.
 
-1. `access` and `principal` match the derived identity. The supported identity selectors are
-   `global`, `anonymous`, `authenticated`, `user`, `team`, `organization`, and `subject`.
-2. `capabilities` contains `s3` or the narrower `s3:<authorization-operation>`.
-3. `projects` is empty, contains `*`, or contains the exact requested project.
-4. `s3_operations` is empty, contains `*`, or contains the authorization operation.
-
-The first authorization operation with a successful match wins. All grants matching that same
-operation must resolve to one route: their explicit `s3_route`, or `default_route` when it is
-empty. If they select different routes, the broker rejects the request as ambiguous. The rendered
-prefixes of the matching grants are combined, and only then does the pre-sign service verify that
-the logical `key` is within an allowed prefix.
-
-Consequently, `s3_prefixes` constrains access after route selection; it is not a route selector.
-The same principal, project, and authorization operation cannot be routed differently based only
-on the key. Similarly, giving one principal `write` on `primary` and `publish` on `public` does not
-make a `put` choose by key: `write` is tried first. Use distinct projects or identities when the
-same HTTP operation must reach different routes.
+The response exposes the selected topology and one physical root prefix so Graphit can use S3,
+LanceDB, and Ladybug directly. It never exposes the broker's permanent signing credentials. A new
+call relays the latest authorization revision and mints a new session. Already issued credentials
+retain their bounded session policy until their short expiry or storage-side revocation.
 
 ### Internal and publication storage
 
-For example, `primary` can hold internal project objects while `public` holds publication
-artifacts. The route named `public` is still private broker configuration; anonymous access is a
-separate grant decision.
-
-An internal team can receive this grant:
+A team that reads and updates internal project data can receive:
 
 ```json
 {
@@ -115,84 +115,15 @@ An internal team can receive this grant:
 }
 ```
 
-A separate local-user or OIDC identity used by a publication service can receive:
-
-```json
-{
-  "id": "project-publisher",
-  "name": "Project publication service",
-  "access": "subject",
-  "principal": "publisher-service",
-  "capabilities": ["s3:publish"],
-  "projects": ["01ARZ3NDEKTSV4RRFFQ69G5FAV"],
-  "s3_operations": ["publish"],
-  "s3_route": "public",
-  "s3_prefixes": ["v2/projects/{project}/published"]
-}
-```
-
-Because the publication identity does not also match the internal `write` grant, a `put` falls
-through from `write` to `publish` and selects `public`. To allow unauthenticated reads of the
-published objects while the bucket itself remains private, add a third grant:
-
-```json
-{
-  "id": "project-public-read",
-  "name": "Public project publications",
-  "access": "anonymous",
-  "capabilities": ["s3:read"],
-  "projects": ["01ARZ3NDEKTSV4RRFFQ69G5FAV"],
-  "s3_operations": ["read"],
-  "s3_route": "public",
-  "s3_prefixes": ["v2/projects/{project}/published"]
-}
-```
-
-Anonymous callers receive only a short-lived pre-signed request; they never receive the route's
-access key or secret.
-
-### Staging and production routes
-
-Routes can also represent `staging` and `production` storage. Within one broker, distinguish the
-environments using exact project IDs, distinct principals, or preferably both:
-
-```json
-{
-  "id": "staging-storage",
-  "access": "subject",
-  "principal": "ci-staging",
-  "capabilities": ["s3"],
-  "projects": ["01ARZ3NDEKTSV4RRFFQ69G5FAV"],
-  "s3_operations": ["read", "write", "delete"],
-  "s3_route": "staging",
-  "s3_prefixes": ["v2/projects/{project}"]
-}
-```
-
-```json
-{
-  "id": "production-storage",
-  "access": "subject",
-  "principal": "ci-production",
-  "capabilities": ["s3"],
-  "projects": ["01ARZ3NDEKTSV4RRFFQ69G5FAW"],
-  "s3_operations": ["read", "write", "delete"],
-  "s3_route": "production",
-  "s3_prefixes": ["v2/projects/{project}"]
-}
-```
-
-There is no generic client-supplied `environment` selector. OIDC audience and scope are validated
-during authentication but are not independent grant selectors. Custom identity distinctions must
-be represented by the supported subject, username, organization, or team attributes. If the same
-principal sends the same operation for the same project, the broker has no additional environment
-signal with which to choose between staging and production.
+A publication service may instead receive `s3:publish` for its publication prefix. If it must use a
+different bucket or account, give it a distinct principal so its complete matching grant set still
+selects one route.
 
 ## Recommended project grant
 
 For a team that must discover and use one project, grant both `hub` and `s3` for that exact
 project. `hub` makes the project visible through `graphit-hub-access-v1`; `s3` permits the
-subsequent metadata/content pre-signs.
+subsequent direct S3 access through a restricted STS session.
 
 ```bash
 curl -X POST https://broker.example/admin/api/v1/grants \
@@ -216,17 +147,16 @@ Use the ETag from `GET /admin/api/v1/grants`; replace the illustrative tokens an
 
 ## Anonymous access
 
-Anonymous clients omit `Authorization`. A grant must explicitly use `access: anonymous`.
-Prefer exact projects, read-only S3 operations, and a dedicated storage route/prefix. A
-`global` grant applies to anonymous and authenticated callers, so use it only for intentionally
-public capability access.
+Hub discovery and AI capabilities may still use explicit `anonymous` grants. Temporary S3
+credentials are never issued to anonymous callers. Public object delivery must use an independently
+public bucket or CDN policy instead of the broker credential endpoint.
 
 ## Authorization revisions
 
 Every successful create, update, or delete increments one database revision in the same
-transaction as the grant rows. Discovery and Hub/S3 responses expose this revision. Graphit
-re-discovers and requires a consistent revision during an operation; a concurrent policy change
-fails closed and the next request retries against the new state.
+transaction as the grant rows. Discovery and Hub/S3 responses expose this revision. Graphit records the revision with each credential session and requests a new session before expiry.
+A subsequent issuance always uses the latest committed grants; an already issued STS session remains
+bounded by its original policy until expiry or storage-side revocation.
 
 ## Source-of-truth boundary
 

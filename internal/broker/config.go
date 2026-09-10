@@ -207,20 +207,22 @@ type RerankServiceConfig struct {
 }
 
 type S3ServiceConfig struct {
-	Enabled          bool                     `yaml:"enabled"`
-	DefaultRoute     string                   `yaml:"default_route"`
-	Routes           map[string]S3RouteConfig `yaml:"routes"`
-	PresignExpiry    time.Duration            `yaml:"presign_expiry"`
-	MaxPresignExpiry time.Duration            `yaml:"max_presign_expiry"`
+	Enabled      bool                     `yaml:"enabled"`
+	DefaultRoute string                   `yaml:"default_route"`
+	Routes       map[string]S3RouteConfig `yaml:"routes"`
 }
 
 type S3RouteConfig struct {
-	Region          string `yaml:"region"`
-	Endpoint        string `yaml:"endpoint"`
-	Bucket          string `yaml:"bucket"`
-	BasePrefix      string `yaml:"base_prefix"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"secret_access_key"`
+	Region          string        `yaml:"region"`
+	Endpoint        string        `yaml:"endpoint"`
+	Bucket          string        `yaml:"bucket"`
+	BasePrefix      string        `yaml:"base_prefix"`
+	AccessKeyID     string        `yaml:"access_key_id"`
+	SecretAccessKey string        `yaml:"secret_access_key"`
+	STSEndpoint     string        `yaml:"sts_endpoint"`
+	STSRoleARN      string        `yaml:"sts_role_arn"`
+	STSSessionName  string        `yaml:"sts_session_name"`
+	STSDuration     time.Duration `yaml:"sts_duration"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -411,11 +413,14 @@ func (c *Config) defaults() {
 		}
 		c.Services.S3.Routes[name] = route
 	}
-	if c.Services.S3.PresignExpiry == 0 {
-		c.Services.S3.PresignExpiry = 5 * time.Minute
-	}
-	if c.Services.S3.MaxPresignExpiry == 0 {
-		c.Services.S3.MaxPresignExpiry = 15 * time.Minute
+	for name, route := range c.Services.S3.Routes {
+		if route.STSSessionName == "" {
+			route.STSSessionName = "graphit-broker"
+		}
+		if route.STSDuration == 0 {
+			route.STSDuration = time.Hour
+		}
+		c.Services.S3.Routes[name] = route
 	}
 	c.Services.Embeddings.Cache.setDefaults()
 	c.Services.Rerank.Cache.setDefaults()
@@ -747,20 +752,33 @@ func (c Config) Validate() error {
 		if _, ok := c.Services.S3.Routes[c.Services.S3.DefaultRoute]; !ok {
 			return errors.New("services.s3.default_route must name a configured route")
 		}
-		if c.Services.S3.PresignExpiry <= 0 || c.Services.S3.MaxPresignExpiry <= 0 || c.Services.S3.PresignExpiry > c.Services.S3.MaxPresignExpiry || c.Services.S3.MaxPresignExpiry > time.Hour {
-			return errors.New("services.s3 presign expiry must be positive, default <= max, and max <= 1h")
-		}
 		for name, route := range c.Services.S3.Routes {
 			if !safeSegment(name) {
 				return fmt.Errorf("services.s3.routes contains unsafe route name %q", name)
 			}
-			if route.Bucket == "" || route.AccessKeyID == "" || route.SecretAccessKey == "" {
-				return fmt.Errorf("services.s3.routes.%s needs bucket, access_key_id, and secret_access_key", name)
+			if route.Bucket == "" || strings.Trim(route.BasePrefix, "/") == "" || route.AccessKeyID == "" || route.SecretAccessKey == "" || route.STSRoleARN == "" {
+				return fmt.Errorf("services.s3.routes.%s needs bucket, base_prefix, access_key_id, secret_access_key, and sts_role_arn", name)
+			}
+			for _, segment := range strings.Split(strings.Trim(route.BasePrefix, "/"), "/") {
+				if !safeSegment(segment) {
+					return fmt.Errorf("services.s3.routes.%s.base_prefix contains unsafe segment %q", name, segment)
+				}
 			}
 			if route.Endpoint != "" {
-				if _, err := url.ParseRequestURI(route.Endpoint); err != nil {
+				if err := validateHTTPSOrLoopbackURL(route.Endpoint, "S3 endpoint"); err != nil {
 					return fmt.Errorf("services.s3.routes.%s.endpoint: %w", name, err)
 				}
+			}
+			if route.STSEndpoint != "" {
+				if err := validateHTTPSOrLoopbackURL(route.STSEndpoint, "STS endpoint"); err != nil {
+					return fmt.Errorf("services.s3.routes.%s.sts_endpoint: %w", name, err)
+				}
+			}
+			if !regexp.MustCompile(`^[A-Za-z0-9+=,.@_-]{2,64}$`).MatchString(route.STSSessionName) {
+				return fmt.Errorf("services.s3.routes.%s.sts_session_name must contain 2 to 64 AWS-safe characters", name)
+			}
+			if route.STSDuration < 15*time.Minute || route.STSDuration > 12*time.Hour {
+				return fmt.Errorf("services.s3.routes.%s.sts_duration must be between 15m and 12h", name)
 			}
 		}
 	}

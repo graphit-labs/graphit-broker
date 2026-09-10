@@ -171,8 +171,6 @@ services:
   s3:
     enabled: true
     default_route: "primary"
-    presign_expiry: 5m
-    max_presign_expiry: 15m
     routes:
       primary:
         region: "us-east-1"
@@ -181,6 +179,11 @@ services:
         base_prefix: "graphit"
         access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID:?set the primary S3 access key}"
         secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY:?set the primary S3 secret key}"
+        # AWS: the assumable IAM role. MinIO: any placeholder ARN mints for the signing user.
+        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-broker"
+        sts_endpoint: "" # Defaults to endpoint for S3-compatible storage; empty uses AWS STS.
+        sts_session_name: "graphit-broker"
+        sts_duration: 1h
       public:
         # Each named route owns its complete topology and direct signing credential.
         region: "us-east-1"
@@ -189,3 +192,7 @@ services:
         base_prefix: "catalog"
         access_key_id: "${PUBLIC_S3_ACCESS_KEY_ID:?set the public S3 access key}"
         secret_access_key: "${PUBLIC_S3_SECRET_ACCESS_KEY:?set the public S3 secret key}"
+        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-public"
+        sts_endpoint: "https://minio.example.com"
+        sts_session_name: "graphit-broker"
+        sts_duration: 1h

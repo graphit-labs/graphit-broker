@@ -21,11 +21,13 @@ type ResourceGrantReader interface {
 // effective on the next request without a process-local policy cache.
 type ACL struct{ grants ResourceGrantReader }
 
-type S3Grant struct {
-	Project   string
-	Operation string
-	Route     string
-	Prefixes  []string
+// S3SessionGrant is the complete, current S3 authorization snapshot for one
+// principal. A single credential response has one storage topology, so all
+// matching rules must resolve to the same route.
+type S3SessionGrant struct {
+	Revision string
+	Route    string
+	Access   map[string][]string
 }
 
 func NewACL(grants ResourceGrantReader) *ACL { return &ACL{grants: grants} }
@@ -74,26 +76,25 @@ func (a *ACL) ResolveHubAccess(ctx context.Context, principal Principal) (Policy
 	return document, nil
 }
 
-func (a *ACL) AuthorizeS3(ctx context.Context, principal Principal, project, operation, defaultRoute string) (S3Grant, error) {
-	project = strings.TrimSpace(project)
-	operation = strings.ToLower(strings.TrimSpace(operation))
-	if !safeSegment(project) {
-		return S3Grant{}, errors.New("project must be a non-empty safe path segment")
+func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, defaultRoute string) (S3SessionGrant, error) {
+	if principal.IsAnonymous() {
+		return S3SessionGrant{}, ErrForbidden
 	}
-	if operation != "read" && operation != "write" && operation != "publish" && operation != "delete" {
-		return S3Grant{}, errors.New("operation must be read, write, publish, or delete")
-	}
-	rules, err := a.rules(ctx)
+	document, err := a.grants.ResourceGrants(ctx)
 	if err != nil {
-		return S3Grant{}, fmt.Errorf("load resource grants: %w", err)
+		return S3SessionGrant{}, fmt.Errorf("load resource grants: %w", err)
 	}
-	set := map[string]struct{}{}
+	sets := map[string]map[string]struct{}{}
+	for _, operation := range []string{"read", "write", "publish", "delete"} {
+		sets[operation] = map[string]struct{}{}
+	}
 	route := ""
-	for _, rule := range rules {
-		if !matchesPrincipal(rule, principal) ||
-			(!matchesValue(rule.Capabilities, "s3") && !matchesValue(rule.Capabilities, "s3:"+operation)) ||
-			(len(rule.Projects) > 0 && !matchesValue(rule.Projects, project)) ||
-			(len(rule.S3Operations) > 0 && !matchesValue(rule.S3Operations, operation)) {
+	for _, rule := range document.Rules {
+		if !matchesPrincipal(rule, principal) {
+			continue
+		}
+		operations := matchingS3Operations(rule)
+		if len(operations) == 0 {
 			continue
 		}
 		candidateRoute := strings.TrimSpace(rule.S3Route)
@@ -101,62 +102,85 @@ func (a *ACL) AuthorizeS3(ctx context.Context, principal Principal, project, ope
 			candidateRoute = defaultRoute
 		}
 		if route != "" && route != candidateRoute {
-			return S3Grant{}, errors.New("matching S3 ACL rules select multiple storage routes")
+			return S3SessionGrant{}, errors.New("matching S3 ACL rules select multiple storage routes")
 		}
 		route = candidateRoute
-		prefixes := rule.S3Prefixes
-		if len(prefixes) == 0 {
-			if project == "global" {
-				prefixes = []string{"v2"}
-			} else {
-				prefixes = []string{"v2/projects/{project}"}
-			}
+		prefixes, renderErr := renderSessionPrefixes(rule, principal)
+		if renderErr != nil {
+			return S3SessionGrant{}, fmt.Errorf("ACL rule %q: %w", rule.Name, renderErr)
 		}
-		for _, prefix := range prefixes {
-			rendered, err := renderPrefix(prefix, principal, project)
-			if err != nil {
-				return S3Grant{}, fmt.Errorf("ACL rule %q: %w", rule.Name, err)
-			}
-			if rendered != "" {
-				set[rendered] = struct{}{}
+		for _, operation := range operations {
+			for _, prefix := range prefixes {
+				sets[operation][prefix] = struct{}{}
 			}
 		}
 	}
-	if len(set) == 0 {
-		return S3Grant{}, ErrForbidden
+	access := map[string][]string{}
+	for operation, set := range sets {
+		for prefix := range set {
+			access[operation] = append(access[operation], prefix)
+		}
+		sort.Strings(access[operation])
 	}
-	prefixes := make([]string, 0, len(set))
-	for prefix := range set {
-		prefixes = append(prefixes, prefix)
+	if route == "" {
+		return S3SessionGrant{}, ErrForbidden
 	}
-	sort.Strings(prefixes)
-	return S3Grant{Project: project, Operation: operation, Route: route, Prefixes: prefixes}, nil
+	return S3SessionGrant{Revision: strconv.FormatUint(document.Revision, 10), Route: route, Access: access}, nil
 }
 
-func (a *ACL) AuthorizeS3Request(ctx context.Context, principal Principal, project, verb, defaultRoute string) (S3Grant, error) {
-	var operations []string
-	switch strings.ToLower(strings.TrimSpace(verb)) {
-	case "get", "head", "list":
-		operations = []string{"read", "write", "publish"}
-	case "put":
-		operations = []string{"write", "publish"}
-	case "delete":
-		operations = []string{"delete", "publish"}
-	default:
-		return S3Grant{}, errors.New("operation must be get, head, put, delete, or list")
-	}
-	var last error
-	for _, operation := range operations {
-		grant, err := a.AuthorizeS3(ctx, principal, project, operation, defaultRoute)
-		if err == nil {
-			return grant, nil
+func matchingS3Operations(rule ACLRuleConfig) []string {
+	operations := make([]string, 0, 4)
+	for _, operation := range []string{"read", "write", "publish", "delete"} {
+		if (!matchesValue(rule.Capabilities, "s3") && !matchesValue(rule.Capabilities, "s3:"+operation)) ||
+			(len(rule.S3Operations) > 0 && !matchesValue(rule.S3Operations, operation)) {
+			continue
 		}
-		if !errors.Is(err, ErrForbidden) {
-			return S3Grant{}, err
-		}
-		last = err
+		operations = append(operations, operation)
 	}
-	return S3Grant{}, last
+	return operations
+}
+
+func renderSessionPrefixes(rule ACLRuleConfig, principal Principal) ([]string, error) {
+	projects := rule.Projects
+	if len(projects) == 0 {
+		projects = []string{"*"}
+	}
+	prefixes := rule.S3Prefixes
+	if len(prefixes) == 0 {
+		for _, project := range projects {
+			if project == "*" || project == "global" {
+				return []string{"v2"}, nil
+			}
+		}
+		result := make([]string, 0, len(projects))
+		for _, project := range projects {
+			result = append(result, "v2/projects/"+project)
+		}
+		return result, nil
+	}
+	set := map[string]struct{}{}
+	for _, template := range prefixes {
+		for _, project := range projects {
+			if project == "*" {
+				project = "GRAPHIT_PROJECT_WILDCARD"
+			}
+			rendered, err := renderPrefix(template, principal, project)
+			if err != nil {
+				return nil, err
+			}
+			rendered = strings.ReplaceAll(rendered, "GRAPHIT_PROJECT_WILDCARD", "*")
+			set[rendered] = struct{}{}
+			if !strings.Contains(template, "{project}") {
+				break
+			}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for prefix := range set {
+		result = append(result, prefix)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func matchesPrincipal(rule ACLRuleConfig, principal Principal) bool {

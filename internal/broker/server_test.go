@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -18,10 +19,10 @@ func (f authFunc) Authenticate(ctx context.Context, token string) (Principal, er
 	return f(ctx, token)
 }
 
-type presignFunc func(context.Context, S3Grant, PresignRequest) (PresignResponse, error)
+type credentialFunc func(context.Context, S3RouteConfig, S3SessionGrant, Principal) (S3CredentialsResponse, error)
 
-func (f presignFunc) Presign(ctx context.Context, grant S3Grant, request PresignRequest) (PresignResponse, error) {
-	return f(ctx, grant, request)
+func (f credentialFunc) Issue(ctx context.Context, route S3RouteConfig, grant S3SessionGrant, principal Principal) (S3CredentialsResponse, error) {
+	return f(ctx, route, grant, principal)
 }
 
 type failingGrantReader struct{}
@@ -30,8 +31,8 @@ func (failingGrantReader) ResourceGrants(context.Context) (PolicyDocument, error
 	return PolicyDocument{}, errors.New("synthetic database outage")
 }
 
-func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, presigner PresignService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
-	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}
+func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, credentials S3CredentialService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
+	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, s3Credentials: credentials, adminOIDC: adminOIDC}
 	server, err := newServerFromRuntime(runtime, control)
 	if err != nil {
 		panic(err)
@@ -47,11 +48,13 @@ func defaultTestRules() []ACLRuleConfig {
 }
 
 func newServer(cfg Config, authenticator Authenticator, ai *AIService) *Server {
-	var presigner PresignService
+	var credentials S3CredentialService
 	if cfg.Services.S3.Enabled {
-		presigner = NewAWSPresignService(cfg.Services.S3)
+		credentials = credentialFunc(func(_ context.Context, route S3RouteConfig, grant S3SessionGrant, _ Principal) (S3CredentialsResponse, error) {
+			return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Endpoint: route.Endpoint, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
+		})
 	}
-	return newServerWithDependencies(cfg, authenticator, ai, presigner, &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: defaultTestRules()}}, nil, nil)
+	return newServerWithDependencies(cfg, authenticator, ai, credentials, &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: defaultTestRules()}}, nil, nil)
 }
 
 func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
@@ -69,8 +72,6 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 	}))
 	defer rerankUpstream.Close()
 	cfg := testServerConfig(embeddingUpstream.URL, rerankUpstream.URL)
-	cfg.Services.S3.PresignExpiry = time.Minute
-	cfg.Services.S3.MaxPresignExpiry = 5 * time.Minute
 	principal := Principal{Issuer: "https://id", Subject: "s", Username: "alice", Organization: "acme", Teams: []string{"platform"}}
 	authenticator := authFunc(func(_ context.Context, token string) (Principal, error) {
 		if token != "valid" {
@@ -87,6 +88,27 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 			t.Fatalf("GET %s status=%v err=%v", path, status(resp), err)
 		}
 		_ = resp.Body.Close()
+	}
+	discoveryResponse, err := http.Get(server.URL + "/.well-known/graphit-broker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var discovery struct {
+		Services map[string]struct {
+			Protocol string `json:"protocol"`
+			Path     string `json:"path"`
+		} `json:"services"`
+	}
+	if err := json.NewDecoder(discoveryResponse.Body).Decode(&discovery); err != nil {
+		t.Fatal(err)
+	}
+	_ = discoveryResponse.Body.Close()
+	storage, ok := discovery.Services["s3_credentials"]
+	if !ok || storage.Protocol != "graphit-s3-credentials-v1" || storage.Path != "/v1/s3/credentials" {
+		t.Fatalf("storage discovery=%#v", discovery.Services)
+	}
+	if _, legacy := discovery.Services["s3_presign"]; legacy {
+		t.Fatalf("legacy presign discovery remains: %#v", discovery.Services)
 	}
 	resp := post(t, server.URL+"/v1/embeddings", "", `{"input":"hello"}`)
 	if resp.StatusCode != http.StatusForbidden {
@@ -106,18 +128,47 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("rerank status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/presign", "valid", `{"project":"project-a","operation":"put","key":"v2/projects/project-a/object"}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("s3 status=%d", resp.StatusCode)
 	}
 	if resp.Header.Get("Cache-Control") != "no-store" {
-		t.Fatal("presign response is cacheable")
+		t.Fatal("credential response is cacheable")
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if bytes.Contains(body, []byte("secret_access_key")) || bytes.Contains(body, []byte("access_key_id")) || bytes.Contains(body, []byte(`"bucket"`)) {
-		t.Fatalf("presign response exposed broker-owned storage details: %s", body)
+	if !bytes.Contains(body, []byte("secret_access_key")) || !bytes.Contains(body, []byte("session_token")) || !bytes.Contains(body, []byte(`"bucket"`)) {
+		t.Fatalf("credential response is incomplete: %s", body)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestS3CredentialRenewalUsesFreshAuthorizationSnapshot(t *testing.T) {
+	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
+	reader := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 3, Rules: []ACLRuleConfig{{
+		ID: "reader", Name: "reader", Access: "user", Principal: "alice", Capabilities: []string{"s3:read"}, Projects: []string{"project-a"},
+	}}}}
+	var issued []S3SessionGrant
+	credentials := credentialFunc(func(_ context.Context, route S3RouteConfig, grant S3SessionGrant, _ Principal) (S3CredentialsResponse, error) {
+		issued = append(issued, grant)
+		return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
+	})
+	authenticator := authFunc(func(context.Context, string) (Principal, error) {
+		return Principal{Issuer: "issuer", Subject: "subject", Username: "alice"}, nil
+	})
+	server := httptest.NewServer(newServerWithDependencies(cfg, authenticator, NewAIService(cfg.Services), credentials, reader, nil, nil))
+	defer server.Close()
+	for _, revision := range []uint64{3, 4} {
+		reader.document.Revision = revision
+		response := post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
+		var body S3CredentialsResponse
+		if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&body) != nil || body.AuthorizationRevision != strconv.FormatUint(revision, 10) {
+			t.Fatalf("revision=%d status=%d body=%#v", revision, response.StatusCode, body)
+		}
+		_ = response.Body.Close()
+	}
+	if len(issued) != 2 || issued[0].Revision != "3" || issued[1].Revision != "4" {
+		t.Fatalf("issued=%#v", issued)
+	}
 }
 
 func TestServerReturnsRetryAfterWhenAuthenticationIsRateLimited(t *testing.T) {
@@ -174,36 +225,39 @@ func TestServerAllowsOnlyExplicitAnonymousAndNeverDowngradesInvalidBearer(t *tes
 	_ = resp.Body.Close()
 }
 
-func TestServerPresignsAnonymousRequestOnlyWhenACLAllowsIt(t *testing.T) {
+func TestServerRequiresAuthenticationAndDerivesCredentialScopeFromACL(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
-	cfg.Services.S3.PresignExpiry = time.Minute
-	cfg.Services.S3.MaxPresignExpiry = 5 * time.Minute
 	grants := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: []ACLRuleConfig{{
-		ID: "public-project", Name: "public project", Access: "anonymous", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"read"}, S3Prefixes: []string{"v2/projects/{project}"},
+		ID: "private-project", Name: "private project", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"read"}, S3Prefixes: []string{"v2/projects/{project}"},
 	}}}}
 	called := false
-	presigner := presignFunc(func(_ context.Context, grant S3Grant, request PresignRequest) (PresignResponse, error) {
+	credentials := credentialFunc(func(_ context.Context, route S3RouteConfig, grant S3SessionGrant, principal Principal) (S3CredentialsResponse, error) {
 		called = true
-		if request.Operation != "get" || grant.Project != "project-a" {
-			t.Fatalf("grant=%#v request=%#v", grant, request)
+		if principal.Username != "alice" || grant.Route != "primary" || len(grant.Access["read"]) != 1 || grant.Access["read"][0] != "v2/projects/project-a" {
+			t.Fatalf("principal=%#v grant=%#v", principal, grant)
 		}
-		return PresignResponse{Method: http.MethodGet, URL: "https://s3.example/signed", ExpiresAt: time.Now().Add(time.Minute)}, nil
+		return S3CredentialsResponse{AccessKeyID: "temp-access", SecretAccessKey: "temp-secret", SessionToken: "temp-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
 	})
-	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(context.Context, string) (Principal, error) { return Principal{}, ErrUnauthenticated }), NewAIService(cfg.Services), presigner, grants, nil, nil))
+	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(_ context.Context, token string) (Principal, error) {
+		if token == "valid" {
+			return Principal{Issuer: "i", Subject: "s", Username: "alice"}, nil
+		}
+		return Principal{}, ErrUnauthenticated
+	}), NewAIService(cfg.Services), credentials, grants, nil, nil))
 	defer server.Close()
-	resp := post(t, server.URL+"/v1/s3/presign", "", `{"project":"project-a","operation":"get","key":"v2/projects/project-a/object"}`)
+	resp := post(t, server.URL+"/v1/s3/credentials", "", `{}`)
+	if resp.StatusCode != http.StatusUnauthorized || called {
+		t.Fatalf("anonymous status=%d called=%v", resp.StatusCode, called)
+	}
+	_ = resp.Body.Close()
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
 	if resp.StatusCode != http.StatusOK || !called {
-		t.Fatalf("presign status=%d called=%v", resp.StatusCode, called)
+		t.Fatalf("credential status=%d called=%v", resp.StatusCode, called)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/presign", "", `{"project":"project-a","operation":"put","key":"v2/projects/project-a/object"}`)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("anonymous write status=%d", resp.StatusCode)
-	}
-	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/presign", "", `{"project":"project-a","operation":"get","key":"v2/projects/other/object"}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"project":"project-a"}`)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("mismatched project/key status=%d", resp.StatusCode)
+		t.Fatalf("client-selected scope status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 }
@@ -337,7 +391,10 @@ func testServerConfig(embeddingURL, rerankURL string) Config {
 		Services: ServicesConfig{
 			Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "default", Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: HTTPUpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},
 			Rerank:     RerankServiceConfig{Enabled: true, Route: "default", Revision: "rerank-r1", MaxDocuments: 10, MaxDocumentBytes: 1000, Upstream: HTTPUpstreamConfig{URL: rerankURL, Protocol: "graphit-rerank-v1", Model: "internal-rerank", Timeout: time.Second}},
-			S3:         S3ServiceConfig{Enabled: true, DefaultRoute: "primary", Routes: map[string]S3RouteConfig{"primary": {Bucket: "bucket", Region: "us-east-1", BasePrefix: "base", AccessKeyID: "TESTACCESS", SecretAccessKey: "TESTSECRET"}}, PresignExpiry: time.Minute, MaxPresignExpiry: 5 * time.Minute},
+			S3: S3ServiceConfig{Enabled: true, DefaultRoute: "primary", Routes: map[string]S3RouteConfig{"primary": {
+				Bucket: "bucket", Region: "us-east-1", BasePrefix: "base", AccessKeyID: "TESTACCESS", SecretAccessKey: "TESTSECRET",
+				STSRoleARN: "arn:aws:iam::123456789012:role/graphit", STSSessionName: "graphit-broker", STSDuration: time.Hour,
+			}}},
 		},
 	}
 }

@@ -982,10 +982,13 @@ func redactConfig(cfg Config) Config {
 		cfg.Services.Rerank.Upstream.APIKey = configuredSecret
 	}
 	for name, route := range cfg.Services.S3.Routes {
+		if route.AccessKeyID != "" {
+			route.AccessKeyID = configuredSecret
+		}
 		if route.SecretAccessKey != "" {
 			route.SecretAccessKey = configuredSecret
-			cfg.Services.S3.Routes[name] = route
 		}
+		cfg.Services.S3.Routes[name] = route
 	}
 	return cfg
 }

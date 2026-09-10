@@ -3,13 +3,13 @@
 ## Trust boundaries
 
 The client is not trusted with identity attributes, authorization decisions, upstream AI keys, or
-storage topology. The broker accepts only a bearer credential or an anonymous request, derives the
-principal itself, reads current SQL grants, and performs the requested capability only after a
-match.
+permanent storage credentials. The broker derives the principal from the bearer, reads current SQL
+grants, and performs the requested capability only after a match.
 
-Graphit never receives S3 access/secret keys. The broker returns one opaque pre-signed HTTP request
-for one operation, key/prefix, condition, and short expiry. Bucket, region, endpoint, base prefix,
-route credentials, and signing implementation remain private.
+For S3, Graphit receives the selected topology and an access key, secret, and session token minted
+by STS with a short expiry. The inline policy is derived only by the broker and intersects the
+route role/user policy. Permanent route credentials and the policy-generation boundary remain
+private. Anonymous callers never receive storage credentials.
 
 ## Authentication
 
@@ -107,7 +107,7 @@ fallback.
 
 ## Authorization
 
-Resource grants are normalized SQL state and are re-read for each Hub resolution, S3 pre-sign,
+Resource grants are normalized SQL state and are re-read for each Hub resolution, S3 credential issuance,
 embedding, and rerank call. No match is deny. Matching S3 rules must agree on one private route.
 Every grant mutation and revision increment is atomic.
 
@@ -137,9 +137,9 @@ secrets, plaintext passwords, or the authentication pepper. Encrypt storage/back
 `0700`/`0600`; PostgreSQL/MySQL access must be protected by database roles and TLS/network policy.
 
 Configuration API responses replace secrets with `[configured-secret]`. Logs and public errors
-do not include bearer tokens, request bodies, upstream response bodies, signed URLs, or secrets.
-AI cache entries are bounded, in memory, and scoped by route/revision/principal; signed URLs are
-never cached by the broker.
+do not include bearer tokens, request bodies, upstream response bodies, STS session credentials,
+or secrets. AI cache entries are bounded, in memory, and scoped by route/revision/principal. The
+broker does not cache temporary S3 credentials.
 
 ## Deployment hardening
 
@@ -148,10 +148,10 @@ never cached by the broker.
 - run as a non-root user with a read-only root filesystem;
 - mount only the configuration and SQLite volume required;
 - inject secrets from a secret manager;
-- use short pre-sign expiries and least-privilege S3 credentials per route;
+- use short STS durations and least-privilege assumable roles/S3 signing identities per route;
 - use exact project grants instead of `*` wherever possible;
 - rotate OIDC/admin/upstream/S3 credentials and invalidate affected sessions;
-- alert on repeated 401/403/429 responses, exchange failures, database errors, and presign failures.
+- alert on repeated 401/403/429 responses, exchange failures, database errors, and STS failures.
 
 ## Threat outcomes
 

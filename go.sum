@@ -12,8 +12,8 @@ github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.38 h1:lHm4jPf3k1Lz5ZWc+V
 github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.38/go.mod h1:Rn+P2XR+FbyZzjmWKjg/KUZNxmGfr5oZwh5jQiE+CzI=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.39 h1:vo4xvMRs/F6h1E52qsgLqCQgWIQXgIJUauG6rlZEh4U=
 github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.39/go.mod h1:jB03R1ij/A+OE2e1dz6vgj076gd7vlYcfstAzj3HcnU=
-github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.17 h1:OvYZOB3qA6zvfdRFiRFRzVSiElMYrz3GdntkXZxlp1o=
-github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.17/go.mod h1:JgR/2Ew50ACfIWau1oeMRX59tMtC0kM+PYQGEaT04cY=
+github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 h1:bAdDl/HkGCcGPoe25ToSHEw23VIxt6CT5fLcg111BKg=
+github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19/go.mod h1:KaUzbLxv4CeSxh6ZCl9B4m7CuFenS8kUEaDs+f/DQr4=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.31 h1:uZOinZb+h7lZw8IYzP1z1IuEnueB76/EFkcf/fEW4Ag=
 github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.31/go.mod h1:NRtwAM/p5VRt03TlEUs0pH3TeWamWdf4YyJpSrzPYLc=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.38 h1:H/5TI1jqaHsNoDQ60UwvPvJBg4GURkinXI3Qga29t2w=
@@ -22,8 +22,10 @@ github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.39 h1:HLPAVrlLDaN2b
 github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.39/go.mod h1:Pg/dVfsNkm1hsIDK/gMvCKtmyNfNTV12mrgHqVE/6Oo=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.107.3 h1:IKoCZqfWfZzSBi16QFQ+QcbQ3LRQ7QgB1S5tDAyPBQQ=
 github.com/aws/aws-sdk-go-v2/service/s3 v1.107.3/go.mod h1:RBpRcXiM4s2pOInVs32GsBonnje+fiAj4mcrStRmlCA=
-github.com/aws/smithy-go v1.27.8 h1:FR0dxZfIlV7Z8eh2iHfIofdunw382XsDV3Mxt9nUvRY=
-github.com/aws/smithy-go v1.27.8/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/aws/aws-sdk-go-v2/service/sts v1.45.7 h1:yU/9y2r7s9kSUPbHXbpQTa4LA8kt+CMgpu1OBrhx8p4=
+github.com/aws/aws-sdk-go-v2/service/sts v1.45.7/go.mod h1:0lQTDEBArMevQXpxu443LVGjKxxEeSsSnrw9n8YiTMg=
+github.com/aws/smithy-go v1.28.1 h1:R/nXH00c8qcfCzQVELtRw+eLQWtzv+VAIEFJ1/xxXlQ=
+github.com/aws/smithy-go v1.28.1/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
 github.com/bmatcuk/doublestar/v4 v4.10.0 h1:zU9WiOla1YA122oLM6i4EXvGW62DvKZVxIe6TYWexEs=
 github.com/bmatcuk/doublestar/v4 v4.10.0/go.mod h1:xBQ8jztBU6kakFMg+8WGxn0c6z1fTSPVIjEY1Wr7jzc=
 github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc h1:biVzkmvwrH8WK8raXaxBx6fRVTlJILwEwQGL1I/ByEI=

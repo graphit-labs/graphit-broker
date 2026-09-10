@@ -398,13 +398,13 @@ services:
   s3:
     enabled: true
     default_route: primary
-    presign_expiry: 1m
-    max_presign_expiry: 5m
     routes:
       primary:
         bucket: primary
+        base_prefix: graphit
         access_key_id: primary-access
         secret_access_key: primary-secret
+        sts_role_arn: arn:aws:iam::123456789012:role/graphit
       archive:
         region: us-west-2
         endpoint: https://objects.example.com
@@ -412,6 +412,7 @@ services:
         base_prefix: tenant-a
         access_key_id: archive-access
         secret_access_key: archive-secret
+        sts_role_arn: arn:aws:iam::123456789012:role/graphit-archive
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
@@ -426,7 +427,7 @@ services:
 	}
 }
 
-func TestConfigAllowsAnonymousDirectStorageRouteAndRejectsLegacyFields(t *testing.T) {
+func TestConfigAcceptsSTSStorageRouteAndRejectsUnknownFields(t *testing.T) {
 	input := `
 services:
   s3:
@@ -435,8 +436,10 @@ services:
     routes:
       oidc:
         bucket: private
+        base_prefix: graphit
         access_key_id: public-access
         secret_access_key: public-secret
+        sts_role_arn: arn:aws:iam::123456789012:role/graphit
 `
 	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
 		t.Fatalf("DecodeConfig error=%v", err)

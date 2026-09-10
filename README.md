@@ -6,7 +6,7 @@ credentials,
 evaluates deny-by-default resource grants from SQL, and exposes:
 
 - `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
-- `POST /v1/s3/presign` — one narrowly scoped pre-signed request for each S3 operation;
+- `POST /v1/s3/credentials` — renewable temporary S3 credentials restricted by the caller's current grants;
 - `POST /v1/embeddings` — an OpenAI-shaped contract backed by local inference or a broker-owned
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
@@ -14,10 +14,10 @@ evaluates deny-by-default resource grants from SQL, and exposes:
 - `/admin/` — the OIDC/local-password UI for read-only configuration, resource grants, system roles,
   role assignments, local-identity lifecycle, and service credentials.
 
-Only the broker knows AI API keys, upstream models, S3 credentials, bucket, region, endpoint,
-base prefixes, and route selection. Graphit receives no cloud credential and requests a fresh URL
-for every object operation. Anonymous requests are accepted only when an explicit `anonymous`
-grant matches.
+Only the broker knows AI API keys, upstream models, and the permanent S3 credentials used to call
+STS. After authenticating Graphit, it selects the route from current grants and returns that route's
+bucket, region, endpoint, root prefix, and short-lived STS credentials. Graphit renews them before
+expiry and accesses S3 directly; anonymous callers never receive storage credentials.
 
 For HTTP MCP, Graphit validates the end user's OIDC bearer and preserves it for every broker call.
 The default direct-relay mode uses one shared MCP/broker audience. If the IdP supports RFC 8693,

@@ -3,7 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
-	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -49,54 +49,40 @@ func TestACLIsDenyByDefaultAndReadsCurrentGrants(t *testing.T) {
 	}
 }
 
-func TestACLAccessLevelsAndTemplatedS3Grant(t *testing.T) {
-	acl := testACL(
-		ACLRuleConfig{ID: "global", Name: "global", Access: "global", Capabilities: []string{"global"}},
-		ACLRuleConfig{ID: "anonymous", Name: "anonymous", Access: "anonymous", Capabilities: []string{"anonymous"}},
-		ACLRuleConfig{ID: "authenticated", Name: "authenticated", Access: "authenticated", Capabilities: []string{"authenticated"}},
-		ACLRuleConfig{ID: "user", Name: "user", Access: "user", Principal: "alice", Capabilities: []string{"user"}},
-		ACLRuleConfig{ID: "team", Name: "team", Access: "team", Principal: "platform", Capabilities: []string{"team"}},
-		ACLRuleConfig{ID: "organization", Name: "organization", Access: "organization", Principal: "acme", Capabilities: []string{"organization", "s3"}, Projects: []string{"platform-*"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/organizations/{organization}/projects/{project}"}, S3Route: "tenant-a"},
-		ACLRuleConfig{ID: "subject", Name: "subject", Access: "subject", Principal: "https://id|subject-1", Capabilities: []string{"subject"}},
-	)
-	ctx := context.Background()
-	anonymous := AnonymousPrincipal()
-	for _, capability := range []string{"global", "anonymous"} {
-		if err := acl.AuthorizeCapability(ctx, anonymous, capability); err != nil {
-			t.Fatalf("anonymous %s: %v", capability, err)
-		}
-	}
-	principal := Principal{Issuer: "https://id", Subject: "subject-1", Username: "alice", Organization: "acme", Teams: []string{"platform"}, AuthMethod: "oidc"}
-	for _, capability := range []string{"global", "authenticated", "user", "team", "organization", "subject"} {
-		if err := acl.AuthorizeCapability(ctx, principal, capability); err != nil {
-			t.Fatalf("authenticated %s: %v", capability, err)
-		}
-	}
-	grant, err := acl.AuthorizeS3(ctx, principal, "platform-api", "publish", "default")
+func TestResolveS3SessionDerivesAllEffectiveOperationsAndCurrentRevision(t *testing.T) {
+	reader := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 9, Rules: []ACLRuleConfig{
+		{ID: "read", Name: "read", Access: "team", Principal: "dev", Capabilities: []string{"s3:read"}, Projects: []string{"a", "b"}},
+		{ID: "write", Name: "write", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"a"}, S3Operations: []string{"write"}, S3Prefixes: []string{"v2/projects/{project}/working"}},
+	}}}
+	acl := NewACL(reader)
+	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(grant.Prefixes, []string{"v2/organizations/acme/projects/platform-api"}) || grant.Route != "tenant-a" {
+	if grant.Revision != "9" || grant.Route != "primary" || len(grant.Access["read"]) != 2 || len(grant.Access["write"]) != 1 {
 		t.Fatalf("grant=%#v", grant)
 	}
-	if _, err := acl.AuthorizeS3(ctx, principal, "../escape", "publish", "default"); err == nil {
-		t.Fatal("unsafe project accepted")
+	reader.document.Revision = 10
+	reader.document.Rules = reader.document.Rules[1:]
+	grant, err = acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, "primary")
+	if err != nil || grant.Revision != "10" || len(grant.Access["read"]) != 0 {
+		t.Fatalf("renewed grant=%#v err=%v", grant, err)
 	}
 }
 
-func TestACLMapsPublishAndRejectsAmbiguousRoutes(t *testing.T) {
-	principal := Principal{Username: "alice", AuthMethod: "oidc"}
-	acl := testACL(ACLRuleConfig{ID: "publisher", Name: "publisher", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Operations: []string{"publish"}, S3Prefixes: []string{"v2/projects/{project}"}})
-	for _, operation := range []string{"get", "head", "list", "put", "delete"} {
-		if _, err := acl.AuthorizeS3Request(context.Background(), principal, "project-a", operation, "primary"); err != nil {
-			t.Fatalf("operation %s: %v", operation, err)
-		}
+func TestResolveS3SessionRejectsAnonymousNoGrantAndMultipleRoutes(t *testing.T) {
+	acl := testACL(ACLRuleConfig{ID: "all", Name: "all", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"*"}})
+	if _, err := acl.ResolveS3Session(context.Background(), AnonymousPrincipal(), "primary"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("anonymous error=%v", err)
 	}
-	ambiguous := testACL(
-		ACLRuleConfig{ID: "one", Name: "one", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "primary"},
-		ACLRuleConfig{ID: "two", Name: "two", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}, S3Route: "archive"},
+	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "nobody", Subject: "s"}, "primary"); err != nil {
+		t.Fatalf("authenticated wildcard grant error=%v", err)
+	}
+	acl = testACL(
+		ACLRuleConfig{ID: "one", Name: "one", Access: "authenticated", Capabilities: []string{"s3:read"}, Projects: []string{"a"}, S3Route: "one"},
+		ACLRuleConfig{ID: "two", Name: "two", Access: "authenticated", Capabilities: []string{"s3:write"}, Projects: []string{"a"}, S3Route: "two"},
 	)
-	if _, err := ambiguous.AuthorizeS3Request(context.Background(), principal, "project-a", "get", "primary"); err == nil {
-		t.Fatal("ambiguous routes were accepted")
+	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, "primary"); err == nil || !strings.Contains(err.Error(), "multiple storage routes") {
+		t.Fatalf("multiple route error=%v", err)
 	}
 }

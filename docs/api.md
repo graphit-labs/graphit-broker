@@ -33,12 +33,10 @@ Example discovery:
       "path": "/v1/hub/access/resolve",
       "authorization_revision": "7"
     },
-    "s3_presign": {
-      "protocol": "graphit-s3-presign-v1",
-      "path": "/v1/s3/presign",
-      "authorization_revision": "7",
-      "default_expires_in": 300,
-      "max_expires_in": 900
+    "s3_credentials": {
+      "protocol": "graphit-s3-credentials-v1",
+      "path": "/v1/s3/credentials",
+      "authorization_revision": "7"
     },
     "embeddings": {
       "protocol": "openai-embeddings-v1",
@@ -112,41 +110,35 @@ Native rerank providers supply those scores directly. Embedding-only providers a
 cosine-scoring the configured provider's query and document vectors, then applying `top_n` with
 original-index tie breaking. Headers include `X-Graphit-Rerank-Revision` and `X-Graphit-Cache`.
 
-## S3 pre-signed request
+## Temporary S3 credentials
 
-`POST /v1/s3/presign` accepts:
+`POST /v1/s3/credentials` requires an authenticated bearer and accepts only an empty object:
 
 ```json
-{
-  "project": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-  "operation": "get",
-  "key": "v2/projects/01ARZ3NDEKTSV4RRFFQ69G5FAV/project.json",
-  "expires_in": 300,
-  "if_match": "",
-  "if_none_match": "",
-  "limit": 0,
-  "cursor": ""
-}
+{}
 ```
 
-Operations are `get`, `head`, `put`, `delete`, and `list`. The project must agree with
-the logical key. The broker evaluates current grants, selects the private route, constrains the
-key to an allowed rendered prefix, and signs exactly one request.
+The broker evaluates the caller's complete current S3 grant set, selects its single route, builds
+an inline session policy, and calls STS. The request cannot choose a route, project, operation,
+policy, role, bucket, endpoint, or duration.
 
 ```json
 {
-  "method": "GET",
-  "url": "https://opaque-signed-target.example/...",
-  "headers": {},
-  "expires_at": "2026-09-07T17:00:00Z",
-  "key": "v2/projects/01ARZ3NDEKTSV4RRFFQ69G5FAV/project.json",
-  "operation": "get",
+  "access_key_id": "ASIA...",
+  "secret_access_key": "...",
+  "session_token": "...",
+  "expires_at": "2026-09-09T18:00:00Z",
+  "bucket": "graphit-artifacts",
+  "region": "us-east-1",
+  "endpoint": "https://s3.example.com",
+  "prefixes": ["graphit"],
   "authorization_revision": "7"
 }
 ```
 
-The response never contains bucket, region, base prefix, access key, or secret key and is marked
-`Cache-Control: no-store`.
+Every successful call mints a new session. The response is marked `Cache-Control: no-store`.
+The access key, secret, and session token are temporary and must be treated as secrets. Permanent
+route credentials and the generated policy are never returned.
 
 ## Administration API
 

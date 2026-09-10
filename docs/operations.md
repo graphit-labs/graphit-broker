@@ -8,8 +8,8 @@ effective revision. Discovery, Hub resolution, and S3 responses expose the curre
 revision.
 
 Monitor latency/error rates separately for OIDC discovery/JWKS, SQL, token exchange, Hub resolve,
-S3 pre-sign, object storage, embeddings, and rerank. Never log bearer tokens, signed URLs, bodies,
-or upstream secrets.
+STS issuance, object storage, embeddings, and rerank. Never log bearer tokens, temporary S3
+credentials, bodies, or upstream secrets.
 
 ## Common failures
 
@@ -22,8 +22,9 @@ or upstream secrets.
 | UI identity gets 403 | default `user` or assigned/claimed roles do not permit the action | unified OIDC `role_claim`, canonical-subject assignments |
 | grant write gets 409 | another admin changed the ACL revision | reload and reapply |
 | Hub outage does not use projects.json | expected secure behavior | selected broker is sole authority |
-| pre-sign gets 403 | missing S3 capability/operation/project/prefix | grant and route |
-| pre-sign gets 400 | unsafe key/project mismatch or ambiguous routes | logical key and matching grants |
+| S3 credentials gets 401/403 | missing authenticated identity or matching S3 grant | bearer, grant and route |
+| S3 credentials gets 400 | request tried to select scope | send exactly `{}` |
+| S3 credentials gets 502 | STS trust, role, signing key, endpoint, duration, or 2048-byte policy limit | route and STS logs |
 | token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
 | embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |
 | startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
@@ -54,14 +55,15 @@ flows, then scale.
   administration session, pending flow, and derived Broker subject.
 - Upstream OIDC issuer/browser-client changes should be updated in unified authentication
   configuration and tested before removing old IdP values.
-- S3 route keys can be rotated by updating the route; already issued URLs remain valid until their
-  short expiry.
+- S3 route keys/roles can be rotated by updating the route; already issued STS credentials remain
+  valid until their short expiry unless revoked by the storage platform.
 - AI API keys are rotated at the provider/secret manager, followed by a deployment restart.
 - Local passwords use SQL Argon2id verifiers and the deployment-wide
   `authentication.token_pepper`. Change individual passwords in the Local users UI. Pepper rotation
   invalidates every local password, administration session, local access/refresh token, and service
   credential and requires a coordinated recovery.
-- Grant revocation is immediate on the next request and increments the revision.
+- Grant revocation is reflected in the next credential issuance and increments the revision.
+  Already issued STS credentials retain their bounded session policy until expiry or platform revocation.
 
 ## Incident response
 

@@ -412,15 +412,13 @@ Repeated failed probes use delays of 2, 4, 8, and at most 10 minutes. The accele
 again only after the complete probe inference succeeds. All explicit modes (`cpu`, `cuda`, and
 `coreml`) remain strict at runtime and never switch providers automatically.
 
-## S3 pre-signing
+## S3 STS credentials
 
 ```yaml
 services:
   s3:
     enabled: true
     default_route: primary
-    presign_expiry: 5m
-    max_presign_expiry: 15m
     routes:
       primary:
         region: us-east-1
@@ -429,6 +427,10 @@ services:
         base_prefix: graphit
         access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID:?required}"
         secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY:?required}"
+        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-broker"
+        sts_endpoint: ""
+        sts_session_name: graphit-broker
+        sts_duration: 1h
       public:
         region: us-east-1
         endpoint: "https://minio.example.com"
@@ -436,26 +438,33 @@ services:
         base_prefix: catalog
         access_key_id: "${PUBLIC_S3_ACCESS_KEY_ID:?required}"
         secret_access_key: "${PUBLIC_S3_SECRET_ACCESS_KEY:?required}"
+        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-public"
+        sts_endpoint: "https://minio.example.com"
+        sts_session_name: graphit-broker
+        sts_duration: 1h
 ```
 
-Every enabled route requires region, bucket, access key, and secret. `endpoint` may select an
-S3-compatible service and `base_prefix` namespaces all physical keys. Neither value is returned
-to Graphit. The authorization revision is generated from the grant database; it is not a service
-configuration field.
+Every enabled route requires region, bucket, a non-empty base prefix, access key, secret, and STS
+role ARN. `endpoint` may select an S3-compatible service. `sts_endpoint` selects its STS endpoint;
+when omitted for an S3-compatible route it defaults to `endpoint`, while an empty AWS route uses
+AWS STS. `sts_session_name` defaults to `graphit-broker`; `sts_duration` defaults to one hour and
+must be between 15 minutes and 12 hours. For AWS, the signing identity must be allowed to assume
+the configured role and the role's policy is the upper permission bound. MinIO self-assume accepts
+a placeholder AWS role ARN and intersects the built-in user's policy with the inline session policy.
 
-An S3 route is a named, broker-private storage profile: endpoint, region, bucket, base prefix, and
-the credential used to sign requests. Route names have no built-in semantics. In particular, a
+An S3 route is a named storage and STS profile. Its permanent access key and secret remain private
+to the broker; the selected route's topology and newly minted temporary credentials are returned
+to an authenticated Graphit client. Route names have no built-in semantics. In particular, a
 route named `public` does not make its bucket, objects, credentials, or broker endpoint public.
 `PUBLIC_S3_ACCESS_KEY_ID` and `PUBLIC_S3_SECRET_ACCESS_KEY` above are merely environment-variable
 names referenced by the example route; both values remain private to the broker. Public read
-access still requires an explicit `anonymous` grant (or an independently public bucket policy).
+access must use an independently public bucket/CDN policy; the STS endpoint requires authentication.
 The route can be removed when the deployment needs only one storage destination.
 
-Clients never submit an S3 route. A matching resource grant selects `s3_route`; an omitted value
-uses `default_route`. The broker then verifies that the requested logical key is inside one of the
-grant's rendered `s3_prefixes` before signing the request. See [resource
-authorization](authorization.md#how-s3-grants-select-a-route) for the exact matching rules and
-multi-route examples.
+Clients never submit an S3 route or requested scope. Matching resource grants select `s3_route`;
+an omitted value uses `default_route`. All matching S3 grants for one identity must select the same
+route. The broker renders their prefixes and operations into the STS session policy. See [resource
+authorization](authorization.md#how-s3-grants-become-an-sts-policy) for the exact mapping.
 
 Grant route names are validated when a grant is created or updated. Removing a route that an
 existing grant uses makes that grant unusable until corrected; plan route changes together with

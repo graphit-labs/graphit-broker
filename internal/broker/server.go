@@ -24,7 +24,7 @@ type runtimeState struct {
 	localAuth      *localAuthenticationService
 	acl            *ACL
 	ai             *AIService
-	presigner      PresignService
+	s3Credentials  S3CredentialService
 	adminOIDC      AdminIdentityProvider
 }
 
@@ -99,9 +99,9 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 			return nil, err
 		}
 	}
-	var presigner PresignService
+	var s3Credentials S3CredentialService
 	if cfg.Services.S3.Enabled {
-		presigner = NewAWSPresignService(cfg.Services.S3)
+		s3Credentials = NewAWSSTSCredentialService()
 	}
 	var adminOIDC AdminIdentityProvider
 	if loginConfig, ok := browserLoginOIDC(cfg.Authentication.OIDC); ok {
@@ -117,7 +117,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	}
 	cfg.Services = ai.EffectiveServices()
 	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords, localAuth: localAuth,
-		acl: NewACL(grants), ai: ai, presigner: presigner, adminOIDC: adminOIDC}, nil
+		acl: NewACL(grants), ai: ai, s3Credentials: s3Credentials, adminOIDC: adminOIDC}, nil
 }
 
 func browserLoginOIDC(configs []OIDCIssuerConfig) (OIDCIssuerConfig, bool) {
@@ -168,7 +168,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 	}
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
-	mux.Handle("POST /v1/s3/presign", s.resolvePrincipal(http.HandlerFunc(s.s3Presign)))
+	mux.Handle("POST /v1/s3/credentials", s.resolvePrincipal(http.HandlerFunc(s.s3CredentialGrant)))
 	mux.Handle("POST /v1/hub/access/resolve", s.resolvePrincipal(http.HandlerFunc(s.hubAccessResolve)))
 	if runtime.config.Administration.Enabled {
 		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
@@ -261,8 +261,8 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 			"revision": cfg.Revision, "max_documents": cfg.MaxDocuments}
 	}
 	if cfg := state.config.Services.S3; cfg.Enabled {
-		services["s3_presign"] = map[string]any{"protocol": "graphit-s3-presign-v1", "path": "/v1/s3/presign",
-			"authorization_revision": authorizationRevision, "default_expires_in": int64(cfg.PresignExpiry / time.Second), "max_expires_in": int64(cfg.MaxPresignExpiry / time.Second)}
+		services["s3_credentials"] = map[string]any{"protocol": "graphit-s3-credentials-v1", "path": "/v1/s3/credentials",
+			"authorization_revision": authorizationRevision}
 	}
 	audiences := []string{state.config.Authentication.LocalTokens.Audience}
 	for _, issuer := range state.config.Authentication.OIDC {
@@ -389,23 +389,6 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func validateRequestProjectKey(project, key string) error {
-	project = strings.TrimSpace(project)
-	parts := strings.Split(strings.Trim(strings.TrimSpace(key), "/"), "/")
-	for i := 0; i+2 < len(parts); i++ {
-		if parts[i] == "v2" && parts[i+1] == "projects" {
-			if parts[i+2] != project {
-				return errors.New("project does not match the logical object key")
-			}
-			return nil
-		}
-	}
-	if project != "global" {
-		return errors.New("non-project logical keys must use project global")
-	}
-	return nil
-}
-
 func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
 	if !state.config.Services.Rerank.Enabled {
@@ -462,39 +445,41 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) s3Presign(w http.ResponseWriter, r *http.Request) {
+func (s *Server) s3CredentialGrant(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
-	if !state.config.Services.S3.Enabled || state.presigner == nil {
-		writeError(w, http.StatusNotFound, "capability_disabled", "S3 presigned operations are disabled", requestID(r.Context()))
-		return
-	}
-	var request PresignRequest
-	if err := s.decodeRequest(w, r, &request); err != nil {
-		return
-	}
-	if err := validateRequestProjectKey(request.Project, request.Key); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), requestID(r.Context()))
+	if !state.config.Services.S3.Enabled || state.s3Credentials == nil {
+		writeError(w, http.StatusNotFound, "capability_disabled", "S3 credentials are disabled", requestID(r.Context()))
 		return
 	}
 	principal := principalFromContext(r.Context())
-	grant, err := state.acl.AuthorizeS3Request(r.Context(), principal, request.Project, request.Operation, state.config.Services.S3.DefaultRoute)
+	if principal.IsAnonymous() {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="graphit-broker"`)
+		writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer credentials are required", requestID(r.Context()))
+		return
+	}
+	var request struct{}
+	if err := s.decodeRequest(w, r, &request); err != nil {
+		return
+	}
+	grant, err := state.acl.ResolveS3Session(r.Context(), principal, state.config.Services.S3.DefaultRoute)
 	if err != nil {
 		s.authorizationFailure(w, r, err)
 		return
 	}
-	response, err := state.presigner.Presign(r.Context(), grant, request)
+	route, ok := state.config.Services.S3.Routes[grant.Route]
+	if !ok {
+		slog.Error("S3 credential route is unavailable", "request_id", requestID(r.Context()), "route", grant.Route)
+		writeError(w, http.StatusServiceUnavailable, "storage_unavailable", "S3 storage route is unavailable", requestID(r.Context()))
+		return
+	}
+	response, err := state.s3Credentials.Issue(r.Context(), route, grant, principal)
 	if err != nil {
 		if errors.Is(err, ErrForbidden) {
 			writeError(w, http.StatusForbidden, "forbidden", "access denied", requestID(r.Context()))
 		} else {
-			slog.Error("S3 presign failed", "request_id", requestID(r.Context()), "error", err)
-			writeError(w, http.StatusBadGateway, "presign_failed", "S3 request signing failed", requestID(r.Context()))
+			slog.Error("S3 credential issuance failed", "request_id", requestID(r.Context()), "error", err)
+			writeError(w, http.StatusBadGateway, "sts_failed", "temporary S3 credential issuance failed", requestID(r.Context()))
 		}
-		return
-	}
-	response.AuthorizationRevision, err = state.acl.Revision(r.Context())
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "authorization_unavailable", "resource authorization is unavailable", requestID(r.Context()))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
