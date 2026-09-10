@@ -241,7 +241,7 @@ func newRateLimitTestAuthenticator(t *testing.T, limit LocalAuthenticationRateLi
 		t.Fatal(err)
 	}
 	a, err := newLocalPasswordAuthenticator(context.Background(), AuthenticationConfig{
-		TokenPepper: testPasswordPepper, LocalRateLimit: limit,
+		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{RateLimit: limit},
 	}, store)
 	if err != nil {
 		t.Fatal(err)

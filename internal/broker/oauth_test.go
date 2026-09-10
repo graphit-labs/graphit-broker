@@ -294,7 +294,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 
 	disabled := *service.runtime()
 	localDisabled := false
-	disabled.config.Authentication.LocalLogin.Enabled = &localDisabled
+	disabled.config.Authentication.Local.Login.Enabled = &localDisabled
 	service.state.Store(&disabled)
 	onlyOIDCStart, _ := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
 	onlyOIDCLogin := absoluteTestURL(httpServer.URL, onlyOIDCStart.Header.Get("Location"))
@@ -307,7 +307,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 
 	localOnly := *service.runtime()
 	localEnabled := true
-	localOnly.config.Authentication.LocalLogin.Enabled = &localEnabled
+	localOnly.config.Authentication.Local.Login.Enabled = &localEnabled
 	localOnly.adminOIDC = nil
 	service.state.Store(&localOnly)
 	onlyLocalStart, _ := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
@@ -463,7 +463,7 @@ func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing
 			defer service.Close()
 			defer httpServer.Close()
 			state := service.runtime()
-			state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: provider, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+			state.config.Authentication.Local.Captcha = LocalCaptchaConfig{Enabled: true, Provider: provider, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
 			state.localPasswords.captcha = &stubLocalCaptchaVerifier{provider: provider, valid: "valid-proof"}
 			state.localPasswords.captchaThreshold = 1
 
@@ -517,7 +517,7 @@ func TestDeviceLocalLoginUsesDeviceCaptchaAction(t *testing.T) {
 	defer service.Close()
 	defer httpServer.Close()
 	state := service.runtime()
-	state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+	state.config.Authentication.Local.Captcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site-key", SecretKey: "secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
 	state.localPasswords.captcha = &stubLocalCaptchaVerifier{provider: localCaptchaProviderTurnstile, valid: "valid-proof"}
 	state.localPasswords.captchaThreshold = 1
 

@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"strings"
@@ -34,14 +35,14 @@ services:
 	if cfg.Server.Address != ":8080" || cfg.Services.Embeddings.MaxBatch != 256 {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
-	if cfg.Authentication.LocalRateLimit.MaxFailures != 5 || cfg.Authentication.LocalRateLimit.Window != time.Minute || cfg.Authentication.LocalRateLimit.Lockout != 5*time.Minute || cfg.Authentication.LocalRateLimit.MaxConcurrent != 2 || cfg.Authentication.LocalRateLimit.SaturationMultiplier != 4 {
-		t.Fatalf("local authentication rate limit defaults=%#v", cfg.Authentication.LocalRateLimit)
+	if cfg.Authentication.Local.RateLimit.MaxFailures != 5 || cfg.Authentication.Local.RateLimit.Window != time.Minute || cfg.Authentication.Local.RateLimit.Lockout != 5*time.Minute || cfg.Authentication.Local.RateLimit.MaxConcurrent != 2 || cfg.Authentication.Local.RateLimit.SaturationMultiplier != 4 {
+		t.Fatalf("local authentication rate limit defaults=%#v", cfg.Authentication.Local.RateLimit)
 	}
-	if cfg.Authentication.LocalMFA.Required == nil || !*cfg.Authentication.LocalMFA.Required || cfg.Authentication.LocalMFA.Issuer != "Graphit Broker" || cfg.Authentication.LocalMFA.ChallengeTTL != 10*time.Minute {
-		t.Fatalf("local MFA defaults=%#v", cfg.Authentication.LocalMFA)
+	if cfg.Authentication.Local.MFA.Required == nil || !*cfg.Authentication.Local.MFA.Required || cfg.Authentication.Local.MFA.Issuer != "Graphit Broker" || cfg.Authentication.Local.MFA.ChallengeTTL != 10*time.Minute {
+		t.Fatalf("local MFA defaults=%#v", cfg.Authentication.Local.MFA)
 	}
-	if cfg.Authentication.LocalCaptcha.Enabled || cfg.Authentication.LocalCaptcha.Provider != "" || cfg.Authentication.LocalCaptcha.TriggerMultiplier != defaultLocalCaptchaTriggerMultiplier || cfg.Authentication.LocalCaptcha.VerificationTimeout != 3*time.Second {
-		t.Fatalf("local CAPTCHA defaults=%#v", cfg.Authentication.LocalCaptcha)
+	if cfg.Authentication.Local.Captcha.Enabled || cfg.Authentication.Local.Captcha.Provider != "" || cfg.Authentication.Local.Captcha.TriggerMultiplier != defaultLocalCaptchaTriggerMultiplier || cfg.Authentication.Local.Captcha.VerificationTimeout != 3*time.Second {
+		t.Fatalf("local CAPTCHA defaults=%#v", cfg.Authentication.Local.Captcha)
 	}
 	if cfg.Authentication.TokenPepper != testPasswordPepper {
 		t.Fatal("environment value was not expanded")
@@ -49,7 +50,7 @@ services:
 	if cfg.Administration.CookieSecure == nil || !*cfg.Administration.CookieSecure {
 		t.Fatalf("administration.cookie_secure default=%v", cfg.Administration.CookieSecure)
 	}
-	localTokens := cfg.Authentication.LocalTokens
+	localTokens := cfg.Authentication.Local.Tokens
 	if localTokens.Audience != "graphit-broker" || localTokens.CLIClientID != "graphit-cli" || localTokens.CLIRedirectPath != "/oauth/callback" || localTokens.AccessTTL != 10*time.Minute || localTokens.RefreshTTL != 30*24*time.Hour {
 		t.Fatalf("local token defaults=%#v", localTokens)
 	}
@@ -63,20 +64,21 @@ server:
   public_url: https://broker.example.com
 authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
-  local_login:
-    enabled: true
-  local_captcha:
-    enabled: true
-    provider: `+provider+`
-    site_key: public-site-key
-    secret_key: private-secret-key
-    trigger_multiplier: 2.5
-    verification_timeout: 2s
+  local:
+    login:
+      enabled: true
+    captcha:
+      enabled: true
+      provider: `+provider+`
+      site_key: public-site-key
+      secret_key: private-secret-key
+      trigger_multiplier: 2.5
+      verification_timeout: 2s
 `), func(string) string { return "" })
 			if err != nil {
 				t.Fatal(err)
 			}
-			captcha := cfg.Authentication.LocalCaptcha
+			captcha := cfg.Authentication.Local.Captcha
 			if !captcha.Enabled || captcha.Provider != provider || captcha.SiteKey != "public-site-key" || captcha.SecretKey != "private-secret-key" || captcha.TriggerMultiplier != 2.5 || captcha.VerificationTimeout != 2*time.Second {
 				t.Fatalf("local CAPTCHA config=%#v", captcha)
 			}
@@ -85,28 +87,29 @@ authentication:
 
 	localLoginEnabled := true
 	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
-		TokenPepper: testPasswordPepper, LocalLogin: LocalLoginConfig{Enabled: &localLoginEnabled},
-		LocalCaptcha: LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site", SecretKey: "secret"},
+		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{
+			Login:   LocalLoginConfig{Enabled: &localLoginEnabled},
+			Captcha: LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site", SecretKey: "secret"}},
 	}}
 	base.defaults()
 	for name, mutate := range map[string]func(*Config){
-		"unsupported provider": func(c *Config) { c.Authentication.LocalCaptcha.Provider = "other" },
-		"missing provider":     func(c *Config) { c.Authentication.LocalCaptcha.Provider = "" },
-		"missing site key":     func(c *Config) { c.Authentication.LocalCaptcha.SiteKey = "" },
-		"missing secret key":   func(c *Config) { c.Authentication.LocalCaptcha.SecretKey = "" },
-		"negative trigger":     func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = -.1 },
-		"NaN trigger":          func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = math.NaN() },
-		"infinite trigger":     func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = math.Inf(1) },
-		"unreachable trigger":  func(c *Config) { c.Authentication.LocalCaptcha.TriggerMultiplier = 5 },
-		"short timeout":        func(c *Config) { c.Authentication.LocalCaptcha.VerificationTimeout = 100 * time.Millisecond },
+		"unsupported provider": func(c *Config) { c.Authentication.Local.Captcha.Provider = "other" },
+		"missing provider":     func(c *Config) { c.Authentication.Local.Captcha.Provider = "" },
+		"missing site key":     func(c *Config) { c.Authentication.Local.Captcha.SiteKey = "" },
+		"missing secret key":   func(c *Config) { c.Authentication.Local.Captcha.SecretKey = "" },
+		"negative trigger":     func(c *Config) { c.Authentication.Local.Captcha.TriggerMultiplier = -.1 },
+		"NaN trigger":          func(c *Config) { c.Authentication.Local.Captcha.TriggerMultiplier = math.NaN() },
+		"infinite trigger":     func(c *Config) { c.Authentication.Local.Captcha.TriggerMultiplier = math.Inf(1) },
+		"unreachable trigger":  func(c *Config) { c.Authentication.Local.Captcha.TriggerMultiplier = 5 },
+		"short timeout":        func(c *Config) { c.Authentication.Local.Captcha.VerificationTimeout = 100 * time.Millisecond },
 		"missing public URL":   func(c *Config) { c.Server.PublicURL = "" },
-		"disabled local login": func(c *Config) { disabled := false; c.Authentication.LocalLogin.Enabled = &disabled },
+		"disabled local login": func(c *Config) { disabled := false; c.Authentication.Local.Login.Enabled = &disabled },
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := base
 			mutate(&invalid)
-			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local_captcha") {
-				t.Fatalf("invalid CAPTCHA configuration accepted: %#v error=%v", invalid.Authentication.LocalCaptcha, err)
+			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local.captcha") {
+				t.Fatalf("invalid CAPTCHA configuration accepted: %#v error=%v", invalid.Authentication.Local.Captcha, err)
 			}
 		})
 	}
@@ -115,7 +118,7 @@ authentication:
 func TestServerPublicURLMustBeHTTPSOrigin(t *testing.T) {
 	enabled := true
 	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
-		TokenPepper: testPasswordPepper, LocalLogin: LocalLoginConfig{Enabled: &enabled},
+		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{Login: LocalLoginConfig{Enabled: &enabled}},
 	}}
 	base.defaults()
 	for _, raw := range []string{
@@ -141,8 +144,8 @@ func TestLocalCaptchaTriggerMultiplierSupportsZeroAndFractions(t *testing.T) {
 		wantThreshold  int
 	}{
 		{name: "omitted uses default", wantMultiplier: defaultLocalCaptchaTriggerMultiplier, maxConcurrent: 2, wantThreshold: 3},
-		{name: "zero is always", configured: "    trigger_multiplier: 0\n", wantMultiplier: 0, maxConcurrent: 2, wantThreshold: 1},
-		{name: "fraction starts early", configured: "    trigger_multiplier: 0.5\n", wantMultiplier: .5, maxConcurrent: 4, wantThreshold: 2},
+		{name: "zero is always", configured: "      trigger_multiplier: 0\n", wantMultiplier: 0, maxConcurrent: 2, wantThreshold: 1},
+		{name: "fraction starts early", configured: "      trigger_multiplier: 0.5\n", wantMultiplier: .5, maxConcurrent: 4, wantThreshold: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, err := DecodeConfig(strings.NewReader(`
@@ -150,18 +153,19 @@ server:
   public_url: https://broker.example.com
 authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
-  local_login:
-    enabled: true
-  local_captcha:
-    enabled: true
-    provider: turnstile
-    site_key: public-site-key
-    secret_key: private-secret-key
+  local:
+    login:
+      enabled: true
+    captcha:
+      enabled: true
+      provider: turnstile
+      site_key: public-site-key
+      secret_key: private-secret-key
 `+test.configured), func(string) string { return "" })
 			if err != nil {
 				t.Fatal(err)
 			}
-			captcha := cfg.Authentication.LocalCaptcha
+			captcha := cfg.Authentication.Local.Captcha
 			if captcha.TriggerMultiplier != test.wantMultiplier || captcha.threshold(test.maxConcurrent) != test.wantThreshold {
 				t.Fatalf("multiplier=%v threshold=%d", captcha.TriggerMultiplier, captcha.threshold(test.maxConcurrent))
 			}
@@ -190,35 +194,37 @@ administration:
 func TestLocalMFACanBeExplicitlyDisabledAndConfigured(t *testing.T) {
 	cfg, err := DecodeConfig(strings.NewReader(`
 authentication:
-  local_mfa:
-    required: false
-    issuer: Example Broker
-    challenge_ttl: 5m
+  local:
+    mfa:
+      required: false
+      issuer: Example Broker
+      challenge_ttl: 5m
 `), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Authentication.LocalMFA.Required == nil || *cfg.Authentication.LocalMFA.Required || cfg.Authentication.LocalMFA.Issuer != "Example Broker" || cfg.Authentication.LocalMFA.ChallengeTTL != 5*time.Minute {
-		t.Fatalf("local MFA config=%#v", cfg.Authentication.LocalMFA)
+	if cfg.Authentication.Local.MFA.Required == nil || *cfg.Authentication.Local.MFA.Required || cfg.Authentication.Local.MFA.Issuer != "Example Broker" || cfg.Authentication.Local.MFA.ChallengeTTL != 5*time.Minute {
+		t.Fatalf("local MFA config=%#v", cfg.Authentication.Local.MFA)
 	}
 }
 
 func TestLocalAuthenticationRateLimitConfiguration(t *testing.T) {
 	input := `
 authentication:
-  local_rate_limit:
-    max_failures: 7
-    window: 2m
-    lockout: 10m
-    max_concurrent: 3
-    saturation_multiplier: 5
+  local:
+    rate_limit:
+      max_failures: 7
+      window: 2m
+      lockout: 10m
+      max_concurrent: 3
+      saturation_multiplier: 5
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Authentication.LocalRateLimit != (LocalAuthenticationRateLimit{MaxFailures: 7, Window: 2 * time.Minute, Lockout: 10 * time.Minute, MaxConcurrent: 3, SaturationMultiplier: 5}) {
-		t.Fatalf("custom rate limit=%#v", cfg.Authentication.LocalRateLimit)
+	if cfg.Authentication.Local.RateLimit != (LocalAuthenticationRateLimit{MaxFailures: 7, Window: 2 * time.Minute, Lockout: 10 * time.Minute, MaxConcurrent: 3, SaturationMultiplier: 5}) {
+		t.Fatalf("custom rate limit=%#v", cfg.Authentication.Local.RateLimit)
 	}
 	for name, limit := range map[string]LocalAuthenticationRateLimit{
 		"negative maximum":     {MaxFailures: -1, Window: time.Minute, Lockout: time.Minute, MaxConcurrent: 2, SaturationMultiplier: 4},
@@ -230,8 +236,8 @@ authentication:
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := cfg
-			invalid.Authentication.LocalRateLimit = limit
-			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local_rate_limit") {
+			invalid.Authentication.Local.RateLimit = limit
+			if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "local.rate_limit") {
 				t.Fatalf("invalid rate limit accepted: %#v error=%v", limit, err)
 			}
 		})
@@ -560,5 +566,117 @@ services:
 	legacy := strings.Replace(input, "      device: cpu\n", "      device: cpu\n      model_path: /models/model.onnx\n", 1)
 	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "field model_path not found") {
 		t.Fatalf("removed legacy field error=%v", err)
+	}
+}
+
+func TestConfigRejectsFlatLocalBlocks(t *testing.T) {
+	for _, field := range []string{"local_login", "local_rate_limit", "local_captcha", "local_mfa", "local_tokens"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := DecodeConfig(strings.NewReader("authentication:\n  "+field+": {}\n"), func(string) string { return "" })
+			if err == nil || !strings.Contains(err.Error(), "field "+field+" not found") {
+				t.Fatalf("flat field must be rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestOIDCIssuerEnabledConfiguration(t *testing.T) {
+	for _, enabled := range []string{"", "      enabled: true\n", "      enabled: false\n"} {
+		cfg, err := DecodeConfig(strings.NewReader(`authentication:
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: preferred_username
+`+enabled), func(string) string { return "" })
+		if err != nil {
+			t.Fatal(err)
+		}
+		issuer := cfg.Authentication.OIDC[0]
+		if issuer.Enabled == nil || issuer.isEnabled() != !strings.Contains(enabled, "false") {
+			t.Fatalf("unexpected enabled default for %q", enabled)
+		}
+	}
+	input := `authentication:
+  oidc:
+    - enabled: false
+      issuer: invalid-placeholder
+      client_id: disabled-browser
+      redirect_url: invalid-placeholder
+`
+	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
+		t.Fatalf("disabled issuer should not need valid integration settings: %v", err)
+	}
+	if _, err := DecodeConfig(strings.NewReader(strings.Replace(input, "enabled: false", "enabled: true", 1)), func(string) string { return "" }); err == nil {
+		t.Fatal("enabled invalid issuer was accepted")
+	}
+	input = `server:
+  public_url: https://broker.example.com
+authentication:
+  token_pepper: ` + testPasswordPepper + `
+  oidc:
+    - enabled: false
+      client_id: disabled-browser
+    - enabled: true
+      issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: preferred_username
+      client_id: active-browser
+      redirect_url: https://broker.example.com/oauth/oidc/callback
+`
+	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected, ok := browserLoginOIDC(cfg.Authentication.OIDC); !ok || selected.ClientID != "active-browser" {
+		t.Fatal("did not select the active browser issuer")
+	}
+	cfg.Authentication.OIDC = append(cfg.Authentication.OIDC, cfg.Authentication.OIDC[1])
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "at most one") {
+		t.Fatalf("multiple active browser clients accepted: %v", err)
+	}
+}
+
+func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
+	cfg, err := DecodeConfig(strings.NewReader(`authentication:
+  local:
+    login:
+      enabled: false
+    captcha:
+      secret_key: private-captcha-secret
+    tokens:
+      audience: custom-audience
+  oidc:
+    - enabled: false
+      client_secret: private-oidc-secret
+`), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	redacted := redactConfig(cfg)
+	data, err := json.Marshal(redacted.Authentication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Local struct {
+			Login   struct{ Enabled bool } `json:"login"`
+			Captcha struct {
+				SecretKey         string  `json:"secret_key"`
+				TriggerMultiplier float64 `json:"trigger_multiplier"`
+			} `json:"captcha"`
+			Tokens struct{ Audience string } `json:"tokens"`
+		} `json:"local"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Local.Login.Enabled || decoded.Local.Tokens.Audience != "custom-audience" || decoded.Local.Captcha.SecretKey != configuredSecret || decoded.Local.Captcha.TriggerMultiplier != 1.5 {
+		t.Fatalf("nested config was not preserved/redacted: %s", data)
+	}
+	if strings.Contains(string(data), "local_") || strings.Contains(string(data), "private-") {
+		t.Fatalf("legacy fields or secret leaked: %s", data)
+	}
+	if cfg.Authentication.Local.Captcha.SecretKey != "private-captcha-secret" || cfg.Authentication.OIDC[0].ClientSecret != "private-oidc-secret" {
+		t.Fatal("redaction mutated runtime secrets")
 	}
 }

@@ -71,10 +71,13 @@ func NewAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens
 }
 
 func newAuthenticator(ctx context.Context, cfg AuthenticationConfig, localTokens localTokenReader, allowInsecureIssuer bool, client *http.Client) (*authenticator, error) {
-	cfg.LocalTokens.setDefaults()
-	a := &authenticator{localTokens: localTokens, localAudience: cfg.LocalTokens.Audience, oidcIssuers: make(map[string]struct{})}
+	cfg.Local.Tokens.setDefaults()
+	a := &authenticator{localTokens: localTokens, localAudience: cfg.Local.Tokens.Audience, oidcIssuers: make(map[string]struct{})}
 	providerContext := oidc.ClientContext(ctx, client)
 	for _, issuerCfg := range cfg.OIDC {
+		if !issuerCfg.isEnabled() {
+			continue
+		}
 		issuerURL := strings.TrimRight(issuerCfg.Issuer, "/")
 		issuerContext := providerContext
 		if allowInsecureIssuer {

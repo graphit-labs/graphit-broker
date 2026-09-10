@@ -11,7 +11,8 @@ provider.
 authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
   oidc:
-    - issuer: https://identity.example.com
+    - enabled: true
+      issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
       client_id: graphit-broker
@@ -31,9 +32,14 @@ administration:
   cookie_secure: true
 ```
 
+`enabled` defaults to `true` for each issuer. Set it to `false` to disable that issuer for bearer
+validation and browser login, skip remote discovery, and reject its existing sessions and
+Broker-issued grants after restart. The Broker's own OpenID Provider remains available when local
+login is enabled. Required environment references are still expanded even in disabled entries.
+
 `issuer`, `audiences`, required scopes, and signature/temporal checks protect bearer tokens.
 `client_id`, `client_secret`, `redirect_url`, and `scopes` enable browser login on at most one
-issuer entry. A deployment using only local browser login may omit those client fields.
+enabled issuer entry. A deployment using only local browser login may omit those client fields.
 
 ## Claims and identity
 

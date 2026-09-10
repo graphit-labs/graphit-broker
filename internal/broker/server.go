@@ -68,14 +68,14 @@ func newServerWithFactory(ctx context.Context, cfg Config, factory func(context.
 }
 
 func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context, OIDCIssuerConfig) (AdminIdentityProvider, error), grants ResourceGrantReader) (*runtimeState, error) {
-	if cfg.Authentication.LocalLogin.Enabled == nil {
+	if cfg.Authentication.Local.Login.Enabled == nil {
 		enabled := cfg.Administration.Enabled
-		cfg.Authentication.LocalLogin.Enabled = &enabled
+		cfg.Authentication.Local.Login.Enabled = &enabled
 	}
-	cfg.Authentication.LocalRateLimit.setDefaults()
-	cfg.Authentication.LocalCaptcha.setDefaults()
-	cfg.Authentication.LocalMFA.setDefaults()
-	cfg.Authentication.LocalTokens.setDefaults()
+	cfg.Authentication.Local.RateLimit.setDefaults()
+	cfg.Authentication.Local.Captcha.setDefaults()
+	cfg.Authentication.Local.MFA.setDefaults()
+	cfg.Authentication.Local.Tokens.setDefaults()
 	if cfg.Administration.CookieSecure == nil {
 		secure := true
 		cfg.Administration.CookieSecure = &secure
@@ -89,7 +89,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	control, _ := grants.(*ControlStore)
 	var localPasswords *localPasswordAuthenticator
 	var localAuth *localAuthenticationService
-	if cfg.Authentication.LocalLogin.isEnabled() {
+	if cfg.Authentication.Local.Login.isEnabled() {
 		localPasswords, err = newLocalPasswordAuthenticator(ctx, cfg.Authentication, localUsers, cfg.Server.PublicURL)
 		if err != nil {
 			return nil, err
@@ -133,7 +133,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 	s := &Server{control: control}
 	s.state.Store(runtime)
 	s.ready.Store(true)
-	if control != nil && strings.TrimSpace(runtime.config.Server.PublicURL) != "" && (runtime.config.Authentication.LocalLogin.isEnabled() || runtime.adminOIDC != nil) {
+	if control != nil && strings.TrimSpace(runtime.config.Server.PublicURL) != "" && (runtime.config.Authentication.Local.Login.isEnabled() || runtime.adminOIDC != nil) {
 		provider, err := newBrokerOIDCProvider(runtime.config, control)
 		if err != nil {
 			return nil, err
@@ -264,8 +264,11 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		services["s3_credentials"] = map[string]any{"protocol": "graphit-s3-credentials-v1", "path": "/v1/s3/credentials",
 			"authorization_revision": authorizationRevision}
 	}
-	audiences := []string{state.config.Authentication.LocalTokens.Audience}
+	audiences := []string{state.config.Authentication.Local.Tokens.Audience}
 	for _, issuer := range state.config.Authentication.OIDC {
+		if !issuer.isEnabled() {
+			continue
+		}
 		audiences = append(audiences, issuer.Audiences...)
 	}
 	authentication := map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}
@@ -277,9 +280,9 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	if len(methods) > 0 {
 		authentication["type"] = "openid_connect"
 		authentication["issuer"] = s.publicURL(r)
-		authentication["client_id"] = state.config.Authentication.LocalTokens.CLIClientID
+		authentication["client_id"] = state.config.Authentication.Local.Tokens.CLIClientID
 		authentication["scopes"] = append([]string(nil), brokerOIDCScopes...)
-		authentication["redirect_uri_path"] = state.config.Authentication.LocalTokens.CLIRedirectPath
+		authentication["redirect_uri_path"] = state.config.Authentication.Local.Tokens.CLIRedirectPath
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"version": "1", "issuer": s.publicURL(r),
 		"authentication": authentication, "services": services})

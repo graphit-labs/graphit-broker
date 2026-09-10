@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -22,7 +23,9 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 		t.Fatal(err)
 	}
 	var issuer string
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
@@ -69,6 +72,21 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 	otherKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	if _, err := authenticator.Authenticate(context.Background(), signJWT(t, otherKey, base)); err == nil {
 		t.Fatal("invalid signature accepted")
+	}
+
+	// An explicitly disabled issuer must neither be contacted nor accept its valid JWT.
+	disabled := false
+	cfg.OIDC[0].Enabled = &disabled
+	before := requests.Load()
+	inactive, err := newAuthenticator(context.Background(), cfg, nil, true, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inactive.Authenticate(context.Background(), token); !errors.Is(err, ErrUnauthenticated) {
+		t.Fatalf("disabled issuer accepted valid JWT: %v", err)
+	}
+	if requests.Load() != before {
+		t.Fatal("disabled issuer caused outbound discovery or JWKS requests")
 	}
 }
 

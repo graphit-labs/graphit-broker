@@ -35,7 +35,7 @@ const adminSessionKey adminContextKey = "admin_session"
 func (s *Server) adminPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	captcha := s.runtime().config.Authentication.LocalCaptcha
+	captcha := s.runtime().config.Authentication.Local.Captcha
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'"+localCaptchaScriptSources(captcha)+"; style-src 'unsafe-inline'; connect-src 'self'"+localCaptchaConnectSources(captcha)+"; img-src 'self' data:; frame-src "+localCaptchaFrameSources(captcha)+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -135,7 +135,7 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
+	if s.control == nil || !s.runtime().config.Authentication.Local.Login.isEnabled() || s.runtime().localAuth == nil {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 		return
 	}
@@ -190,7 +190,7 @@ func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adminLocalLoginContinue(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
+	if s.control == nil || !s.runtime().config.Authentication.Local.Login.isEnabled() || s.runtime().localAuth == nil {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "administration is unavailable", requestID(r.Context()))
 		return
 	}
@@ -334,7 +334,7 @@ func cookieMaxAge(expires time.Time) int {
 func (s *Server) adminLoginOptions(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
 	localCount := 0
-	if s.control != nil && state.config.Authentication.LocalLogin.isEnabled() {
+	if s.control != nil && state.config.Authentication.Local.Login.isEnabled() {
 		localCount, _ = s.control.EnabledLocalHumanCount(r.Context())
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -765,9 +765,9 @@ func (s *Server) adminServiceCredentials(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if request.ExpiresIn == 0 {
-		request.ExpiresIn = int64(min(90*24*time.Hour, s.runtime().config.Authentication.LocalTokens.ServiceMaxTTL) / time.Second)
+		request.ExpiresIn = int64(min(90*24*time.Hour, s.runtime().config.Authentication.Local.Tokens.ServiceMaxTTL) / time.Second)
 	}
-	maxTTL := s.runtime().config.Authentication.LocalTokens.ServiceMaxTTL
+	maxTTL := s.runtime().config.Authentication.Local.Tokens.ServiceMaxTTL
 	if request.ExpiresIn < int64(time.Hour/time.Second) || request.ExpiresIn > int64(maxTTL/time.Second) {
 		writeError(w, http.StatusBadRequest, "invalid_credential", "service credential expiry is outside the configured range", requestID(r.Context()))
 		return
@@ -785,7 +785,7 @@ func (s *Server) adminServiceCredentials(w http.ResponseWriter, r *http.Request)
 	}
 	raw := serviceCredentialPrefix + secret
 	grant := LocalTokenGrant{Subject: user.Subject, LocalUserRevision: user.Revision, ClientID: request.ClientID,
-		Audience: s.runtime().config.Authentication.LocalTokens.Audience, Scopes: request.Scopes, ExpiresAt: time.Now().Add(ttl)}
+		Audience: s.runtime().config.Authentication.Local.Tokens.Audience, Scopes: request.Scopes, ExpiresAt: time.Now().Add(ttl)}
 	if err := s.control.SaveServiceCredential(r.Context(), raw, id, grant); err != nil {
 		writeError(w, http.StatusBadRequest, "credential_create_failed", err.Error(), requestID(r.Context()))
 		return
@@ -916,13 +916,7 @@ func canonicalSubject(issuer, subject string) string {
 }
 
 func (s *Server) oidcConfigForIssuer(issuer string) (OIDCIssuerConfig, bool) {
-	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
-	for _, cfg := range s.runtime().config.Authentication.OIDC {
-		if strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/") == issuer {
-			return cfg, true
-		}
-	}
-	return OIDCIssuerConfig{}, false
+	return findOIDCConfig(s.runtime().config.Authentication.OIDC, issuer)
 }
 
 func adminSessionFromContext(ctx context.Context) AdminSession {
@@ -967,8 +961,8 @@ func redactConfig(cfg Config) Config {
 	if cfg.Authentication.TokenPepper != "" {
 		cfg.Authentication.TokenPepper = configuredSecret
 	}
-	if cfg.Authentication.LocalCaptcha.SecretKey != "" {
-		cfg.Authentication.LocalCaptcha.SecretKey = configuredSecret
+	if cfg.Authentication.Local.Captcha.SecretKey != "" {
+		cfg.Authentication.Local.Captcha.SecretKey = configuredSecret
 	}
 	for i := range cfg.Authentication.OIDC {
 		if cfg.Authentication.OIDC[i].ClientSecret != "" {

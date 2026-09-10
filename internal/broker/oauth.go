@@ -160,7 +160,7 @@ type oauthOIDCContinuation struct {
 func (s *Server) oauthLoginMethods(r *http.Request) ([]string, error) {
 	methods := []string{}
 	state := s.runtime()
-	if state.config.Authentication.LocalLogin.isEnabled() && state.localAuth != nil && s.control != nil {
+	if state.config.Authentication.Local.Login.isEnabled() && state.localAuth != nil && s.control != nil {
 		count, err := s.control.EnabledLocalHumanCount(r.Context())
 		if err != nil {
 			return nil, err
@@ -280,7 +280,7 @@ func requestedLocalScopes(raw string) ([]string, error) {
 }
 
 func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
-	if !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localAuth == nil {
+	if !s.runtime().config.Authentication.Local.Login.isEnabled() || s.runtime().localAuth == nil {
 		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local device authorization is unavailable")
 		return
 	}
@@ -288,7 +288,7 @@ func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
-	cfg := s.runtime().config.Authentication.LocalTokens
+	cfg := s.runtime().config.Authentication.Local.Tokens
 	if clientID != cfg.CLIClientID {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client", "unknown client_id")
 		return
@@ -322,7 +322,7 @@ func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || !s.runtime().config.Authentication.LocalLogin.isEnabled() || s.runtime().localPasswords == nil {
+	if s.control == nil || !s.runtime().config.Authentication.Local.Login.isEnabled() || s.runtime().localPasswords == nil {
 		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local authorization is unavailable")
 		return
 	}
@@ -410,7 +410,7 @@ func (s *Server) continueBrowserLocalLogin(r *http.Request, purpose, binding str
 		action = localCaptchaActionDevice
 	}
 	captchaToken := r.PostForm.Get("cf-turnstile-response")
-	if s.runtime().config.Authentication.LocalCaptcha.Provider == localCaptchaProviderRecaptcha {
+	if s.runtime().config.Authentication.Local.Captcha.Provider == localCaptchaProviderRecaptcha {
 		captchaToken = r.PostForm.Get("g-recaptcha-response")
 	}
 	principal, err := s.runtime().localPasswords.Authenticate(r.Context(), strings.TrimSpace(r.PostForm.Get("username")), password, localCaptchaAttempt{Token: captchaToken, Action: action})
@@ -459,7 +459,7 @@ func (s *Server) oauthDeviceToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientID := strings.TrimSpace(r.PostForm.Get("client_id"))
-	if clientID != s.runtime().config.Authentication.LocalTokens.CLIClientID {
+	if clientID != s.runtime().config.Authentication.Local.Tokens.CLIClientID {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
 		return
 	}
@@ -498,7 +498,7 @@ func (s *Server) oauthIssueTokenPair(w http.ResponseWriter, r *http.Request, gra
 		}
 	}
 	grant.Principal, grant.Subject, grant.LocalUserRevision = principal, principal.Subject, principal.LocalUserRevision
-	cfg := s.runtime().config.Authentication.LocalTokens
+	cfg := s.runtime().config.Authentication.Local.Tokens
 	accessSecret, err := randomURLToken(32)
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not issue access token")
@@ -548,7 +548,7 @@ func (s *Server) writeOAuthHTML(w http.ResponseWriter, page *template.Template, 
 func (s *Server) writeOAuthHTMLStatus(w http.ResponseWriter, status int, page *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	captcha := s.runtime().config.Authentication.LocalCaptcha
+	captcha := s.runtime().config.Authentication.Local.Captcha
 	scriptSources := localCaptchaScriptSources(captcha)
 	if scriptSources == "" {
 		scriptSources = " 'none'"

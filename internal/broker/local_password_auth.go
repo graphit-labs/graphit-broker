@@ -27,26 +27,26 @@ func newLocalPasswordAuthenticator(ctx context.Context, cfg AuthenticationConfig
 	if len(publicURLs) > 0 {
 		publicURL = publicURLs[0]
 	}
-	cfg.LocalRateLimit.setDefaults()
-	if err := cfg.LocalRateLimit.validate(); err != nil {
+	cfg.Local.RateLimit.setDefaults()
+	if err := cfg.Local.RateLimit.validate(); err != nil {
 		return nil, err
 	}
-	cfg.LocalCaptcha.setDefaults()
-	if err := cfg.LocalCaptcha.validate(cfg.LocalRateLimit, true, publicURL); err != nil {
+	cfg.Local.Captcha.setDefaults()
+	if err := cfg.Local.Captcha.validate(cfg.Local.RateLimit, true, publicURL); err != nil {
 		return nil, err
 	}
-	captcha, err := newLocalCaptchaVerifier(cfg.LocalCaptcha, publicURL)
+	captcha, err := newLocalCaptchaVerifier(cfg.Local.Captcha, publicURL)
 	if err != nil {
 		return nil, err
 	}
-	capacity := cfg.LocalRateLimit.MaxConcurrent * cfg.LocalRateLimit.SaturationMultiplier
+	capacity := cfg.Local.RateLimit.MaxConcurrent * cfg.Local.RateLimit.SaturationMultiplier
 	a := &localPasswordAuthenticator{
 		localUsers: localUsers, tokenPepper: []byte(cfg.TokenPepper),
-		passwordWork:      make(chan struct{}, cfg.LocalRateLimit.MaxConcurrent),
+		passwordWork:      make(chan struct{}, cfg.Local.RateLimit.MaxConcurrent),
 		passwordAdmission: make(chan struct{}, capacity),
-		rateLimiter:       newLocalPasswordRateLimiter(cfg.LocalRateLimit, []byte(cfg.TokenPepper)),
+		rateLimiter:       newLocalPasswordRateLimiter(cfg.Local.RateLimit, []byte(cfg.TokenPepper)),
 		captcha:           captcha,
-		captchaThreshold:  cfg.LocalCaptcha.threshold(cfg.LocalRateLimit.MaxConcurrent),
+		captchaThreshold:  cfg.Local.Captcha.threshold(cfg.Local.RateLimit.MaxConcurrent),
 		passwordCheck:     verifyPassword,
 	}
 	if len(cfg.TokenPepper) >= tokenPepperMinimumBytes {

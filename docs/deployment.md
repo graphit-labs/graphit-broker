@@ -136,7 +136,7 @@ The Broker has two distinct OIDC roles that share one deployment configuration:
 
 1. It is the OpenID Provider consumed by Graphit Code. Its issuer is `server.public_url`; it
    publishes standard discovery, authorization, token, JWKS, userinfo, revocation, introspection,
-   and end-session endpoints. The configured `authentication.local_tokens.cli_client_id` is a
+   and end-session endpoints. The configured `authentication.local.tokens.cli_client_id` is a
    public/native client using Authorization Code, PKCE S256, state, nonce, and a dynamic loopback
    redirect whose path is `cli_redirect_path`.
 2. It may be an OIDC client of one upstream organization IdP. Browser-client fields on at most one

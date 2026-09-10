@@ -512,7 +512,7 @@ func TestAdminLocalLoginRequiresAdaptiveCaptchaBeforePasswordWork(t *testing.T) 
 	defer service.Close()
 	defer httpServer.Close()
 	state := service.runtime()
-	state.config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "public-site-key", SecretKey: "private-secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
+	state.config.Authentication.Local.Captcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "public-site-key", SecretKey: "private-secret-key", TriggerMultiplier: 1.5, VerificationTimeout: time.Second}
 	verifier := &stubLocalCaptchaVerifier{provider: localCaptchaProviderTurnstile, valid: "valid-proof"}
 	state.localPasswords.captcha = verifier
 	state.localPasswords.captchaThreshold = 1
@@ -621,7 +621,7 @@ func TestLocalOnlyUserCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	cfg := testServerConfig("http://127.0.0.1:1", "http://127.0.0.1:1")
 	cfg.Authentication.TokenPepper = testPasswordPepper
 	requireMFA := false
-	cfg.Authentication.LocalMFA.Required = &requireMFA
+	cfg.Authentication.Local.MFA.Required = &requireMFA
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
 	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour,
 		CLI: GraphitCLIConfig{ProviderName: "local-broker", ProfileName: "local-root"}}
@@ -809,7 +809,7 @@ func TestAdminConfigurationIsRedactedReadOnlyDeploymentState(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, upstream.URL)
 	defer service.Close()
 	defer httpServer.Close()
-	service.runtime().config.Authentication.LocalCaptcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderRecaptcha, SiteKey: "public-captcha-key", SecretKey: "private-captcha-secret", TriggerMultiplier: 1.5, VerificationTimeout: 3 * time.Second}
+	service.runtime().config.Authentication.Local.Captcha = LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderRecaptcha, SiteKey: "public-captcha-key", SecretKey: "private-captcha-secret", TriggerMultiplier: 1.5, VerificationTimeout: 3 * time.Second}
 
 	configResponse := bearerRequest(t, http.MethodGet, httpServer.URL+"/admin/api/v1/config", "root-token", "")
 	if configResponse.StatusCode != http.StatusOK || configResponse.Header.Get("ETag") != "" {
@@ -921,13 +921,13 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/oauth/oidc/callback", Scopes: []string{"openid", "profile", "email"},
 	}}}
 	requireMFA := false
-	cfg.Authentication.LocalMFA.Required = &requireMFA
+	cfg.Authentication.Local.MFA.Required = &requireMFA
 	cfg.Services.Embeddings.Upstream.APIKey = "embedding-secret"
 	cfg.Services.Rerank.Upstream.APIKey = "rerank-secret"
 	cfg.Database.DSN = t.TempDir() + "/broker.db"
 	cookieSecure := false
 	cfg.Administration = AdministrationConfig{Enabled: true, SessionTTL: time.Hour, CookieSecure: &cookieSecure}
-	cfg.Authentication.LocalTokens.setDefaults()
+	cfg.Authentication.Local.Tokens.setDefaults()
 	provider := &fakeAdminOIDC{identities: map[string]AdminIdentity{
 		"root-token": {Issuer: "https://identity.example", Subject: "root-subject", Name: "Root", Email: "root@example.test",
 			Username: "root", Organization: "acme", Teams: []string{"platform"}},

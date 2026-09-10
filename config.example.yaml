@@ -22,52 +22,56 @@ authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
   # SQL-backed human login is enabled by default when administration is enabled. Set false for
   # an upstream-OIDC-only broker, or set true explicitly when Broker OIDC login is needed without administration.
-  local_login:
-    enabled: true
-  # Failed local-password checks are limited per username. At most max_concurrent expensive
-  # Argon2id checks run at once per broker process. Up to max_concurrent * saturation_multiplier
-  # calls (running plus waiting) are admitted; calls beyond that return HTTP 429 with Retry-After.
-  # Successful and saturation-rejected checks do not consume the failure quota.
-  local_rate_limit:
-    max_failures: 5
-    window: 1m
-    lockout: 5m
-    max_concurrent: 2
-    saturation_multiplier: 4
-  # Optional adaptive bot protection for the first local-password step. Select `turnstile`
-  # (Cloudflare managed widget) or `recaptcha` (Google reCAPTCHA v2 Checkbox). The attempt that
-  # raises per-process admission to max(1, ceil(max_concurrent * trigger_multiplier)) must pass
-  # the provider before Argon2id. Use 0 to require CAPTCHA from the first attempt, or a positive
-  # fraction to start before max_concurrent. Provider failures fail closed only while required.
-  # server.public_url is mandatory when enabled and its hostname is checked on every proof.
-  local_captcha:
-    enabled: false
-    provider: "turnstile" # or "recaptcha"
-    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
-    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
-    trigger_multiplier: 1.5
-    verification_timeout: 3s
-  # Human local users must enroll a Google Authenticator-compatible TOTP factor by default.
-  # Enrollment and verification challenges are short-lived and bound to the login flow.
-  local_mfa:
-    required: true
-    issuer: "Graphit Broker"
-    challenge_ttl: 10m
-  # Local human passwords are accepted only by browser/device login. The Broker acts as the
-  # OpenID Provider and issues signed ID tokens plus opaque access/refresh credentials. Desktop callbacks use the
-  # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.
-  local_tokens:
-    audience: "graphit-broker"
-    cli_client_id: "graphit-cli"
-    cli_redirect_path: "/oauth/callback"
-    access_ttl: 10m
-    refresh_ttl: 720h
-    authorization_code_ttl: 1m
-    device_code_ttl: 10m
-    device_poll_interval: 5s
-    service_credential_max_ttl: 8760h
+  local:
+    login:
+      enabled: true
+    # Failed local-password checks are limited per username. At most max_concurrent expensive
+    # Argon2id checks run at once per broker process. Up to max_concurrent * saturation_multiplier
+    # calls (running plus waiting) are admitted; calls beyond that return HTTP 429 with Retry-After.
+    # Successful and saturation-rejected checks do not consume the failure quota.
+    rate_limit:
+      max_failures: 5
+      window: 1m
+      lockout: 5m
+      max_concurrent: 2
+      saturation_multiplier: 4
+    # Optional adaptive bot protection for the first local-password step. Select `turnstile`
+    # (Cloudflare managed widget) or `recaptcha` (Google reCAPTCHA v2 Checkbox). The attempt that
+    # raises per-process admission to max(1, ceil(max_concurrent * trigger_multiplier)) must pass
+    # the provider before Argon2id. Use 0 to require CAPTCHA from the first attempt, or a positive
+    # fraction to start before max_concurrent. Provider failures fail closed only while required.
+    # server.public_url is mandatory when enabled and its hostname is checked on every proof.
+    captcha:
+      enabled: false
+      provider: "turnstile" # or "recaptcha"
+      site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+      secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+      trigger_multiplier: 1.5
+      verification_timeout: 3s
+    # Human local users must enroll a Google Authenticator-compatible TOTP factor by default.
+    # Enrollment and verification challenges are short-lived and bound to the login flow.
+    mfa:
+      required: true
+      issuer: "Graphit Broker"
+      challenge_ttl: 10m
+    # Local human passwords are accepted only by browser/device login. The Broker acts as the
+    # OpenID Provider and issues signed ID tokens plus opaque access/refresh credentials. Desktop callbacks use the
+    # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.
+    tokens:
+      audience: "graphit-broker"
+      cli_client_id: "graphit-cli"
+      cli_redirect_path: "/oauth/callback"
+      access_ttl: 10m
+      refresh_ttl: 720h
+      authorization_code_ttl: 1m
+      device_code_ttl: 10m
+      device_poll_interval: 5s
+      service_credential_max_ttl: 8760h
   oidc:
-    - issuer: "https://identity.example.com"
+    # Defaults to true; false disables this upstream issuer for bearer and browser login.
+    # Required environment references are still checked even when disabled.
+    - enabled: true
+      issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
       required_scopes: ["graphit.use"]
       # This issuer validates consumer bearers and supplies the optional upstream browser method

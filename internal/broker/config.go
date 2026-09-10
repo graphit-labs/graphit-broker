@@ -53,13 +53,17 @@ type ServerConfig struct {
 }
 
 type AuthenticationConfig struct {
-	TokenPepper    string                       `yaml:"token_pepper" json:"token_pepper,omitempty"`
-	LocalLogin     LocalLoginConfig             `yaml:"local_login" json:"local_login"`
-	LocalRateLimit LocalAuthenticationRateLimit `yaml:"local_rate_limit" json:"local_rate_limit"`
-	LocalCaptcha   LocalCaptchaConfig           `yaml:"local_captcha" json:"local_captcha"`
-	LocalMFA       LocalMFAConfig               `yaml:"local_mfa" json:"local_mfa"`
-	LocalTokens    LocalTokenConfig             `yaml:"local_tokens" json:"local_tokens"`
-	OIDC           []OIDCIssuerConfig           `yaml:"oidc" json:"oidc,omitempty"`
+	TokenPepper string                    `yaml:"token_pepper" json:"token_pepper,omitempty"`
+	Local       LocalAuthenticationConfig `yaml:"local" json:"local"`
+	OIDC        []OIDCIssuerConfig        `yaml:"oidc" json:"oidc,omitempty"`
+}
+
+type LocalAuthenticationConfig struct {
+	Login     LocalLoginConfig             `yaml:"login" json:"login"`
+	RateLimit LocalAuthenticationRateLimit `yaml:"rate_limit" json:"rate_limit"`
+	Captcha   LocalCaptchaConfig           `yaml:"captcha" json:"captcha"`
+	MFA       LocalMFAConfig               `yaml:"mfa" json:"mfa"`
+	Tokens    LocalTokenConfig             `yaml:"tokens" json:"tokens"`
 }
 
 type LocalLoginConfig struct {
@@ -106,6 +110,7 @@ type LocalAuthenticationRateLimit struct {
 }
 
 type OIDCIssuerConfig struct {
+	Enabled           *bool    `yaml:"enabled" json:"enabled"`
 	Issuer            string   `yaml:"issuer" json:"issuer"`
 	Audiences         []string `yaml:"audiences" json:"audiences"`
 	RequiredScopes    []string `yaml:"required_scopes" json:"required_scopes,omitempty"`
@@ -134,9 +139,11 @@ type GraphitCLIConfig struct {
 	ProfileName  string `yaml:"profile_name" json:"profile_name"`
 }
 
+func (c OIDCIssuerConfig) isEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
 func (c OIDCIssuerConfig) loginConfigured() bool {
-	return strings.TrimSpace(c.ClientID) != "" || strings.TrimSpace(c.ClientSecret) != "" ||
-		strings.TrimSpace(c.RedirectURL) != ""
+	return c.isEnabled() && (strings.TrimSpace(c.ClientID) != "" || strings.TrimSpace(c.ClientSecret) != "" ||
+		strings.TrimSpace(c.RedirectURL) != "")
 }
 
 type ACLRuleConfig struct {
@@ -245,9 +252,9 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	}
 	// Seed defaults whose zero value has explicit meaning before YAML decoding so
 	// an omitted field remains distinguishable from an explicitly configured zero.
-	cfg := Config{Authentication: AuthenticationConfig{LocalCaptcha: LocalCaptchaConfig{
+	cfg := Config{Authentication: AuthenticationConfig{Local: LocalAuthenticationConfig{Captcha: LocalCaptchaConfig{
 		TriggerMultiplier: defaultLocalCaptchaTriggerMultiplier,
-	}}}
+	}}}}
 	decoder := yaml.NewDecoder(strings.NewReader(expanded))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
@@ -331,14 +338,14 @@ func (c *Config) defaults() {
 	if c.Server.MaxRequestBytes == 0 {
 		c.Server.MaxRequestBytes = 4 << 20
 	}
-	c.Authentication.LocalRateLimit.setDefaults()
-	c.Authentication.LocalCaptcha.setDefaults()
-	if c.Authentication.LocalLogin.Enabled == nil {
+	c.Authentication.Local.RateLimit.setDefaults()
+	c.Authentication.Local.Captcha.setDefaults()
+	if c.Authentication.Local.Login.Enabled == nil {
 		enabled := c.Administration.Enabled
-		c.Authentication.LocalLogin.Enabled = &enabled
+		c.Authentication.Local.Login.Enabled = &enabled
 	}
-	c.Authentication.LocalMFA.setDefaults()
-	c.Authentication.LocalTokens.setDefaults()
+	c.Authentication.Local.MFA.setDefaults()
+	c.Authentication.Local.Tokens.setDefaults()
 	if c.Administration.SessionTTL == 0 {
 		c.Administration.SessionTTL = 8 * time.Hour
 	}
@@ -354,6 +361,10 @@ func (c *Config) defaults() {
 	}
 	for i := range c.Authentication.OIDC {
 		issuer := &c.Authentication.OIDC[i]
+		if issuer.Enabled == nil {
+			enabled := true
+			issuer.Enabled = &enabled
+		}
 		if issuer.SubjectClaim == "" {
 			issuer.SubjectClaim = "sub"
 		}
@@ -472,10 +483,10 @@ func (c *LocalMFAConfig) setDefaults() {
 func (c LocalMFAConfig) validate() error {
 	issuer := strings.TrimSpace(c.Issuer)
 	if issuer == "" || len(issuer) > 128 || strings.ContainsAny(issuer, "\r\n") {
-		return errors.New("authentication.local_mfa.issuer must contain 1 to 128 characters without line breaks")
+		return errors.New("authentication.local.mfa.issuer must contain 1 to 128 characters without line breaks")
 	}
 	if c.ChallengeTTL < 2*time.Minute || c.ChallengeTTL > 30*time.Minute {
-		return errors.New("authentication.local_mfa.challenge_ttl must be between 2m and 30m")
+		return errors.New("authentication.local.mfa.challenge_ttl must be between 2m and 30m")
 	}
 	return nil
 }
@@ -484,28 +495,28 @@ func (c LocalMFAConfig) isRequired() bool { return c.Required == nil || *c.Requi
 
 func (c LocalTokenConfig) validate() error {
 	if !safeSegment(c.Audience) || !safeSegment(c.CLIClientID) {
-		return errors.New("authentication.local_tokens audience and cli_client_id must be safe names")
+		return errors.New("authentication.local.tokens audience and cli_client_id must be safe names")
 	}
 	if !strings.HasPrefix(c.CLIRedirectPath, "/") || strings.ContainsAny(c.CLIRedirectPath, "?#") {
-		return errors.New("authentication.local_tokens.cli_redirect_path must be an absolute path without query or fragment")
+		return errors.New("authentication.local.tokens.cli_redirect_path must be an absolute path without query or fragment")
 	}
 	if c.AccessTTL < time.Minute || c.AccessTTL > time.Hour {
-		return errors.New("authentication.local_tokens.access_ttl must be between 1m and 1h")
+		return errors.New("authentication.local.tokens.access_ttl must be between 1m and 1h")
 	}
 	if c.RefreshTTL < c.AccessTTL || c.RefreshTTL > 90*24*time.Hour {
-		return errors.New("authentication.local_tokens.refresh_ttl must be between access_ttl and 2160h")
+		return errors.New("authentication.local.tokens.refresh_ttl must be between access_ttl and 2160h")
 	}
 	if c.AuthorizationTTL < 30*time.Second || c.AuthorizationTTL > 10*time.Minute {
-		return errors.New("authentication.local_tokens.authorization_code_ttl must be between 30s and 10m")
+		return errors.New("authentication.local.tokens.authorization_code_ttl must be between 30s and 10m")
 	}
 	if c.DeviceTTL < 5*time.Minute || c.DeviceTTL > 30*time.Minute {
-		return errors.New("authentication.local_tokens.device_code_ttl must be between 5m and 30m")
+		return errors.New("authentication.local.tokens.device_code_ttl must be between 5m and 30m")
 	}
 	if c.DevicePollInterval < time.Second || c.DevicePollInterval > 30*time.Second {
-		return errors.New("authentication.local_tokens.device_poll_interval must be between 1s and 30s")
+		return errors.New("authentication.local.tokens.device_poll_interval must be between 1s and 30s")
 	}
 	if c.ServiceMaxTTL < time.Hour || c.ServiceMaxTTL > 5*365*24*time.Hour {
-		return errors.New("authentication.local_tokens.service_credential_max_ttl must be between 1h and 43800h")
+		return errors.New("authentication.local.tokens.service_credential_max_ttl must be between 1h and 43800h")
 	}
 	return nil
 }
@@ -537,31 +548,31 @@ func (c *LocalCaptchaConfig) setDefaults() {
 
 func (c LocalCaptchaConfig) validate(rateLimit LocalAuthenticationRateLimit, localLoginEnabled bool, publicURL string) error {
 	if c.Provider != "" && c.Provider != localCaptchaProviderTurnstile && c.Provider != localCaptchaProviderRecaptcha {
-		return fmt.Errorf("authentication.local_captcha.provider %q is unsupported (use turnstile or recaptcha)", c.Provider)
+		return fmt.Errorf("authentication.local.captcha.provider %q is unsupported (use turnstile or recaptcha)", c.Provider)
 	}
 	if !c.Enabled {
 		return nil
 	}
 	if math.IsNaN(c.TriggerMultiplier) || math.IsInf(c.TriggerMultiplier, 0) || c.TriggerMultiplier < 0 || c.TriggerMultiplier > float64(rateLimit.SaturationMultiplier) {
-		return errors.New("authentication.local_captcha.trigger_multiplier must be between 0 and local_rate_limit.saturation_multiplier")
+		return errors.New("authentication.local.captcha.trigger_multiplier must be between 0 and local.rate_limit.saturation_multiplier")
 	}
 	if c.VerificationTimeout < 500*time.Millisecond || c.VerificationTimeout > 10*time.Second {
-		return errors.New("authentication.local_captcha.verification_timeout must be between 500ms and 10s")
+		return errors.New("authentication.local.captcha.verification_timeout must be between 500ms and 10s")
 	}
 	if !localLoginEnabled {
-		return errors.New("authentication.local_captcha requires local_login.enabled")
+		return errors.New("authentication.local.captcha requires local.login.enabled")
 	}
 	if c.Provider == "" {
-		return errors.New("authentication.local_captcha.provider is required when enabled")
+		return errors.New("authentication.local.captcha.provider is required when enabled")
 	}
 	if strings.TrimSpace(c.SiteKey) == "" || strings.ContainsAny(c.SiteKey, "\r\n") {
-		return errors.New("authentication.local_captcha.site_key is required without line breaks when enabled")
+		return errors.New("authentication.local.captcha.site_key is required without line breaks when enabled")
 	}
 	if strings.TrimSpace(c.SecretKey) == "" || strings.ContainsAny(c.SecretKey, "\r\n") {
-		return errors.New("authentication.local_captcha.secret_key is required without line breaks when enabled")
+		return errors.New("authentication.local.captcha.secret_key is required without line breaks when enabled")
 	}
 	if strings.TrimSpace(publicURL) == "" {
-		return errors.New("server.public_url is required when authentication.local_captcha is enabled")
+		return errors.New("server.public_url is required when authentication.local.captcha is enabled")
 	}
 	return nil
 }
@@ -572,19 +583,19 @@ func (c LocalCaptchaConfig) threshold(maxConcurrent int) int {
 
 func (c LocalAuthenticationRateLimit) validate() error {
 	if c.MaxFailures <= 0 {
-		return errors.New("authentication.local_rate_limit.max_failures must be positive")
+		return errors.New("authentication.local.rate_limit.max_failures must be positive")
 	}
 	if c.Window <= 0 || c.Lockout <= 0 {
-		return errors.New("authentication.local_rate_limit window and lockout must be positive")
+		return errors.New("authentication.local.rate_limit window and lockout must be positive")
 	}
 	if c.MaxConcurrent <= 0 {
-		return errors.New("authentication.local_rate_limit.max_concurrent must be positive")
+		return errors.New("authentication.local.rate_limit.max_concurrent must be positive")
 	}
 	if c.SaturationMultiplier <= 0 {
-		return errors.New("authentication.local_rate_limit.saturation_multiplier must be positive")
+		return errors.New("authentication.local.rate_limit.saturation_multiplier must be positive")
 	}
 	if c.MaxConcurrent > int(^uint(0)>>1)/c.SaturationMultiplier {
-		return errors.New("authentication.local_rate_limit concurrency saturation capacity overflows int")
+		return errors.New("authentication.local.rate_limit concurrency saturation capacity overflows int")
 	}
 	return nil
 }
@@ -636,20 +647,23 @@ func (c Config) Validate() error {
 	if c.Database.ConnMaxLifetime <= 0 {
 		return errors.New("database.conn_max_lifetime must be positive")
 	}
-	if err := c.Authentication.LocalRateLimit.validate(); err != nil {
+	if err := c.Authentication.Local.RateLimit.validate(); err != nil {
 		return err
 	}
-	if err := c.Authentication.LocalCaptcha.validate(c.Authentication.LocalRateLimit, c.Authentication.LocalLogin.isEnabled(), c.Server.PublicURL); err != nil {
+	if err := c.Authentication.Local.Captcha.validate(c.Authentication.Local.RateLimit, c.Authentication.Local.Login.isEnabled(), c.Server.PublicURL); err != nil {
 		return err
 	}
-	if err := c.Authentication.LocalMFA.validate(); err != nil {
+	if err := c.Authentication.Local.MFA.validate(); err != nil {
 		return err
 	}
-	if err := c.Authentication.LocalTokens.validate(); err != nil {
+	if err := c.Authentication.Local.Tokens.validate(); err != nil {
 		return err
 	}
 	loginProviders := 0
 	for i, issuer := range c.Authentication.OIDC {
+		if !issuer.isEnabled() {
+			continue
+		}
 		if err := validateHTTPSURL(issuer.Issuer, "OIDC issuer"); err != nil {
 			return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
 		}
@@ -684,10 +698,10 @@ func (c Config) Validate() error {
 	if loginProviders > 1 {
 		return errors.New("authentication.oidc must configure at most one browser login client")
 	}
-	if (c.Authentication.LocalLogin.isEnabled() || loginProviders > 0) && strings.TrimSpace(c.Server.PublicURL) == "" {
+	if (c.Authentication.Local.Login.isEnabled() || loginProviders > 0) && strings.TrimSpace(c.Server.PublicURL) == "" {
 		return errors.New("server.public_url is required when browser authentication is enabled")
 	}
-	if c.Administration.Enabled || c.Authentication.LocalLogin.isEnabled() || loginProviders > 0 {
+	if c.Administration.Enabled || c.Authentication.Local.Login.isEnabled() || loginProviders > 0 {
 		if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
 			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when browser authentication is enabled", tokenPepperMinimumBytes)
 		}

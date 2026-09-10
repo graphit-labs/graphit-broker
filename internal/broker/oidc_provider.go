@@ -208,7 +208,7 @@ func newBrokerOIDCStorage(control *ControlStore, cfg Config) *brokerOIDCStorage 
 	privateKey := ed25519.NewKeyFromSeed(seed[:])
 	publicDigest := sha256.Sum256(privateKey.Public().(ed25519.PublicKey))
 	keyID := hex.EncodeToString(publicDigest[:8])
-	return &brokerOIDCStorage{control: control, cfg: cfg, client: &brokerOIDCClient{cfg: cfg.Authentication.LocalTokens},
+	return &brokerOIDCStorage{control: control, cfg: cfg, client: &brokerOIDCClient{cfg: cfg.Authentication.Local.Tokens},
 		signingKey: &brokerOIDCSigningKey{id: keyID, key: privateKey}}
 }
 
@@ -237,7 +237,7 @@ func (s *brokerOIDCStorage) CreateAuthRequest(ctx context.Context, input *zitoid
 	}
 	now := time.Now().UTC()
 	_, err = s.control.db.ExecContext(ctx, s.control.bind(`INSERT INTO oidc_auth_requests(request_hash, identity_subject, request_json, code_hash, expires_at, created_at) VALUES(?, ?, ?, ?, ?, ?)`),
-		s.control.tokenHash(oidcAuthRequestDomain, id), "", string(payload), nil, now.Add(s.cfg.Authentication.LocalTokens.AuthorizationTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		s.control.tokenHash(oidcAuthRequestDomain, id), "", string(payload), nil, now.Add(s.cfg.Authentication.Local.Tokens.AuthorizationTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}
@@ -380,12 +380,12 @@ func (s *brokerOIDCStorage) saveTokenPair(ctx context.Context, grant LocalTokenG
 	if grant.OIDCSubject == "" {
 		grant.OIDCSubject = s.subject(principal)
 	}
-	grant.Audience = s.cfg.Authentication.LocalTokens.Audience
+	grant.Audience = s.cfg.Authentication.Local.Tokens.Audience
 	accessID, err := randomURLToken(18)
 	if err != nil {
 		return "", "", time.Time{}, err
 	}
-	accessExpiry := time.Now().Add(s.cfg.Authentication.LocalTokens.AccessTTL)
+	accessExpiry := time.Now().Add(s.cfg.Authentication.Local.Tokens.AccessTTL)
 	grant.ExpiresAt = accessExpiry
 	if grant.AuthTime.IsZero() {
 		grant.AuthTime = time.Now().UTC()
@@ -402,7 +402,7 @@ func (s *brokerOIDCStorage) saveTokenPair(ctx context.Context, grant LocalTokenG
 			return "", "", time.Time{}, err
 		}
 		if grant.RefreshExpiresAt.IsZero() {
-			grant.RefreshExpiresAt = time.Now().Add(s.cfg.Authentication.LocalTokens.RefreshTTL)
+			grant.RefreshExpiresAt = time.Now().Add(s.cfg.Authentication.Local.Tokens.RefreshTTL)
 		}
 		if grant.FamilyID == "" {
 			grant.FamilyID, err = randomURLToken(16)
@@ -449,7 +449,7 @@ func (s *brokerOIDCStorage) validPrincipal(ctx context.Context, grant LocalToken
 func findOIDCConfig(configs []OIDCIssuerConfig, issuer string) (OIDCIssuerConfig, bool) {
 	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
 	for _, candidate := range configs {
-		if strings.TrimRight(strings.TrimSpace(candidate.Issuer), "/") == issuer {
+		if candidate.isEnabled() && strings.TrimRight(strings.TrimSpace(candidate.Issuer), "/") == issuer {
 			return candidate, true
 		}
 	}

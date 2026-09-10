@@ -86,8 +86,8 @@ func newLocalAuthenticationService(cfg AuthenticationConfig, store *ControlStore
 	if store == nil {
 		return nil, nil
 	}
-	cfg.LocalMFA.setDefaults()
-	if err := cfg.LocalMFA.validate(); err != nil {
+	cfg.Local.MFA.setDefaults()
+	if err := cfg.Local.MFA.validate(); err != nil {
 		return nil, err
 	}
 	if len(cfg.TokenPepper) < tokenPepperMinimumBytes {
@@ -95,8 +95,8 @@ func newLocalAuthenticationService(cfg AuthenticationConfig, store *ControlStore
 	}
 	rateKey := deriveLocalAuthKey([]byte(cfg.TokenPepper), localMFARateLimitDomain)
 	return &localAuthenticationService{
-		store: store, config: cfg.LocalMFA, pepper: []byte(cfg.TokenPepper), passwords: passwords,
-		mfaLimiter: newLocalPasswordRateLimiter(cfg.LocalRateLimit, rateKey), now: time.Now,
+		store: store, config: cfg.Local.MFA, pepper: []byte(cfg.TokenPepper), passwords: passwords,
+		mfaLimiter: newLocalPasswordRateLimiter(cfg.Local.RateLimit, rateKey), now: time.Now,
 	}, nil
 }
 

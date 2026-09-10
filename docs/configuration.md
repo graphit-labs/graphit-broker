@@ -52,25 +52,31 @@ Ed25519 signing seeds, bearer encryption, authorization grants, access/refresh r
 and service credentials. It must contain at least 32 bytes whenever administration,
 local login, or browser OIDC login is enabled and is never stored in SQL.
 
+Local settings are grouped under `authentication.local`: `login`, `rate_limit`, `captcha`, `mfa`,
+and `tokens`. The former flat `local_*` keys are rejected. The shared `token_pepper` remains directly
+under `authentication`.
+
 Local browser login is deployment-owned. It defaults to the value of `administration.enabled`, but
 can be enabled independently for Graphit Code login or disabled while keeping OIDC login:
 
 ```yaml
 authentication:
-  local_login:
-    enabled: true
+  local:
+    login:
+      enabled: true
 ```
 
 Local-password failures use a fixed-window limiter. Every field is optional and defaults as shown:
 
 ```yaml
 authentication:
-  local_rate_limit:
-    max_failures: 5
-    window: 1m
-    lockout: 5m
-    max_concurrent: 2
-    saturation_multiplier: 4
+  local:
+    rate_limit:
+      max_failures: 5
+      window: 1m
+      lockout: 5m
+      max_concurrent: 2
+      saturation_multiplier: 4
 ```
 
 Adaptive CAPTCHA is deployment-owned, disabled by default, and supports exactly one provider at a
@@ -81,22 +87,23 @@ reCAPTCHA v2 Checkbox:
 server:
   public_url: https://broker.example.com
 authentication:
-  local_captcha:
-    enabled: false
-    provider: turnstile # or recaptcha
-    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
-    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
-    trigger_multiplier: 1.5
-    verification_timeout: 3s
+  local:
+    captcha:
+      enabled: false
+      provider: turnstile # or recaptcha
+      site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+      secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+      trigger_multiplier: 1.5
+      verification_timeout: 3s
 ```
 
 When enabled, `server.public_url`, `provider`, `site_key`, and `secret_key` are required. The
 provider is fixed to `turnstile` or `recaptcha`; Siteverify endpoints are not configurable. The
-trigger must be between `0` and `local_rate_limit.saturation_multiplier`, inclusive; the timeout
+trigger must be between `0` and `local.rate_limit.saturation_multiplier`, inclusive; the timeout
 must be between `500ms` and `10s`. The administration configuration response exposes the site key
 and operational settings but replaces the secret key with `[configured-secret]`.
 
-The threshold is `max(1, ceil(local_rate_limit.max_concurrent * trigger_multiplier))` per broker
+The threshold is `max(1, ceil(local.rate_limit.max_concurrent * trigger_multiplier))` per broker
 process. Omitting `trigger_multiplier` uses the default `1.5`; setting it explicitly to `0` requires
 CAPTCHA from the first attempt. Positive fractions allow the challenge to start before the Argon2id
 worker limit—for example, `max_concurrent: 4` with `trigger_multiplier: 0.5` starts on the second
@@ -123,10 +130,11 @@ Human local-user MFA is also deployment-owned and defaults to required:
 
 ```yaml
 authentication:
-  local_mfa:
-    required: true
-    issuer: Graphit Broker
-    challenge_ttl: 10m
+  local:
+    mfa:
+      required: true
+      issuer: Graphit Broker
+      challenge_ttl: 10m
 ```
 
 `issuer` is the label shown in TOTP applications. Challenges expire after `challenge_ttl`, which
@@ -146,16 +154,17 @@ Broker OpenID Connect and automation credentials use these defaults:
 
 ```yaml
 authentication:
-  local_tokens:
-    audience: graphit-broker
-    cli_client_id: graphit-cli
-    cli_redirect_path: /oauth/callback
-    access_ttl: 10m
-    refresh_ttl: 720h
-    authorization_code_ttl: 1m
-    device_code_ttl: 10m
-    device_poll_interval: 5s
-    service_credential_max_ttl: 8760h
+  local:
+    tokens:
+      audience: graphit-broker
+      cli_client_id: graphit-cli
+      cli_redirect_path: /oauth/callback
+      access_ttl: 10m
+      refresh_ttl: 720h
+      authorization_code_ttl: 1m
+      device_code_ttl: 10m
+      device_poll_interval: 5s
+      service_credential_max_ttl: 8760h
 ```
 
 Desktop authorization is a standard public/native OIDC client and accepts only a loopback redirect
@@ -166,10 +175,18 @@ absolute lifetime, and revoke their family when reuse is detected. Service crede
 is mandatory and may not exceed `service_credential_max_ttl`.
 
 `authentication.oidc` is the shared list of trusted issuers for consumer bearer validation and
-browser login. At most one entry may configure the browser-client fields:
+browser login. Each entry accepts `enabled` (default `true`). Setting it to `false` disables issuer
+discovery, bearer validation, browser login, and continued use of its sessions and Broker-issued
+grants. Its audiences are omitted from discovery. Inactive entries do not require valid integration
+settings, but unknown YAML fields and required environment references are still checked. At most
+one enabled entry may configure the browser-client fields. This switch controls an upstream issuer;
+the Broker can still serve its own OpenID endpoints through local login. Changes require a restart.
+
+The following requirements apply to enabled entries:
 
 | Field | Required | Meaning |
 |---|---|---|
+| `enabled` | no | Whether this upstream issuer is active; defaults to `true` |
 | `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
 | `audiences` | yes | At least one accepted broker audience |
 | `required_scopes` | no | Every listed scope must be present |
@@ -229,7 +246,8 @@ which can work only when an explicit `anonymous` resource grant matches.
 authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
   oidc:
-    - issuer: https://identity.example.com
+    - enabled: true
+      issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
       client_id: graphit-broker
@@ -266,7 +284,7 @@ There is no superadmin bypass.
 
 `administration.cli` supplies only the names used to render complete `graphit provider add --type
 broker` and `graphit login` snippets. The public client ID and callback path come from
-`authentication.local_tokens`; Graphit Code discovers both from the Broker and picks a free
+`authentication.local.tokens`; Graphit Code discovers both from the Broker and picks a free
 loopback port.
 
 Administration cookies are `HttpOnly` and `SameSite=Lax`. `administration.cookie_secure` defaults

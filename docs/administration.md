@@ -18,33 +18,35 @@ There is no `administration.oidc`. The `administration` section contains only co
 ```yaml
 authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
-  local_rate_limit:
-    max_failures: 5
-    window: 1m
-    lockout: 5m
-    max_concurrent: 2
-    saturation_multiplier: 4
-  local_captcha:
-    enabled: false
-    provider: turnstile # or recaptcha
-    site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
-    secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
-    trigger_multiplier: 1.5
-    verification_timeout: 3s
-  local_mfa:
-    required: true
-    issuer: Graphit Broker
-    challenge_ttl: 10m
-  local_login:
-    enabled: true
-  local_tokens:
-    audience: graphit-broker
-    cli_client_id: graphit-cli
-    cli_redirect_path: /oauth/callback
-    access_ttl: 10m
-    refresh_ttl: 720h
+  local:
+    rate_limit:
+      max_failures: 5
+      window: 1m
+      lockout: 5m
+      max_concurrent: 2
+      saturation_multiplier: 4
+    captcha:
+      enabled: false
+      provider: turnstile # or recaptcha
+      site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
+      secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
+      trigger_multiplier: 1.5
+      verification_timeout: 3s
+    mfa:
+      required: true
+      issuer: Graphit Broker
+      challenge_ttl: 10m
+    login:
+      enabled: true
+    tokens:
+      audience: graphit-broker
+      cli_client_id: graphit-cli
+      cli_redirect_path: /oauth/callback
+      access_ttl: 10m
+      refresh_ttl: 720h
   oidc:
-    - issuer: https://identity.example.com
+    - enabled: true
+      issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
       client_id: graphit-broker

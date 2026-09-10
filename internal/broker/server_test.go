@@ -428,3 +428,48 @@ func statusText(resp *http.Response) string {
 	}
 	return resp.Status
 }
+
+func TestDisabledOIDCIssuerIsExcludedFromDiscoverySessionsAndGrants(t *testing.T) {
+	disabled := false
+	cfg := Config{Authentication: AuthenticationConfig{OIDC: []OIDCIssuerConfig{
+		{Enabled: &disabled, Issuer: "https://disabled.example", Audiences: []string{"disabled-audience"}, ClientID: "disabled-browser"},
+		{Issuer: "https://active.example", Audiences: []string{"active-audience"}, ClientID: "active-browser"},
+	}}}
+	cfg.defaults()
+	server := newServer(cfg, nil, NewAIService(cfg.Services))
+	defer server.Close()
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/.well-known/graphit-broker", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("discovery status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Authentication struct {
+			Audiences []string `json:"audiences"`
+		} `json:"authentication"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if containsString(body.Authentication.Audiences, "disabled-audience") || !containsString(body.Authentication.Audiences, "active-audience") {
+		t.Fatalf("unexpected audiences=%v", body.Authentication.Audiences)
+	}
+	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	storage := &brokerOIDCStorage{control: store, cfg: cfg}
+	for _, issuer := range []string{"https://disabled.example", "https://active.example"} {
+		inactive := issuer == "https://disabled.example"
+		session := AdminSession{Issuer: issuer, Subject: "alice", Username: "alice"}
+		if server.sessionNeedsRoleRefresh(context.Background(), session) != inactive {
+			t.Fatalf("incorrect session validity for %s", issuer)
+		}
+		grant := LocalTokenGrant{Principal: Principal{Issuer: issuer, Subject: "alice", Username: "alice", AuthMethod: "oidc"}}
+		_, err := storage.validPrincipal(context.Background(), grant)
+		if (err != nil) != inactive {
+			t.Fatalf("incorrect grant validity for %s: %v", issuer, err)
+		}
+	}
+}
