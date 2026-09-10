@@ -14,7 +14,6 @@ authentication:
 services:
   embeddings:
     enabled: true
-    route: graphit-default
     revision: coderankembed
     dimensions: 768
     max_batch: 256
@@ -31,7 +30,6 @@ services:
 
   rerank:
     enabled: true
-    route: graphit-default
     revision: bge-reranker-base
     max_documents: 1000
     max_document_bytes: 1048576

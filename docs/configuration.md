@@ -339,11 +339,14 @@ identities are documented in the [local model catalog](models.md).
 
 ## Embeddings
 
+Each AI service has one configured upstream. `upstream.model` selects its model; there is no
+service-level `route` or client-side model selector. Discovery publishes the service path,
+protocol, revision, and limits. Embedding compatibility uses the revision and dimensions.
+
 ```yaml
 services:
   embeddings:
     enabled: true
-    route: graphit-default
     revision: embedding-space-2026-09-07.1
     dimensions: 1536
     max_batch: 256
@@ -392,7 +395,6 @@ asymmetric embedding mode; omission means `document`.
 services:
   rerank:
     enabled: true
-    route: graphit-default
     revision: rerank-route-2026-09-07.1
     max_documents: 1000
     max_document_bytes: 1048576

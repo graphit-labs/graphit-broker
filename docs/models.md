@@ -12,7 +12,6 @@ Each service selects its local model and execution settings in `upstream`:
 services:
   embeddings:
     enabled: true
-    route: graphit-default
     revision: local-embedding # optional readable prefix for a local model
     dimensions: 768           # optional assertion; omit or use 0 to infer from ONNX/manifest
     upstream:
@@ -23,7 +22,6 @@ services:
       device_id: 0
   rerank:
     enabled: true
-    route: graphit-default
     revision: local-rerank    # optional readable prefix
     upstream:
       protocol: onnx

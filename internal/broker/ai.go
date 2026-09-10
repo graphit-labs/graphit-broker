@@ -41,7 +41,6 @@ type EmbeddingMetadata struct {
 type EmbeddingResponse struct {
 	Object  string            `json:"object,omitempty"`
 	Data    []EmbeddingData   `json:"data"`
-	Model   string            `json:"model"`
 	Usage   json.RawMessage   `json:"usage,omitempty"`
 	Graphit EmbeddingMetadata `json:"graphit"`
 }
@@ -221,7 +220,7 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 		seen[item.Index] = true
 	}
 	sort.Slice(upstream.Data, func(i, j int) bool { return upstream.Data[i].Index < upstream.Data[j].Index })
-	response := EmbeddingResponse{Object: firstNonEmpty(upstream.Object, "list"), Data: upstream.Data, Model: cfg.Route, Usage: upstream.Usage,
+	response := EmbeddingResponse{Object: firstNonEmpty(upstream.Object, "list"), Data: upstream.Data, Usage: upstream.Usage,
 		Graphit: EmbeddingMetadata{Revision: cfg.Revision, Dimensions: cfg.Dimensions}}
 	if encoded, err := json.Marshal(response); err == nil {
 		s.embeddingCache.Put(key, encoded)
@@ -494,8 +493,11 @@ func (s *AIService) ensureLocalRerank(ctx context.Context) (localRerankBackend, 
 }
 
 func rerankUpstream(ctx context.Context, client *http.Client, cfg RerankServiceConfig, query string, documents []string, topN int) ([]RerankResult, error) {
-	request := map[string]any{"model": cfg.Upstream.Model, "query": query, "documents": documents}
+	request := map[string]any{"query": query, "documents": documents}
 	protocol := strings.ToLower(strings.TrimSpace(cfg.Upstream.Protocol))
+	if protocol != "graphit-rerank-v1" {
+		request["model"] = cfg.Upstream.Model
+	}
 	if protocol == "voyage" || protocol == "voyage-v1" {
 		request["top_k"] = topN
 	} else {

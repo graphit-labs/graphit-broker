@@ -41,7 +41,6 @@ Example discovery:
     "embeddings": {
       "protocol": "openai-embeddings-v1",
       "path": "/v1/embeddings",
-      "route": "graphit-default",
       "revision": "embedding-space-1",
       "dimensions": 1536,
       "max_batch": 256
@@ -49,7 +48,6 @@ Example discovery:
     "rerank": {
       "protocol": "graphit-rerank-v1",
       "path": "/v1/rerank",
-      "route": "graphit-default",
       "revision": "rerank-route-1",
       "max_documents": 1000
     }
@@ -89,9 +87,13 @@ a concurrent change fails the operation closed.
 {"input":["first text","second text"],"input_type":"document"}
 ```
 
-The broker ignores client model selection, invokes its configured model, validates dimensions and
+The request accepts `input` and optional `input_type`; `model` and `route` are rejected as unknown
+fields. The broker invokes its configured model, validates dimensions and
 indexes, and returns `X-Graphit-Embedding-Revision`,
 `X-Graphit-Embedding-Dimensions`, and `X-Graphit-Cache: HIT|MISS`.
+
+The response contains `object`, `data`, optional `usage`, and `graphit` metadata with `revision`
+and `dimensions`. It does not expose a `model` field or a service alias.
 
 `input_type` is an optional Graphit extension with values `query` and `document`; omitted means
 `document`. It lets the broker translate asymmetric retrieval semantics to Cohere, Voyage, Google,
@@ -104,6 +106,9 @@ or the local model while leaving the response contract stable.
 ```json
 {"query":"atomic authorization","documents":["doc a","doc b"],"top_n":2}
 ```
+
+The request accepts `query`, `documents`, and optional `top_n`; `model` and `route` are rejected
+as unknown fields. The broker selects the upstream model from its own configuration.
 
 The response contains indexed relevance scores under the versioned Graphit common contract.
 Native rerank providers supply those scores directly. Embedding-only providers are adapted by

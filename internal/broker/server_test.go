@@ -95,14 +95,21 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 	}
 	var discovery struct {
 		Services map[string]struct {
-			Protocol string `json:"protocol"`
-			Path     string `json:"path"`
+			Protocol string          `json:"protocol"`
+			Path     string          `json:"path"`
+			Route    json.RawMessage `json:"route"`
 		} `json:"services"`
 	}
 	if err := json.NewDecoder(discoveryResponse.Body).Decode(&discovery); err != nil {
 		t.Fatal(err)
 	}
 	_ = discoveryResponse.Body.Close()
+	for _, name := range []string{"embeddings", "rerank"} {
+		service, ok := discovery.Services[name]
+		if !ok || service.Path != "/v1/"+name || len(service.Route) != 0 {
+			t.Fatalf("%s discovery=%#v", name, service)
+		}
+	}
 	storage, ok := discovery.Services["s3_credentials"]
 	if !ok || storage.Protocol != "graphit-s3-credentials-v2" || storage.Path != "/v1/s3/credentials" {
 		t.Fatalf("storage discovery=%#v", discovery.Services)
@@ -115,12 +122,22 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("anonymous denied status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/embeddings", "valid", `{"model":"user-cannot-select-this","input":"hello"}`)
+	resp = post(t, server.URL+"/v1/embeddings", "valid", `{"input":"hello"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("embedding status=%d", resp.StatusCode)
 	}
 	if resp.Header.Get("X-Graphit-Embedding-Revision") != "embed-r1" {
 		t.Fatal("missing embedding revision")
+	}
+	var embeddingResponse map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&embeddingResponse); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := embeddingResponse["model"]; ok {
+		t.Fatalf("embedding response exposes model: %s", embeddingResponse["model"])
+	}
+	if len(embeddingResponse["data"]) == 0 || len(embeddingResponse["graphit"]) == 0 {
+		t.Fatalf("incomplete embedding response: %v", embeddingResponse)
 	}
 	_ = resp.Body.Close()
 	resp = post(t, server.URL+"/v1/rerank", "valid", `{"query":"q","documents":["a"],"top_n":1}`)
@@ -140,6 +157,42 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("credential response is incomplete: %s", body)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestServerRejectsAIModelAndRouteFields(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request with removed selector reached upstream")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	cfg := testServerConfig(upstream.URL, upstream.URL)
+	authenticator := authFunc(func(context.Context, string) (Principal, error) {
+		return Principal{Issuer: "https://id", Subject: "s", Organization: "acme"}, nil
+	})
+	server := httptest.NewServer(newServer(cfg, authenticator, NewAIService(cfg.Services)))
+	defer server.Close()
+	for _, service := range []string{"embeddings", "rerank"} {
+		for _, field := range []string{"model", "route"} {
+			t.Run(service+"/"+field, func(t *testing.T) {
+				body := map[string]any{field: "removed"}
+				if service == "embeddings" {
+					body["input"] = "hello"
+				} else {
+					body["query"] = "q"
+					body["documents"] = []string{"a"}
+				}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp := post(t, server.URL+"/v1/"+service, "valid", string(encoded))
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Fatalf("removed %s accepted: status=%d", field, resp.StatusCode)
+				}
+			})
+		}
+	}
 }
 
 func TestS3CredentialRenewalUsesFreshAuthorizationSnapshot(t *testing.T) {
@@ -399,8 +452,8 @@ func testServerConfig(embeddingURL, rerankURL string) Config {
 		Server:         ServerConfig{PublicURL: "https://broker.example.com", MaxRequestBytes: 1 << 20},
 		Authentication: AuthenticationConfig{TokenPepper: testTokenPepper},
 		Services: ServicesConfig{
-			Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "default", Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: UpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},
-			Rerank:     RerankServiceConfig{Enabled: true, Route: "default", Revision: "rerank-r1", MaxDocuments: 10, MaxDocumentBytes: 1000, Upstream: UpstreamConfig{URL: rerankURL, Protocol: "graphit-rerank-v1", Model: "internal-rerank", Timeout: time.Second}},
+			Embeddings: EmbeddingServiceConfig{Enabled: true, Revision: "embed-r1", Dimensions: 3, MaxBatch: 10, MaxInputBytes: 1000, Upstream: UpstreamConfig{URL: embeddingURL, Protocol: "openai-embeddings-v1", Model: "internal-embedding", Timeout: time.Second}},
+			Rerank:     RerankServiceConfig{Enabled: true, Revision: "rerank-r1", MaxDocuments: 10, MaxDocumentBytes: 1000, Upstream: UpstreamConfig{URL: rerankURL, Protocol: "graphit-rerank-v1", Model: "internal-rerank", Timeout: time.Second}},
 			S3: S3ServiceConfig{Enabled: true, DefaultRoute: "primary", Routes: map[string]S3RouteConfig{"primary": {
 				Bucket: "bucket", Region: "us-east-1", BasePrefix: "base", AccessKeyID: "TESTACCESS", SecretAccessKey: "TESTSECRET",
 				STSRoleARN: "arn:aws:iam::123456789012:role/graphit", STSSessionName: "graphit-broker", STSDuration: time.Hour,

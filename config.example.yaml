@@ -116,8 +116,9 @@ services:
     # For local execution replace upstream with protocol: onnx, model: coderankembed, device: auto.
     # Omit dimensions to infer the ONNX width, or set 768 for coderankembed.
     # See examples/local-models.yaml; ONNX upstreams do not accept HTTP options.
-    route: "graphit-default"
-    # For local models this is an optional readable prefix; the catalog identity is appended.
+    # Embedding compatibility revision published to Graphit.
+    # HTTP: change when the model or vector generation changes, then rebuild embeddings.
+    # ONNX: optional readable prefix; the resolved model identity is appended automatically.
     revision: "embedding-route-2026-09-07.1"
     dimensions: 1536
     max_batch: 256
@@ -140,7 +141,8 @@ services:
     # Native upstream rerank: Cohere, Voyage, Jina, or Graphit-compatible.
     # For local execution use protocol: onnx and model: bge-reranker-base in upstream.
     # Embedding-simulated rerank: OpenAI/OpenAI-compatible or Google Gemini.
-    route: "graphit-default"
+    # HTTP: change when the rerank model or scoring behavior changes.
+    # ONNX: optional readable prefix; the resolved model identity is appended automatically.
     revision: "rerank-route-2026-09-07.1"
     max_documents: 1000
     max_document_bytes: 1048576

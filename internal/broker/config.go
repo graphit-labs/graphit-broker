@@ -177,7 +177,6 @@ type CacheConfig struct {
 
 type EmbeddingServiceConfig struct {
 	Enabled       bool           `yaml:"enabled" json:"enabled"`
-	Route         string         `yaml:"route" json:"route"`
 	Revision      string         `yaml:"revision" json:"revision"`
 	Dimensions    int            `yaml:"dimensions" json:"dimensions"`
 	MaxBatch      int            `yaml:"max_batch" json:"max_batch"`
@@ -188,7 +187,6 @@ type EmbeddingServiceConfig struct {
 
 type RerankServiceConfig struct {
 	Enabled          bool           `yaml:"enabled" json:"enabled"`
-	Route            string         `yaml:"route" json:"route"`
 	Revision         string         `yaml:"revision" json:"revision"`
 	MaxDocuments     int            `yaml:"max_documents" json:"max_documents"`
 	MaxDocumentBytes int            `yaml:"max_document_bytes" json:"max_document_bytes"`
@@ -361,9 +359,6 @@ func (c *Config) defaults() {
 			issuer.Scopes = []string{"openid", "profile", "email"}
 		}
 	}
-	if c.Services.Embeddings.Route == "" {
-		c.Services.Embeddings.Route = "graphit-default"
-	}
 	c.Services.Embeddings.setDefaults()
 	if c.Services.Embeddings.MaxBatch == 0 {
 		c.Services.Embeddings.MaxBatch = 256
@@ -373,9 +368,6 @@ func (c *Config) defaults() {
 	}
 	if !c.Services.Embeddings.Upstream.isONNX() && c.Services.Embeddings.Upstream.Timeout == 0 {
 		c.Services.Embeddings.Upstream.Timeout = 45 * time.Second
-	}
-	if c.Services.Rerank.Route == "" {
-		c.Services.Rerank.Route = "graphit-default"
 	}
 	c.Services.Rerank.setDefaults()
 	if c.Services.Rerank.MaxDocuments == 0 {

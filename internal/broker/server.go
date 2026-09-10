@@ -253,11 +253,11 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 	services["hub_access"] = map[string]any{"protocol": "graphit-hub-access-v1", "path": "/v1/hub/access/resolve",
 		"authorization_revision": authorizationRevision}
 	if cfg := state.config.Services.Embeddings; cfg.Enabled {
-		services["embeddings"] = map[string]any{"protocol": "openai-embeddings-v1", "path": "/v1/embeddings", "route": cfg.Route,
+		services["embeddings"] = map[string]any{"protocol": "openai-embeddings-v1", "path": "/v1/embeddings",
 			"revision": cfg.Revision, "dimensions": cfg.Dimensions, "max_batch": cfg.MaxBatch}
 	}
 	if cfg := state.config.Services.Rerank; cfg.Enabled {
-		services["rerank"] = map[string]any{"protocol": "graphit-rerank-v1", "path": "/v1/rerank", "route": cfg.Route,
+		services["rerank"] = map[string]any{"protocol": "graphit-rerank-v1", "path": "/v1/rerank",
 			"revision": cfg.Revision, "max_documents": cfg.MaxDocuments}
 	}
 	if cfg := state.config.Services.S3; cfg.Enabled {
@@ -340,7 +340,6 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Model     string          `json:"model,omitempty"`
 		Input     json.RawMessage `json:"input"`
 		InputType string          `json:"input_type,omitempty"`
 	}
@@ -404,7 +403,6 @@ func (s *Server) rerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Model     string   `json:"model,omitempty"`
 		Query     string   `json:"query"`
 		Documents []string `json:"documents"`
 		TopN      int      `json:"top_n,omitempty"`

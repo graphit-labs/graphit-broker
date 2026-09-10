@@ -374,6 +374,18 @@ func TestConfigRejectsLegacyAuthenticationFields(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsAIRouteFields(t *testing.T) {
+	for _, service := range []string{"embeddings", "rerank"} {
+		t.Run(service, func(t *testing.T) {
+			input := "services:\n  " + service + ":\n    route: removed\n"
+			_, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+			if err == nil || !strings.Contains(err.Error(), "field route not found") {
+				t.Fatalf("expected unknown route field, got %v", err)
+			}
+		})
+	}
+}
+
 func TestRepositoryConfigurationExamplesDecodeWithInjectedSecrets(t *testing.T) {
 	secrets := map[string]string{
 		"BROKER_AUTH_TOKEN_PEPPER":  testPasswordPepper,

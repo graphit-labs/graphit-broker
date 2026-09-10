@@ -65,7 +65,7 @@ func TestAIServiceEmbeddingsUsesBrokerModelValidatesDimensionsAndCachesPerPrinci
 		}, "usage": map[string]any{"total_tokens": 2}})
 	}))
 	defer upstream.Close()
-	cfg := ServicesConfig{Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "graphit-default", Revision: "rev-1", Dimensions: 3,
+	cfg := ServicesConfig{Embeddings: EmbeddingServiceConfig{Enabled: true, Revision: "rev-1", Dimensions: 3,
 		Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "openai-embeddings-v1", Model: "internal-model", APIKey: "upstream-secret", Timeout: time.Second},
 		Cache:    CacheConfig{TTL: time.Minute, MaxEntries: 10}}}
 	service := NewAIService(cfg)
@@ -74,7 +74,7 @@ func TestAIServiceEmbeddingsUsesBrokerModelValidatesDimensionsAndCachesPerPrinci
 	if err != nil || cached {
 		t.Fatalf("first Embed cached=%v err=%v", cached, err)
 	}
-	if response.Model != "graphit-default" || response.Graphit.Revision != "rev-1" {
+	if response.Graphit.Revision != "rev-1" {
 		t.Fatalf("response = %#v", response)
 	}
 	_, cached, err = service.Embed(context.Background(), principal, []string{"a", "b"})
@@ -109,10 +109,17 @@ func TestAIServiceNormalizesRerankProtocols(t *testing.T) {
 				if _, ok := body[tc.topField]; !ok {
 					t.Errorf("missing %s", tc.topField)
 				}
+				if tc.protocol == "graphit-rerank-v1" {
+					if _, ok := body["model"]; ok {
+						t.Error("Graphit rerank request includes model")
+					}
+				} else if body["model"] != "internal" {
+					t.Errorf("upstream model=%v", body["model"])
+				}
 				_ = json.NewEncoder(w).Encode(map[string]any{tc.responseField: []any{map[string]any{"index": 1, "relevance_score": 0.9}}})
 			}))
 			defer upstream.Close()
-			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{Enabled: true, Route: "default", Revision: "r1", Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "internal", Timeout: time.Second}}})
+			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{Enabled: true, Revision: "r1", Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "internal", Timeout: time.Second}}})
 			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "q", []string{"a", "b"}, 1)
 			if err != nil || len(response.Results) != 1 || response.Results[0].Index != 1 {
 				t.Fatalf("response=%#v err=%v", response, err)
@@ -208,7 +215,7 @@ func TestAIServiceSimulatesRerankWithEmbeddingProviders(t *testing.T) {
 			defer upstream.Close()
 
 			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
-				Enabled: true, Route: "default", Revision: "r1",
+				Enabled: true, Revision: "r1",
 				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: tc.model, APIKey: "secret", Timeout: time.Second},
 			}})
 			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", []string{"orthogonal", "same", "related"}, 2)
@@ -357,7 +364,7 @@ func TestAIServiceTranslatesEmbeddingProvidersAndInputType(t *testing.T) {
 			}))
 			defer upstream.Close()
 			service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{
-				Enabled: true, Route: "default", Revision: "r", Dimensions: 3,
+				Enabled: true, Revision: "r", Dimensions: 3,
 				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", APIKey: "secret", Timeout: time.Second},
 			}})
 			response, _, err := service.Embed(context.Background(), Principal{Issuer: "i", Subject: "s"}, []string{"a", "b"}, "query")
@@ -433,7 +440,7 @@ func TestAIServiceChunksProviderEmbeddingRequestsAndRestoresGlobalIndexes(t *tes
 				input[i] = "text"
 			}
 			service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{
-				Enabled: true, Route: "default", Revision: "r", Dimensions: 3,
+				Enabled: true, Revision: "r", Dimensions: 3,
 				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", Timeout: time.Second},
 			}})
 			response, _, err := service.Embed(context.Background(), Principal{Issuer: "i", Subject: "s"}, input, "document")
@@ -481,7 +488,7 @@ func TestAIServiceChunksCohereRerankAndSelectsGlobalTopN(t *testing.T) {
 
 	documents := make([]string, cohereRerankBatchLimit+5)
 	service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
-		Enabled: true, Route: "default", Revision: "r",
+		Enabled: true, Revision: "r",
 		Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "cohere-v2", Model: "model", Timeout: time.Second},
 	}})
 	response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", documents, 1)
