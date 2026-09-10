@@ -34,7 +34,7 @@ func TestMinIOSTSIntegration(t *testing.T) {
 		t.Fatal("MinIO bucket, access key, and secret key are required")
 	}
 	ctx := context.Background()
-	grant := S3SessionGrant{Revision: "1", Route: "primary", Access: map[string][]string{"publish": {"v2/projects/project-a"}}}
+	grant := S3SessionGrant{Revision: "1", Route: "primary", Access: map[string][]string{"publish": {"v2/projects/project-a"}}, Scope: S3SessionScope{Kind: "project", ProjectID: "project-a"}}
 	temporary, err := NewAWSSTSCredentialService().Issue(ctx, route, grant, Principal{Issuer: "test", Subject: "alice"})
 	if err != nil {
 		t.Fatal(err)

@@ -39,12 +39,12 @@ func TestAWSSTSCredentialServiceIssuesCompleteTemporaryTopology(t *testing.T) {
 		},
 	}
 	route := S3RouteConfig{Bucket: "artifacts", Region: "us-east-1", Endpoint: "https://s3.example", BasePrefix: "tenant/root", AccessKeyID: "broker-access", SecretAccessKey: "broker-secret", STSRoleARN: "arn:aws:iam::123456789012:role/graphit", STSSessionName: "graphit", STSDuration: time.Hour}
-	grant := S3SessionGrant{Revision: "42", Route: "primary", Access: map[string][]string{"read": {"v2/projects/a"}, "publish": {"v2/projects/b"}}}
+	grant := S3SessionGrant{Revision: "42", Route: "primary", Access: map[string][]string{"read": {"v2/projects/a"}, "publish": {"v2/projects/b"}}, Scope: S3SessionScope{Kind: "project", ProjectID: "a"}}
 	response, err := service.Issue(context.Background(), route, grant, Principal{Issuer: "issuer", Subject: "alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.AccessKeyID != "temporary-access" || response.SecretAccessKey != "temporary-secret" || response.SessionToken != "temporary-token" || response.AuthorizationRevision != "42" || response.Bucket != "artifacts" || response.Region != "us-east-1" || len(response.Prefixes) != 1 || response.Prefixes[0] != "tenant/root" || !response.ExpiresAt.Equal(now.Add(time.Hour)) {
+	if response.AccessKeyID != "temporary-access" || response.SecretAccessKey != "temporary-secret" || response.SessionToken != "temporary-token" || response.AuthorizationRevision != "42" || response.Scope != "project" || response.ProjectID != "a" || response.Bucket != "artifacts" || response.Region != "us-east-1" || len(response.Prefixes) != 1 || response.Prefixes[0] != "tenant/root" || !response.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("response=%#v", response)
 	}
 	if captured == nil || aws.ToString(captured.RoleArn) != route.STSRoleARN || aws.ToInt32(captured.DurationSeconds) != 3600 || !strings.HasPrefix(aws.ToString(captured.RoleSessionName), "graphit-") {

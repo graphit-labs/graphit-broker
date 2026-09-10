@@ -6,7 +6,7 @@ credentials,
 evaluates deny-by-default resource grants from SQL, and exposes:
 
 - `POST /v1/hub/access/resolve` — the authoritative Hub project grants for the verified caller;
-- `POST /v1/s3/credentials` — renewable temporary S3 credentials restricted by the caller's current grants;
+- `POST /v1/s3/credentials` — renewable temporary S3 credentials restricted to one authorized project, user-memory, or Hub-metadata scope;
 - `POST /v1/embeddings` — an OpenAI-shaped contract backed by local inference or a broker-owned
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
@@ -15,7 +15,7 @@ evaluates deny-by-default resource grants from SQL, and exposes:
   role assignments, local-identity lifecycle, and service credentials.
 
 Only the broker knows AI API keys, upstream models, and the permanent S3 credentials used to call
-STS. After authenticating Graphit, it selects the route from current grants and returns that route's
+STS. After authenticating Graphit, it selects the route from current grants for the requested scope and returns that route's
 bucket, region, endpoint, root prefix, and short-lived STS credentials. Graphit renews them before
 expiry and accesses S3 directly; anonymous callers never receive storage credentials.
 

@@ -53,12 +53,13 @@ explicit recreate/restore for the matching build.
 Create a least-privilege assumable role and broker signing identity per private route. The role
 needs permission only for its `bucket/base_prefix` and operations that grants can authorize. The
 signing identity needs `sts:AssumeRole` for that role. Multiple routes may target different AWS
-accounts, regions, buckets, or S3-compatible services, but one principal's matching grants must
-select exactly one route.
+accounts, regions, buckets, or S3-compatible services, but the matching grants for each requested
+storage scope must select exactly one route.
 
 The broker signs `AssumeRole`, intersects the role/user permissions with its generated session
-policy, and returns temporary credentials plus the selected topology. Graphit cannot override the
-route or policy. Its S3, LanceDB, and Ladybug traffic then goes directly to object storage. For
+policy, and returns temporary credentials plus the selected topology. Graphit identifies the
+project, user-memory, or Hub-metadata scope but cannot override the route, roots, or policy. Its S3,
+LanceDB, and Ladybug traffic then goes directly to object storage. For
 write/delete grants, use object versioning, retention, and audit controls appropriate to the data.
 
 Named routes can provide logical staging/production separation inside one broker when exact

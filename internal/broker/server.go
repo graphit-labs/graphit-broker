@@ -261,7 +261,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 			"revision": cfg.Revision, "max_documents": cfg.MaxDocuments}
 	}
 	if cfg := state.config.Services.S3; cfg.Enabled {
-		services["s3_credentials"] = map[string]any{"protocol": "graphit-s3-credentials-v1", "path": "/v1/s3/credentials",
+		services["s3_credentials"] = map[string]any{"protocol": "graphit-s3-credentials-v2", "path": "/v1/s3/credentials",
 			"authorization_revision": authorizationRevision}
 	}
 	audiences := []string{state.config.Authentication.Local.Tokens.Audience}
@@ -460,11 +460,19 @@ func (s *Server) s3CredentialGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "valid bearer credentials are required", requestID(r.Context()))
 		return
 	}
-	var request struct{}
+	var request struct {
+		Scope     string `json:"scope"`
+		ProjectID string `json:"project_id,omitempty"`
+	}
 	if err := s.decodeRequest(w, r, &request); err != nil {
 		return
 	}
-	grant, err := state.acl.ResolveS3Session(r.Context(), principal, state.config.Services.S3.DefaultRoute)
+	scope := S3SessionScope{Kind: strings.TrimSpace(request.Scope), ProjectID: strings.TrimSpace(request.ProjectID)}
+	if err := validateS3SessionScope(scope); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error(), requestID(r.Context()))
+		return
+	}
+	grant, err := state.acl.ResolveS3Session(r.Context(), principal, scope, state.config.Services.S3.DefaultRoute)
 	if err != nil {
 		s.authorizationFailure(w, r, err)
 		return

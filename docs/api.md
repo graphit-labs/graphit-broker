@@ -34,7 +34,7 @@ Example discovery:
       "authorization_revision": "7"
     },
     "s3_credentials": {
-      "protocol": "graphit-s3-credentials-v1",
+      "protocol": "graphit-s3-credentials-v2",
       "path": "/v1/s3/credentials",
       "authorization_revision": "7"
     },
@@ -112,15 +112,22 @@ original-index tie breaking. Headers include `X-Graphit-Rerank-Revision` and `X-
 
 ## Temporary S3 credentials
 
-`POST /v1/s3/credentials` requires an authenticated bearer and accepts only an empty object:
+`POST /v1/s3/credentials` requires an authenticated bearer and one framework-selected storage
+scope. Project data uses an immutable project ULID; user memory and shared Hub metadata have
+separate scopes:
 
 ```json
-{}
+{"scope":"project","project_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}
 ```
 
-The broker evaluates the caller's complete current S3 grant set, selects its single route, builds
-an inline session policy, and calls STS. The request cannot choose a route, project, operation,
-policy, role, bucket, endpoint, or duration.
+The other valid bodies are `{"scope":"user"}` and `{"scope":"hub"}`. Unknown fields,
+missing project IDs, project IDs on non-project scopes, and unsafe project IDs are rejected.
+
+The broker evaluates the current grants that apply to the verified caller and requested scope,
+selects one route for that scope, intersects any configured prefix templates with the fixed scope
+roots, builds an inline session policy, and calls STS. The request cannot choose a route, operation,
+prefix, policy, role, bucket, endpoint, or duration. A project ID identifies the resource being
+authorized; it never supplies authorization or an object prefix.
 
 ```json
 {
@@ -132,13 +139,16 @@ policy, role, bucket, endpoint, or duration.
   "region": "us-east-1",
   "endpoint": "https://s3.example.com",
   "prefixes": ["graphit"],
-  "authorization_revision": "7"
+  "authorization_revision": "7",
+  "scope": "project",
+  "project_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 }
 ```
 
 Every successful call mints a new session. The response is marked `Cache-Control: no-store`.
 The access key, secret, and session token are temporary and must be treated as secrets. Permanent
-route credentials and the generated policy are never returned.
+route credentials and the generated policy are never returned. `scope` and `project_id` let the
+client reject a response that does not match its request.
 
 ## Administration API
 

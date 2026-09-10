@@ -23,7 +23,7 @@ credentials, bodies, or upstream secrets.
 | grant write gets 409 | another admin changed the ACL revision | reload and reapply |
 | Hub outage does not use projects.json | expected secure behavior | selected broker is sole authority |
 | S3 credentials gets 401/403 | missing authenticated identity or matching S3 grant | bearer, grant and route |
-| S3 credentials gets 400 | request tried to select scope | send exactly `{}` |
+| S3 credentials gets 400 | missing/invalid scope, unsafe project ID, or unknown request field | send exactly `project` + project ULID, `user`, or `hub` |
 | S3 credentials gets 502 | STS trust, role, signing key, endpoint, duration, or 2048-byte policy limit | route and STS logs |
 | token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
 | embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |

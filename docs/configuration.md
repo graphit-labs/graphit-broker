@@ -492,9 +492,11 @@ names referenced by the example route; both values remain private to the broker.
 access must use an independently public bucket/CDN policy; the STS endpoint requires authentication.
 The route can be removed when the deployment needs only one storage destination.
 
-Clients never submit an S3 route or requested scope. Matching resource grants select `s3_route`;
-an omitted value uses `default_route`. All matching S3 grants for one identity must select the same
-route. The broker renders their prefixes and operations into the STS session policy. See [resource
+Clients submit only a `project`, `user`, or `hub` storage scope, plus the project ULID for project
+scope. Matching resource grants select `s3_route`; an omitted value uses `default_route`. All
+matching S3 grants for one requested scope must select the same route. Different projects may use
+different routes and topologies. The broker intersects rendered prefixes with the scope's fixed
+roots and maps operations into the STS session policy. See [resource
 authorization](authorization.md#how-s3-grants-become-an-sts-policy) for the exact mapping.
 
 Grant route names are validated when a grant is created or updated. Removing a route that an

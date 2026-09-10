@@ -22,12 +22,18 @@ type ResourceGrantReader interface {
 type ACL struct{ grants ResourceGrantReader }
 
 // S3SessionGrant is the complete, current S3 authorization snapshot for one
-// principal. A single credential response has one storage topology, so all
-// matching rules must resolve to the same route.
+// principal and requested storage scope. A single credential response has one
+// storage topology, so all contributing rules must resolve to the same route.
 type S3SessionGrant struct {
 	Revision string
 	Route    string
 	Access   map[string][]string
+	Scope    S3SessionScope
+}
+
+type S3SessionScope struct {
+	Kind      string
+	ProjectID string
 }
 
 func NewACL(grants ResourceGrantReader) *ACL { return &ACL{grants: grants} }
@@ -76,9 +82,13 @@ func (a *ACL) ResolveHubAccess(ctx context.Context, principal Principal) (Policy
 	return document, nil
 }
 
-func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, defaultRoute string) (S3SessionGrant, error) {
+func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, scope S3SessionScope, defaultRoute string) (S3SessionGrant, error) {
 	if principal.IsAnonymous() {
 		return S3SessionGrant{}, ErrForbidden
+	}
+	roots, err := s3SessionScopeRoots(principal, scope)
+	if err != nil {
+		return S3SessionGrant{}, err
 	}
 	document, err := a.grants.ResourceGrants(ctx)
 	if err != nil {
@@ -88,13 +98,32 @@ func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, default
 	for _, operation := range []string{"read", "write", "publish", "delete"} {
 		sets[operation] = map[string]struct{}{}
 	}
+	if scope.Kind == "hub" {
+		hubAllowed := false
+		for _, rule := range document.Rules {
+			if matchesPrincipal(rule, principal) && matchesS3Scope(rule, scope) && matchesValue(rule.Capabilities, "hub") {
+				hubAllowed = true
+				break
+			}
+		}
+		if !hubAllowed {
+			return S3SessionGrant{}, ErrForbidden
+		}
+	}
 	route := ""
 	for _, rule := range document.Rules {
-		if !matchesPrincipal(rule, principal) {
+		if !matchesPrincipal(rule, principal) || !matchesS3Scope(rule, scope) {
 			continue
 		}
 		operations := matchingS3Operations(rule)
 		if len(operations) == 0 {
+			continue
+		}
+		prefixes, renderErr := renderSessionPrefixesForScope(rule, principal, scope, roots)
+		if renderErr != nil {
+			return S3SessionGrant{}, fmt.Errorf("ACL rule %q: %w", rule.Name, renderErr)
+		}
+		if len(prefixes) == 0 {
 			continue
 		}
 		candidateRoute := strings.TrimSpace(rule.S3Route)
@@ -105,10 +134,6 @@ func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, default
 			return S3SessionGrant{}, errors.New("matching S3 ACL rules select multiple storage routes")
 		}
 		route = candidateRoute
-		prefixes, renderErr := renderSessionPrefixes(rule, principal)
-		if renderErr != nil {
-			return S3SessionGrant{}, fmt.Errorf("ACL rule %q: %w", rule.Name, renderErr)
-		}
 		for _, operation := range operations {
 			for _, prefix := range prefixes {
 				sets[operation][prefix] = struct{}{}
@@ -125,7 +150,93 @@ func (a *ACL) ResolveS3Session(ctx context.Context, principal Principal, default
 	if route == "" {
 		return S3SessionGrant{}, ErrForbidden
 	}
-	return S3SessionGrant{Revision: strconv.FormatUint(document.Revision, 10), Route: route, Access: access}, nil
+	return S3SessionGrant{Revision: strconv.FormatUint(document.Revision, 10), Route: route, Access: access, Scope: scope}, nil
+}
+
+func s3SessionScopeRoots(principal Principal, scope S3SessionScope) ([]string, error) {
+	if err := validateS3SessionScope(scope); err != nil {
+		return nil, err
+	}
+	switch scope.Kind {
+	case "project":
+		return []string{"v2/projects/" + scope.ProjectID}, nil
+	case "user":
+		if !safeSegment(principal.Username) {
+			return nil, errors.New("invalid user storage scope")
+		}
+		return []string{"v2/users/" + principal.Username + "/memory"}, nil
+	case "hub":
+		return []string{"v2/registry", "v2/global/rules"}, nil
+	}
+	panic("validated S3 scope has no roots")
+}
+
+func validateS3SessionScope(scope S3SessionScope) error {
+	switch scope.Kind {
+	case "project":
+		if !safeSegment(scope.ProjectID) {
+			return errors.New("invalid project storage scope")
+		}
+	case "user", "hub":
+		if scope.ProjectID != "" {
+			return fmt.Errorf("%s storage scope cannot select a project", scope.Kind)
+		}
+	default:
+		return errors.New("invalid S3 storage scope")
+	}
+	return nil
+}
+
+func matchesS3Scope(rule ACLRuleConfig, scope S3SessionScope) bool {
+	projects := rule.Projects
+	if len(projects) == 0 {
+		projects = []string{"*"}
+	}
+	if scope.Kind == "project" {
+		return matchesValue(projects, scope.ProjectID) || matchesValue(projects, "global")
+	}
+	return matchesValue(projects, "*") || matchesValue(projects, "global")
+}
+
+func renderSessionPrefixesForScope(rule ACLRuleConfig, principal Principal, scope S3SessionScope, roots []string) ([]string, error) {
+	if len(rule.S3Prefixes) == 0 {
+		return append([]string(nil), roots...), nil
+	}
+	project := scope.ProjectID
+	if project == "" {
+		project = "global"
+	}
+	set := map[string]struct{}{}
+	for _, template := range rule.S3Prefixes {
+		rendered, err := renderPrefix(template, principal, project)
+		if err != nil {
+			return nil, err
+		}
+		for _, root := range roots {
+			if narrowed := intersectS3Prefix(rendered, root); narrowed != "" {
+				set[narrowed] = struct{}{}
+			}
+		}
+	}
+	result := make([]string, 0, len(set))
+	for prefix := range set {
+		result = append(result, prefix)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func intersectS3Prefix(candidate, root string) string {
+	candidate = strings.Trim(candidate, "/")
+	root = strings.Trim(root, "/")
+	switch {
+	case candidate == root, strings.HasPrefix(candidate, root+"/"):
+		return candidate
+	case strings.HasPrefix(root, candidate+"/"):
+		return root
+	default:
+		return ""
+	}
 }
 
 func matchingS3Operations(rule ACLRuleConfig) []string {

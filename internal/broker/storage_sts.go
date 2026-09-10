@@ -26,6 +26,8 @@ type S3CredentialsResponse struct {
 	Endpoint              string    `json:"endpoint,omitempty"`
 	Prefixes              []string  `json:"prefixes"`
 	AuthorizationRevision string    `json:"authorization_revision"`
+	Scope                 string    `json:"scope"`
+	ProjectID             string    `json:"project_id,omitempty"`
 }
 
 type S3CredentialService interface {
@@ -93,6 +95,8 @@ func (s *AWSSTSCredentialService) Issue(ctx context.Context, route S3RouteConfig
 		Endpoint:              route.Endpoint,
 		Prefixes:              []string{strings.Trim(route.BasePrefix, "/")},
 		AuthorizationRevision: grant.Revision,
+		Scope:                 grant.Scope.Kind,
+		ProjectID:             grant.Scope.ProjectID,
 	}
 	if result.AccessKeyID == "" || result.SecretAccessKey == "" || result.SessionToken == "" || !result.ExpiresAt.After(s.now()) {
 		return S3CredentialsResponse{}, errors.New("STS returned incomplete or expired credentials")

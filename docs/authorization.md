@@ -60,21 +60,26 @@ request is rejected instead of guessing.
 
 ## How S3 grants become an STS policy
 
-`POST /v1/s3/credentials` accepts only `{}` and requires an authenticated bearer. Identity and all
-scope come from the verified principal and the current SQL grant snapshot. A client cannot submit a
-project, operation, prefix, route, role, bucket, endpoint, duration, or policy.
+`POST /v1/s3/credentials` requires an authenticated bearer and accepts exactly one framework-selected
+scope: `project` with an immutable project ULID, `user`, or `hub`. Identity comes only from the
+verified principal and authorization comes only from the current SQL grant snapshot. A client
+cannot submit an operation, prefix, route, role, bucket, endpoint, duration, or policy; the project
+ID only selects the resource whose grants must be evaluated.
 
 For each matching rule, the broker includes an authorization operation when `capabilities` contains
 `s3` or `s3:<operation>` and `s3_operations` is empty, contains `*`, or contains that operation.
-Projects and prefix templates are then rendered into logical object prefixes. An omitted project
-list means every project. With no explicit `s3_prefixes`, an exact project becomes
-`v2/projects/<project>`; `global`, `*`, or an omitted project list becomes `v2` because it can cover
-the global namespace too.
+Projects select whether a rule contributes to the requested scope. An omitted project list means
+every project. The broker fixes the maximum logical roots to `v2/projects/<project>` for project
+scope, `v2/users/<verified-username>/memory` for user scope, and `v2/registry` plus
+`v2/global/rules` for Hub scope. Explicit prefix templates are rendered and intersected with those
+roots, so even a template such as `v2` cannot enlarge the credential. User and Hub scopes require
+an omitted, `*`, or `global` project selector; Hub scope additionally requires an effective `hub`
+capability, which may come from a separate matching rule.
 
-All matching S3 rules are additive and must select one route. An explicit `s3_route` selects it;
+All matching S3 rules for the requested scope are additive and must select one route. An explicit `s3_route` selects it;
 an empty value uses `default_route`. If the same principal matches rules for different routes, the
 request fails closed because one credential response contains one bucket, region, and endpoint.
-Use distinct principals when separate storage topologies are required.
+Different project scopes may select different routes and therefore different storage topologies.
 
 The broker joins every logical prefix to the route's physical `base_prefix` and maps permissions to
 AWS/MinIO actions:
@@ -154,7 +159,8 @@ public bucket or CDN policy instead of the broker credential endpoint.
 ## Authorization revisions
 
 Every successful create, update, or delete increments one database revision in the same
-transaction as the grant rows. Discovery and Hub/S3 responses expose this revision. Graphit records the revision with each credential session and requests a new session before expiry.
+transaction as the grant rows. Discovery and Hub/S3 responses expose this revision. Graphit keeps
+the revision with each in-memory credential session and requests a new session before expiry.
 A subsequent issuance always uses the latest committed grants; an already issued STS session remains
 bounded by its original policy until expiry or storage-side revocation.
 

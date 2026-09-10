@@ -51,7 +51,7 @@ func newServer(cfg Config, authenticator Authenticator, ai *AIService) *Server {
 	var credentials S3CredentialService
 	if cfg.Services.S3.Enabled {
 		credentials = credentialFunc(func(_ context.Context, route S3RouteConfig, grant S3SessionGrant, _ Principal) (S3CredentialsResponse, error) {
-			return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Endpoint: route.Endpoint, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
+			return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Endpoint: route.Endpoint, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision, Scope: grant.Scope.Kind, ProjectID: grant.Scope.ProjectID}, nil
 		})
 	}
 	return newServerWithDependencies(cfg, authenticator, ai, credentials, &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 1, Rules: defaultTestRules()}}, nil, nil)
@@ -104,7 +104,7 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 	}
 	_ = discoveryResponse.Body.Close()
 	storage, ok := discovery.Services["s3_credentials"]
-	if !ok || storage.Protocol != "graphit-s3-credentials-v1" || storage.Path != "/v1/s3/credentials" {
+	if !ok || storage.Protocol != "graphit-s3-credentials-v2" || storage.Path != "/v1/s3/credentials" {
 		t.Fatalf("storage discovery=%#v", discovery.Services)
 	}
 	if _, legacy := discovery.Services["s3_presign"]; legacy {
@@ -128,7 +128,7 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("rerank status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("s3 status=%d", resp.StatusCode)
 	}
@@ -150,7 +150,7 @@ func TestS3CredentialRenewalUsesFreshAuthorizationSnapshot(t *testing.T) {
 	var issued []S3SessionGrant
 	credentials := credentialFunc(func(_ context.Context, route S3RouteConfig, grant S3SessionGrant, _ Principal) (S3CredentialsResponse, error) {
 		issued = append(issued, grant)
-		return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
+		return S3CredentialsResponse{AccessKeyID: "temporary-access", SecretAccessKey: "temporary-secret", SessionToken: "temporary-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision, Scope: grant.Scope.Kind, ProjectID: grant.Scope.ProjectID}, nil
 	})
 	authenticator := authFunc(func(context.Context, string) (Principal, error) {
 		return Principal{Issuer: "issuer", Subject: "subject", Username: "alice"}, nil
@@ -159,9 +159,9 @@ func TestS3CredentialRenewalUsesFreshAuthorizationSnapshot(t *testing.T) {
 	defer server.Close()
 	for _, revision := range []uint64{3, 4} {
 		reader.document.Revision = revision
-		response := post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
+		response := post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a"}`)
 		var body S3CredentialsResponse
-		if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&body) != nil || body.AuthorizationRevision != strconv.FormatUint(revision, 10) {
+		if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&body) != nil || body.AuthorizationRevision != strconv.FormatUint(revision, 10) || body.Scope != "project" || body.ProjectID != "project-a" {
 			t.Fatalf("revision=%d status=%d body=%#v", revision, response.StatusCode, body)
 		}
 		_ = response.Body.Close()
@@ -236,7 +236,7 @@ func TestServerRequiresAuthenticationAndDerivesCredentialScopeFromACL(t *testing
 		if principal.Username != "alice" || grant.Route != "primary" || len(grant.Access["read"]) != 1 || grant.Access["read"][0] != "v2/projects/project-a" {
 			t.Fatalf("principal=%#v grant=%#v", principal, grant)
 		}
-		return S3CredentialsResponse{AccessKeyID: "temp-access", SecretAccessKey: "temp-secret", SessionToken: "temp-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision}, nil
+		return S3CredentialsResponse{AccessKeyID: "temp-access", SecretAccessKey: "temp-secret", SessionToken: "temp-token", ExpiresAt: time.Now().Add(time.Hour), Bucket: route.Bucket, Region: route.Region, Prefixes: []string{route.BasePrefix}, AuthorizationRevision: grant.Revision, Scope: grant.Scope.Kind, ProjectID: grant.Scope.ProjectID}, nil
 	})
 	server := httptest.NewServer(newServerWithDependencies(cfg, authFunc(func(_ context.Context, token string) (Principal, error) {
 		if token == "valid" {
@@ -250,14 +250,24 @@ func TestServerRequiresAuthenticationAndDerivesCredentialScopeFromACL(t *testing
 		t.Fatalf("anonymous status=%d called=%v", resp.StatusCode, called)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a"}`)
 	if resp.StatusCode != http.StatusOK || !called {
 		t.Fatalf("credential status=%d called=%v", resp.StatusCode, called)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"project":"project-a"}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a","prefix":"v2"}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("client-selected scope status=%d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing scope status=%d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-b"}`)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unauthorized project status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
 }
