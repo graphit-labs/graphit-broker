@@ -66,7 +66,7 @@ func TestAIServiceEmbeddingsUsesBrokerModelValidatesDimensionsAndCachesPerPrinci
 	}))
 	defer upstream.Close()
 	cfg := ServicesConfig{Embeddings: EmbeddingServiceConfig{Enabled: true, Route: "graphit-default", Revision: "rev-1", Dimensions: 3,
-		Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: "openai-embeddings-v1", Model: "internal-model", APIKey: "upstream-secret", Timeout: time.Second},
+		Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "openai-embeddings-v1", Model: "internal-model", APIKey: "upstream-secret", Timeout: time.Second},
 		Cache:    CacheConfig{TTL: time.Minute, MaxEntries: 10}}}
 	service := NewAIService(cfg)
 	principal := Principal{Issuer: "i", Subject: "s", Organization: "acme"}
@@ -92,7 +92,7 @@ func TestAIServiceRejectsWrongEmbeddingWidth(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"index": 0, "embedding": []float32{1, 2}}}})
 	}))
 	defer upstream.Close()
-	service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{Enabled: true, Revision: "r", Dimensions: 3, Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: "openai-embeddings-v1", Model: "m", Timeout: time.Second}}})
+	service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{Enabled: true, Revision: "r", Dimensions: 3, Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "openai-embeddings-v1", Model: "m", Timeout: time.Second}}})
 	if _, _, err := service.Embed(context.Background(), Principal{Issuer: "i", Subject: "s"}, []string{"x"}); err == nil {
 		t.Fatal("wrong vector width accepted")
 	}
@@ -112,7 +112,7 @@ func TestAIServiceNormalizesRerankProtocols(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{tc.responseField: []any{map[string]any{"index": 1, "relevance_score": 0.9}}})
 			}))
 			defer upstream.Close()
-			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{Enabled: true, Route: "default", Revision: "r1", Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "internal", Timeout: time.Second}}})
+			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{Enabled: true, Route: "default", Revision: "r1", Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "internal", Timeout: time.Second}}})
 			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "q", []string{"a", "b"}, 1)
 			if err != nil || len(response.Results) != 1 || response.Results[0].Index != 1 {
 				t.Fatalf("response=%#v err=%v", response, err)
@@ -208,8 +208,8 @@ func TestAIServiceSimulatesRerankWithEmbeddingProviders(t *testing.T) {
 			defer upstream.Close()
 
 			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
-				Enabled: true, Backend: "upstream", Route: "default", Revision: "r1",
-				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: tc.model, APIKey: "secret", Timeout: time.Second},
+				Enabled: true, Route: "default", Revision: "r1",
+				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: tc.model, APIKey: "secret", Timeout: time.Second},
 			}})
 			response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", []string{"orthogonal", "same", "related"}, 2)
 			if err != nil {
@@ -276,8 +276,8 @@ func TestAIServiceRejectsMalformedEmbeddingRerankResponses(t *testing.T) {
 			}))
 			defer upstream.Close()
 			service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
-				Enabled: true, Backend: "upstream", Revision: "r1",
-				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: "openai", Model: "embedding", Timeout: time.Second},
+				Enabled: true, Revision: "r1",
+				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "openai", Model: "embedding", Timeout: time.Second},
 			}})
 			if _, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", []string{"a", "b"}, 2); err == nil {
 				t.Fatal("malformed embedding rerank response accepted")
@@ -357,8 +357,8 @@ func TestAIServiceTranslatesEmbeddingProvidersAndInputType(t *testing.T) {
 			}))
 			defer upstream.Close()
 			service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{
-				Enabled: true, Backend: "upstream", Route: "default", Revision: "r", Dimensions: 3,
-				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", APIKey: "secret", Timeout: time.Second},
+				Enabled: true, Route: "default", Revision: "r", Dimensions: 3,
+				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", APIKey: "secret", Timeout: time.Second},
 			}})
 			response, _, err := service.Embed(context.Background(), Principal{Issuer: "i", Subject: "s"}, []string{"a", "b"}, "query")
 			if err != nil || len(response.Data) != 2 {
@@ -433,8 +433,8 @@ func TestAIServiceChunksProviderEmbeddingRequestsAndRestoresGlobalIndexes(t *tes
 				input[i] = "text"
 			}
 			service := NewAIService(ServicesConfig{Embeddings: EmbeddingServiceConfig{
-				Enabled: true, Backend: "upstream", Route: "default", Revision: "r", Dimensions: 3,
-				Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", Timeout: time.Second},
+				Enabled: true, Route: "default", Revision: "r", Dimensions: 3,
+				Upstream: UpstreamConfig{URL: upstream.URL, Protocol: tc.protocol, Model: "model", Timeout: time.Second},
 			}})
 			response, _, err := service.Embed(context.Background(), Principal{Issuer: "i", Subject: "s"}, input, "document")
 			if err != nil {
@@ -481,8 +481,8 @@ func TestAIServiceChunksCohereRerankAndSelectsGlobalTopN(t *testing.T) {
 
 	documents := make([]string, cohereRerankBatchLimit+5)
 	service := NewAIService(ServicesConfig{Rerank: RerankServiceConfig{
-		Enabled: true, Backend: "upstream", Route: "default", Revision: "r",
-		Upstream: HTTPUpstreamConfig{URL: upstream.URL, Protocol: "cohere-v2", Model: "model", Timeout: time.Second},
+		Enabled: true, Route: "default", Revision: "r",
+		Upstream: UpstreamConfig{URL: upstream.URL, Protocol: "cohere-v2", Model: "model", Timeout: time.Second},
 	}})
 	response, _, err := service.Rerank(context.Background(), Principal{Issuer: "i", Subject: "s"}, "query", documents, 1)
 	if err != nil {
@@ -498,18 +498,27 @@ func TestAIServiceInitializesEnabledLocalBackendsAtStartupAndCachesByInputType(t
 	var embeddingInitializations atomic.Int32
 	var rerankInitializations atomic.Int32
 	service := NewAIService(ServicesConfig{
-		Embeddings: EmbeddingServiceConfig{Enabled: true, Backend: "local", Revision: "e1", Dimensions: localEmbeddingDimensions, Cache: CacheConfig{TTL: time.Minute, MaxEntries: 10}},
-		Rerank:     RerankServiceConfig{Enabled: true, Backend: "local", Revision: "r1", Cache: CacheConfig{TTL: time.Minute, MaxEntries: 10}},
+		Embeddings: EmbeddingServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "onnx", Model: "custom-embedding", Directory: "/embedding-models", Device: "cpu"}, Revision: "e1", Dimensions: localEmbeddingDimensions, Cache: CacheConfig{TTL: time.Minute, MaxEntries: 10}},
+		Rerank:     RerankServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "onnx", Model: "custom-rerank", Directory: "/rerank-models", Device: "cuda", DeviceID: 2}, Revision: "r1", Cache: CacheConfig{TTL: time.Minute, MaxEntries: 10}},
 	})
-	service.newLocalEmbedding = func(context.Context, LocalModelConfig) (localEmbeddingBackend, error) {
+	service.newLocalEmbedding = func(_ context.Context, cfg UpstreamConfig) (localEmbeddingBackend, error) {
+		if cfg.Device != "cpu" || cfg.Model != "custom-embedding" || cfg.resolvedModel == nil {
+			t.Fatalf("embedding config=%#v", cfg)
+		}
 		embeddingInitializations.Add(1)
 		return embedding, nil
 	}
-	service.newLocalRerank = func(context.Context, LocalModelConfig) (localRerankBackend, error) {
+	service.newLocalRerank = func(_ context.Context, cfg UpstreamConfig) (localRerankBackend, error) {
+		if cfg.Device != "cuda" || cfg.DeviceID != 2 || cfg.Model != "custom-rerank" || cfg.resolvedModel == nil {
+			t.Fatalf("rerank config=%#v", cfg)
+		}
 		rerankInitializations.Add(1)
 		return &fakeLocalRerankBackend{}, nil
 	}
-	service.prepareModel = func(_ context.Context, task string, _ LocalModelConfig) (*ResolvedModel, error) {
+	service.prepareModel = func(_ context.Context, task string, cfg UpstreamConfig) (*ResolvedModel, error) {
+		if cfg.Model != "custom-"+task || cfg.Directory != "/"+task+"-models" {
+			t.Fatalf("model selection=%#v task=%s", cfg, task)
+		}
 		model := &ResolvedModel{Manifest: ModelManifest{ID: "fake-" + task, Task: task}, Identity: task + "-identity"}
 		if task == "embedding" {
 			model.Dimensions = localEmbeddingDimensions
@@ -552,14 +561,18 @@ func TestAIServiceStartupSkipsDisabledAndUpstreamModels(t *testing.T) {
 	var embeddingInitializations atomic.Int32
 	var rerankInitializations atomic.Int32
 	service := NewAIService(ServicesConfig{
-		Embeddings: EmbeddingServiceConfig{Enabled: false, Backend: "local"},
-		Rerank:     RerankServiceConfig{Enabled: true, Backend: "upstream"},
+		Embeddings: EmbeddingServiceConfig{Enabled: false, Upstream: UpstreamConfig{Protocol: "onnx"}},
+		Rerank:     RerankServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "cohere-v2"}},
 	})
-	service.newLocalEmbedding = func(context.Context, LocalModelConfig) (localEmbeddingBackend, error) {
+	service.prepareModel = func(context.Context, string, UpstreamConfig) (*ResolvedModel, error) {
+		t.Fatal("inactive ONNX catalog was accessed")
+		return nil, nil
+	}
+	service.newLocalEmbedding = func(context.Context, UpstreamConfig) (localEmbeddingBackend, error) {
 		embeddingInitializations.Add(1)
 		return &fakeLocalEmbeddingBackend{}, nil
 	}
-	service.newLocalRerank = func(context.Context, LocalModelConfig) (localRerankBackend, error) {
+	service.newLocalRerank = func(context.Context, UpstreamConfig) (localRerankBackend, error) {
 		rerankInitializations.Add(1)
 		return &fakeLocalRerankBackend{}, nil
 	}

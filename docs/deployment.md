@@ -85,8 +85,8 @@ Voyage, and Jina rerank; plus local CodeRankEmbed and BGE rerank inference. Allo
 configured upstreams and, when local models are activated, to their pinned Hugging Face artifact
 URLs.
 
-At startup, each enabled `backend: local` service resolves only the ID selected by
-`models.embedding` or `models.rerank`; an upstream or disabled service does not touch the catalog.
+At startup, each enabled `upstream.protocol: onnx` service resolves its `upstream.model` from
+`upstream.directory`; an HTTP or disabled service does not touch the catalog.
 `on_demand` manifests download missing verified artifacts before the listener starts. `setup`
 manifests use `--setup-models`, while `never` manifests require a fully populated bundle and perform
 no network access. Cached bundles survive restarts in `broker-models`. See the

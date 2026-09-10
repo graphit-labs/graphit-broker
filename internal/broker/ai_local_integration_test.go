@@ -116,7 +116,7 @@ func TestLocalCoreMLRuntimeIntegration(t *testing.T) {
 	if err := initializeONNXRuntime(); err != nil {
 		t.Fatalf("initialize ONNX Runtime: %v", err)
 	}
-	session, device, err := newLocalONNXSession(modelPath, []string{"in"}, []string{"out"}, LocalModelConfig{Device: "coreml"})
+	session, device, err := newLocalONNXSession(modelPath, []string{"in"}, []string{"out"}, UpstreamConfig{Device: "coreml"})
 	if err != nil {
 		t.Fatalf("initialize CoreML session: %v", err)
 	}
@@ -142,15 +142,10 @@ func TestLocalCoreMLRuntimeIntegration(t *testing.T) {
 	}
 }
 
-func integrationLocalModel(t *testing.T, task, bundleDir, device string) LocalModelConfig {
+func integrationLocalModel(t *testing.T, task, bundleDir, device string) UpstreamConfig {
 	t.Helper()
-	models := ModelsConfig{Directory: filepath.Dir(bundleDir)}
-	if task == "embedding" {
-		models.Embedding = filepath.Base(bundleDir)
-	} else {
-		models.Rerank = filepath.Base(bundleDir)
-	}
-	model, err := NewModelCatalog(models).Resolve(context.Background(), task, LocalModelConfig{}, resolveForRuntime)
+	upstream := UpstreamConfig{Protocol: "onnx", Directory: filepath.Dir(bundleDir), Model: filepath.Base(bundleDir), Device: device}
+	model, err := NewModelCatalog().Resolve(context.Background(), task, upstream, resolveForRuntime)
 	if err != nil {
 		t.Fatalf("resolve %s model: %v", task, err)
 	}
@@ -161,5 +156,5 @@ func integrationLocalModel(t *testing.T, task, bundleDir, device string) LocalMo
 	if err := resolveModelSemantics(model); err != nil {
 		t.Fatalf("resolve %s semantics: %v", task, err)
 	}
-	return LocalModelConfig{Device: device, resolvedModel: model}
+	return UpstreamConfig{Device: device, resolvedModel: model}
 }

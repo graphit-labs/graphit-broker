@@ -109,7 +109,7 @@ func main() {
 			logger.Error("model setup failed", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("selected local models are installed", "directory", cfg.Models.Directory)
+		logger.Info("selected ONNX upstream models are installed")
 		return
 	}
 	service, err := broker.NewServer(ctx, cfg)

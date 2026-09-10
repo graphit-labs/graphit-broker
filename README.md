@@ -96,7 +96,7 @@ docker compose cp config.yaml broker:/etc/graphit-broker/config.yaml
 docker compose up -d
 ```
 
-When an enabled service has `backend: local`, startup downloads and initializes only that service's
+When an enabled service has `upstream.protocol: onnx`, startup downloads and initializes only that service's
 model. On a host with the NVIDIA Container Toolkit, expose GPUs through the same Compose file. The
 same image is used in both modes; `device: auto` prefers CUDA when exposed and falls back to CPU:
 
@@ -104,8 +104,8 @@ same image is used in both modes; `device: auto` prefers CUDA when exposed and f
 GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
 ```
 
-Local ONNX models use manifest bundles under the persistent `broker-models` volume. Top-level
-`models.embedding` and `models.rerank` select presets or custom IDs; each manifest controls verified
+Local ONNX models use manifest bundles under the persistent `broker-models` volume. Each service’s
+`upstream.model` selects a preset or custom ID; each manifest controls verified
 `on_demand`, explicit `setup`, or installed-only `never` acquisition and the complete inference
 semantics. See the [local model catalog](docs/models.md) for all fields and examples.
 

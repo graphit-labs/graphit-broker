@@ -69,17 +69,15 @@ type AIService struct {
 	localMu           sync.Mutex
 	localEmbedding    localEmbeddingBackend
 	localRerank       localRerankBackend
-	newLocalEmbedding func(context.Context, LocalModelConfig) (localEmbeddingBackend, error)
-	newLocalRerank    func(context.Context, LocalModelConfig) (localRerankBackend, error)
+	newLocalEmbedding func(context.Context, UpstreamConfig) (localEmbeddingBackend, error)
+	newLocalRerank    func(context.Context, UpstreamConfig) (localRerankBackend, error)
 	modelCatalog      *ModelCatalog
-	prepareModel      func(context.Context, string, LocalModelConfig) (*ResolvedModel, error)
+	prepareModel      func(context.Context, string, UpstreamConfig) (*ResolvedModel, error)
 }
 
-func NewAIService(cfg ServicesConfig, models ...ModelsConfig) *AIService {
-	modelConfig := ModelsConfig{Directory: "/var/cache/graphit-broker/models", Embedding: "coderankembed", Rerank: "bge-reranker-base"}
-	if len(models) > 0 {
-		modelConfig = models[0]
-	}
+func NewAIService(cfg ServicesConfig) *AIService {
+	cfg.Embeddings.setDefaults()
+	cfg.Rerank.setDefaults()
 	return &AIService{
 		embeddingCfg: cfg.Embeddings, rerankCfg: cfg.Rerank, s3Cfg: cfg.S3,
 		embeddingHTTP:     &http.Client{Timeout: cfg.Embeddings.Upstream.Timeout},
@@ -88,7 +86,7 @@ func NewAIService(cfg ServicesConfig, models ...ModelsConfig) *AIService {
 		rerankCache:       newResponseCache(cfg.Rerank.Cache),
 		newLocalEmbedding: newONNXEmbeddingBackend,
 		newLocalRerank:    newONNXRerankBackend,
-		modelCatalog:      NewModelCatalog(modelConfig),
+		modelCatalog:      NewModelCatalog(),
 	}
 }
 
@@ -119,8 +117,8 @@ func (s *AIService) InitializeLocal(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	if s.embeddingCfg.Enabled && s.embeddingCfg.Backend == "local" {
-		model, err := s.prepareLocalModel(ctx, "embedding", s.embeddingCfg.Local)
+	if s.embeddingCfg.Enabled && s.embeddingCfg.Upstream.isONNX() {
+		model, err := s.prepareLocalModel(ctx, "embedding", s.embeddingCfg.Upstream)
 		if err != nil {
 			return fmt.Errorf("prepare local embeddings: %w", err)
 		}
@@ -129,19 +127,19 @@ func (s *AIService) InitializeLocal(ctx context.Context) error {
 		}
 		s.embeddingCfg.Dimensions = model.Dimensions
 		s.embeddingCfg.Revision = effectiveModelRevision(s.embeddingCfg.Revision, model)
-		s.embeddingCfg.Local.resolvedModel = model
+		s.embeddingCfg.Upstream.resolvedModel = model
 		if _, err := s.ensureLocalEmbedding(ctx); err != nil {
 			return fmt.Errorf("initialize local embeddings: %w", err)
 		}
 	}
-	if s.rerankCfg.Enabled && s.rerankCfg.Backend == "local" {
-		model, err := s.prepareLocalModel(ctx, "rerank", s.rerankCfg.Local)
+	if s.rerankCfg.Enabled && s.rerankCfg.Upstream.isONNX() {
+		model, err := s.prepareLocalModel(ctx, "rerank", s.rerankCfg.Upstream)
 		if err != nil {
 			_ = s.Close()
 			return fmt.Errorf("prepare local rerank: %w", err)
 		}
 		s.rerankCfg.Revision = effectiveModelRevision(s.rerankCfg.Revision, model)
-		s.rerankCfg.Local.resolvedModel = model
+		s.rerankCfg.Upstream.resolvedModel = model
 		if _, err := s.ensureLocalRerank(ctx); err != nil {
 			_ = s.Close()
 			return fmt.Errorf("initialize local rerank: %w", err)
@@ -150,7 +148,7 @@ func (s *AIService) InitializeLocal(ctx context.Context) error {
 	return nil
 }
 
-func (s *AIService) prepareLocalModel(ctx context.Context, task string, local LocalModelConfig) (*ResolvedModel, error) {
+func (s *AIService) prepareLocalModel(ctx context.Context, task string, local UpstreamConfig) (*ResolvedModel, error) {
 	if s.prepareModel != nil {
 		return s.prepareModel(ctx, task, local)
 	}
@@ -201,7 +199,7 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 	}
 	var upstream embeddingBackendResponse
 	var err error
-	if cfg.Backend == "local" {
+	if cfg.Upstream.isONNX() {
 		upstream, err = s.embedLocal(ctx, input, inputType)
 	} else {
 		upstream, err = embedUpstream(ctx, s.embeddingHTTP, cfg, input, inputType)
@@ -266,7 +264,7 @@ func (s *AIService) ensureLocalEmbedding(ctx context.Context) (localEmbeddingBac
 	backend := s.localEmbedding
 	if backend == nil {
 		var err error
-		backend, err = s.newLocalEmbedding(ctx, s.embeddingCfg.Local)
+		backend, err = s.newLocalEmbedding(ctx, s.embeddingCfg.Upstream)
 		if err != nil {
 			return nil, err
 		}
@@ -418,7 +416,7 @@ func (s *AIService) Rerank(ctx context.Context, principal Principal, query strin
 		}
 	}
 	var results []RerankResult
-	if cfg.Backend == "local" {
+	if cfg.Upstream.isONNX() {
 		var err error
 		results, err = s.rerankLocal(ctx, query, documents)
 		if err != nil {
@@ -486,7 +484,7 @@ func (s *AIService) ensureLocalRerank(ctx context.Context) (localRerankBackend, 
 	backend := s.localRerank
 	if backend == nil {
 		var err error
-		backend, err = s.newLocalRerank(ctx, s.rerankCfg.Local)
+		backend, err = s.newLocalRerank(ctx, s.rerankCfg.Upstream)
 		if err != nil {
 			return nil, err
 		}
@@ -652,7 +650,7 @@ func cosineSimilarity(a, b []float32) (float64, error) {
 	return score, nil
 }
 
-func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cfg HTTPUpstreamConfig, input, output any) error {
+func doUpstreamJSON(ctx context.Context, client *http.Client, service string, cfg UpstreamConfig, input, output any) error {
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return fmt.Errorf("encode %s request: %w", service, err)

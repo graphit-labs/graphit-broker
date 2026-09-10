@@ -152,7 +152,7 @@ func onnxRuntimeCandidates() []string {
 	return system
 }
 
-func newONNXEmbeddingBackend(ctx context.Context, cfg LocalModelConfig) (localEmbeddingBackend, error) {
+func newONNXEmbeddingBackend(ctx context.Context, cfg UpstreamConfig) (localEmbeddingBackend, error) {
 	_ = ctx
 	model := cfg.resolvedModel
 	if model == nil || model.Manifest.Task != "embedding" {
@@ -176,7 +176,7 @@ func newONNXEmbeddingBackend(ctx context.Context, cfg LocalModelConfig) (localEm
 		pooling: model.Manifest.Inference.Pooling, normalize: model.Manifest.Inference.Normalize}, nil
 }
 
-func newONNXRerankBackend(ctx context.Context, cfg LocalModelConfig) (localRerankBackend, error) {
+func newONNXRerankBackend(ctx context.Context, cfg UpstreamConfig) (localRerankBackend, error) {
 	_ = ctx
 	model := cfg.resolvedModel
 	if model == nil || model.Manifest.Task != "rerank" {
@@ -200,7 +200,7 @@ func newONNXRerankBackend(ctx context.Context, cfg LocalModelConfig) (localReran
 		scoreColumn: model.Manifest.Inference.ScoreColumn}, nil
 }
 
-func newLocalONNXSessionRouter(modelPath string, inputNames, outputNames []string, cfg LocalModelConfig) (*localONNXSessionRouter, string, error) {
+func newLocalONNXSessionRouter(modelPath string, inputNames, outputNames []string, cfg UpstreamConfig) (*localONNXSessionRouter, string, error) {
 	session, device, err := newLocalONNXSession(modelPath, inputNames, outputNames, cfg)
 	if err != nil {
 		return nil, "", err
@@ -347,7 +347,7 @@ func isAcceleratorOutOfMemory(err error) bool {
 		strings.Contains(message, "cublas_status_alloc_failed")
 }
 
-func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg LocalModelConfig) (*ort.DynamicAdvancedSession, string, error) {
+func newLocalONNXSession(modelPath string, inputNames, outputNames []string, cfg UpstreamConfig) (*ort.DynamicAdvancedSession, string, error) {
 	if err := validateLocalDevicePlatform(cfg.Device, runtime.GOOS); err != nil {
 		return nil, "", err
 	}

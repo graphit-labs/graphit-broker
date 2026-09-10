@@ -300,21 +300,42 @@ creates the fixed local identity `admin` with roles `user` and `admin`, and refu
 database containing any local user. Continue user and role management through the UI/API. There is
 no special superadmin subject or authorization bypass.
 
-## Model catalog
+## ONNX upstreams
+
+Local models use the same `upstream` configuration as HTTP providers:
 
 ```yaml
-models:
-  directory: /var/cache/graphit-broker/models
-  embedding: coderankembed
-  rerank: bge-reranker-base
-  generate: ""
+services:
+  embeddings:
+    enabled: true
+    upstream:
+      protocol: onnx
+      model: coderankembed
+      directory: /var/cache/graphit-broker/models
+      device: auto
+      device_id: 0
+  rerank:
+    enabled: true
+    upstream:
+      protocol: onnx
+      model: bge-reranker-base
+      device: auto
 ```
 
-`models` is the global selector for local ONNX bundles. `directory` is the persistent catalog root;
-each task value names `<directory>/<model-id>/manifest.json`. The embedding and rerank values above
-are the defaults and select the built-in presets. Custom models, acquisition policies, supported
-manifest fields, tensor semantics, identities, and complete examples are documented in the
-[local model catalog](models.md).
+`protocol: onnx` selects in-process inference. Each `model` names
+`<directory>/<model>/manifest.json`. The default directory is `/var/cache/graphit-broker/models`;
+services can use separate directories. Model defaults are `coderankembed` for embeddings and
+`bge-reranker-base` for rerank, with `device: auto` and `device_id: 0`.
+
+ONNX upstreams reject HTTP-only nonzero/nonempty options: `url`, `api_key`, `api_key_header`,
+`api_key_scheme`, `send_dimensions`, and `timeout`. HTTP upstreams reject nonempty `directory`
+or `device`, and nonzero `device_id`. Disabled services do not initialize or download models.
+
+The former top-level `models` and service-level `backend`/`local` fields are no longer accepted.
+Move model selection and device settings into each service's `upstream` and remove those fields.
+There is no generation model selector or local generation service. Apply configuration changes by
+restarting the broker. Manifest formats, acquisition policies, tensor semantics, and effective
+identities are documented in the [local model catalog](models.md).
 
 ## Embeddings
 
@@ -322,7 +343,6 @@ manifest fields, tensor semantics, identities, and complete examples are documen
 services:
   embeddings:
     enabled: true
-    backend: upstream
     route: graphit-default
     revision: embedding-space-2026-09-07.1
     dimensions: 1536
@@ -337,23 +357,20 @@ services:
       api_key_scheme: Bearer
       send_dimensions: false
       timeout: 45s
-    local:
-      device: auto
-      device_id: 0
     cache:
       ttl: 10m
       max_entries: 10000
 ```
 
-`backend` is `upstream` by default or `local` for in-process ONNX inference. A local backend uses
-`models.embedding`; the preset is CodeRankEmbed-137M-INT8. Model files, tokenizer behavior,
+`upstream.protocol: onnx` uses `upstream.model` for in-process inference; the default preset
+is CodeRankEmbed-137M-INT8. Model files, tokenizer behavior,
 prefixes, pooling, normalization, and dimensions belong to the selected manifest, not this service
 block. `dimensions` may be omitted/zero for a local model and is inferred from its resolved
 manifest and ONNX signature; a positive value is an assertion and startup rejects a mismatch.
 `revision` is optional for local inference and becomes a readable prefix for the automatically
 computed effective model identity.
 
-For an upstream backend, set `upstream.protocol` to one of the following. The public broker API
+For an HTTP provider, set `upstream.protocol` to one of the following. The public broker API
 stays OpenAI-shaped while its adapter translates request and response fields:
 
 | Provider | Protocol | Typical endpoint |
@@ -375,7 +392,6 @@ asymmetric embedding mode; omission means `document`.
 services:
   rerank:
     enabled: true
-    backend: upstream
     route: graphit-default
     revision: rerank-route-2026-09-07.1
     max_documents: 1000
@@ -388,15 +404,12 @@ services:
       api_key_header: Authorization
       api_key_scheme: Bearer
       timeout: 45s
-    local:
-      device: auto
-      device_id: 0
     cache:
       ttl: 5m
       max_entries: 10000
 ```
 
-`backend: local` uses `models.rerank`; its default is the `bge-reranker-base` preset. Custom
+`upstream.protocol: onnx` uses `upstream.model`; its default is the `bge-reranker-base` preset. Custom
 cross-encoder inputs, output selection, prefixing, and score transformations are declared in the
 bundle manifest. Native upstream protocols are `cohere`/`cohere-v2`, `voyage`/`voyage-v1`,
 `jina`/`jina-v1`, and `graphit-rerank-v1`; configure each with its complete rerank endpoint.

@@ -11,22 +11,18 @@ server:
 authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes before bootstrapping local users}"
 
-models:
-  directory: /var/cache/graphit-broker/models
-  embedding: coderankembed
-  rerank: bge-reranker-base
-  generate: ""
-
 services:
   embeddings:
     enabled: true
-    backend: local
     route: graphit-default
     revision: coderankembed
     dimensions: 768
     max_batch: 256
     max_input_bytes: 1048576
-    local:
+    upstream:
+      protocol: onnx
+      model: coderankembed
+      directory: /var/cache/graphit-broker/models
       device: auto
       device_id: 0
     cache:
@@ -35,12 +31,14 @@ services:
 
   rerank:
     enabled: true
-    backend: local
     route: graphit-default
     revision: bge-reranker-base
     max_documents: 1000
     max_document_bytes: 1048576
-    local:
+    upstream:
+      protocol: onnx
+      model: bge-reranker-base
+      directory: /var/cache/graphit-broker/models
       device: auto
       device_id: 0
     cache:

@@ -109,20 +109,13 @@ administration:
 # Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
 # /admin/, then create grants in Resource grants or through /admin/api/v1/grants.
 
-# Global ONNX model catalog. Each selected ID resolves as <directory>/<id>/manifest.json.
-# The two preset manifests are materialized automatically and fetch their pinned artifacts only
-# when their corresponding local service is enabled. Custom IDs require a manifest in the volume.
-models:
-  directory: "/var/cache/graphit-broker/models"
-  embedding: "coderankembed"
-  rerank: "bge-reranker-base"
-  generate: "" # schema reservation; local generation is not served yet
-
 services:
   embeddings:
     enabled: true
-    # upstream: OpenAI-compatible, Cohere, Voyage, or Google; local: CodeRankEmbed ONNX.
-    backend: "upstream"
+    # HTTP providers: OpenAI-compatible, Cohere, Voyage, or Google.
+    # For local execution replace upstream with protocol: onnx, model: coderankembed, device: auto.
+    # Omit dimensions to infer the ONNX width, or set 768 for coderankembed.
+    # See examples/local-models.yaml; ONNX upstreams do not accept HTTP options.
     route: "graphit-default"
     # For local models this is an optional readable prefix; the catalog identity is appended.
     revision: "embedding-route-2026-09-07.1"
@@ -138,10 +131,6 @@ services:
       api_key_scheme: "Bearer"
       send_dimensions: false
       timeout: 45s
-    # Used only when backend is local. Model paths and inference semantics live in its manifest.
-    local:
-      device: "auto" # macOS: CoreML -> CPU; Linux/Windows: visible CUDA -> CPU
-      device_id: 0
     cache:
       ttl: 10m
       max_entries: 10000
@@ -149,8 +138,8 @@ services:
   rerank:
     enabled: true
     # Native upstream rerank: Cohere, Voyage, Jina, or Graphit-compatible.
+    # For local execution use protocol: onnx and model: bge-reranker-base in upstream.
     # Embedding-simulated rerank: OpenAI/OpenAI-compatible or Google Gemini.
-    backend: "upstream"
     route: "graphit-default"
     revision: "rerank-route-2026-09-07.1"
     max_documents: 1000
@@ -164,10 +153,6 @@ services:
       api_key_scheme: "Bearer"
       timeout: 45s
       # For simulated rerank, set url/model to the provider's embedding endpoint/model instead.
-    # Used only when backend is local. The selected catalog manifest owns model semantics.
-    local:
-      device: "auto" # macOS: CoreML -> CPU; Linux/Windows: visible CUDA -> CPU
-      device_id: 0
     cache:
       ttl: 5m
       max_entries: 10000

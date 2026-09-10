@@ -18,8 +18,8 @@ graphit-broker-linux-amd64/
 ```
 
 Model weights are deliberately absent. Startup downloads CodeRankEmbed only when embeddings are
-enabled with `backend: local`, and downloads BGE only when rerank is enabled with `backend: local`.
-Custom models are selected under top-level `models` and loaded from manifest bundles in the
+enabled with `upstream.protocol: onnx`, and downloads BGE only when rerank is enabled with `upstream.protocol: onnx`.
+Custom models are selected through each service’s `upstream.model` and loaded from manifest bundles in the
 persistent model directory. See the [model catalog](models.md) for `on_demand`, `setup`, and `never`
 installation modes.
 
@@ -194,10 +194,11 @@ Example strict GPU configuration:
 services:
   embeddings:
     enabled: true
-    backend: local
     dimensions: 768
     revision: coderankembed-v1
-    local:
+    upstream:
+      protocol: onnx
+      model: coderankembed
       device: cuda
       device_id: 0
 ```

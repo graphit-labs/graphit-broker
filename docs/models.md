@@ -6,50 +6,52 @@ Model weights are never included in the image or release archive.
 
 ## Select models in `config.yml`
 
-The top-level catalog configuration is the only place that selects task models:
+Each service selects its local model and execution settings in `upstream`:
 
 ```yaml
-models:
-  directory: /var/cache/graphit-broker/models
-  embedding: coderankembed
-  rerank: bge-reranker-base
-  generate: ""
-
 services:
   embeddings:
     enabled: true
-    backend: local
     route: graphit-default
     revision: local-embedding # optional readable prefix for a local model
     dimensions: 768           # optional assertion; omit or use 0 to infer from ONNX/manifest
-    local:
+    upstream:
+      protocol: onnx
+      model: coderankembed
+      directory: /var/cache/graphit-broker/models
       device: auto
       device_id: 0
   rerank:
     enabled: true
-    backend: local
     route: graphit-default
     revision: local-rerank    # optional readable prefix
-    local:
+    upstream:
+      protocol: onnx
+      model: bge-reranker-base
       device: auto
       device_id: 0
 ```
 
-`directory` defaults to `/var/cache/graphit-broker/models`. `embedding` defaults to
-`coderankembed`, and `rerank` defaults to `bge-reranker-base`. `generate` reserves model selection
-for a future generation adapter; the current broker does not expose local generation.
+`upstream.directory` defaults to `/var/cache/graphit-broker/models` independently for each service.
+With `protocol: onnx`, `upstream.model` defaults to `coderankembed` for embeddings and
+`bge-reranker-base` for rerank. `device` defaults to `auto` and `device_id` to `0`.
+The broker does not expose local generation or a generation model selector.
+
+ONNX selects an in-process runtime adapter. Omit HTTP-only options (`url`, API-key fields,
+`send_dimensions`, and `timeout`); incompatible nonzero/nonempty values are rejected.
+Different services may select different catalog directories. Model semantics remain in manifests.
 
 A complete CPU/GPU-portable preset configuration is available at
 [`examples/local-models.yaml`](../examples/local-models.yaml).
 
 Model selection has no effect while the corresponding service is disabled or uses
-`backend: upstream`. Therefore an upstream-only broker neither loads nor downloads local model
+an HTTP `upstream.protocol`. Therefore an HTTP-only broker neither loads nor downloads local model
 artifacts.
 
 Each selected ID maps to one bundle:
 
 ```text
-<models.directory>/<model-id>/
+<upstream.directory>/<model-id>/
 ├── manifest.json
 ├── model.onnx
 ├── tokenizer.json
@@ -204,8 +206,8 @@ graphit-broker --config /etc/graphit-broker/config.yml --setup-models
 graphit-broker --config /etc/graphit-broker/config.yml
 ```
 
-The command processes selected enabled local embedding/rerank models and a selected `generate`
-bundle, then exits without creating the database server or HTTP listener. It also pre-installs
+The command processes only enabled embedding/rerank services with `upstream.protocol: onnx`,
+then exits without creating the database server or HTTP listener. It also pre-installs
 selected `on_demand` bundles, which is useful for image deployment with controlled startup egress.
 
 With the existing Compose file, no override is needed:
@@ -367,16 +369,14 @@ means a different vector space and requires reindexing existing content before q
 
 ## Execution providers
 
-Device policy remains per service in `config.yml`, independent of the selected model:
+Device policy is configured in each service’s `upstream`, alongside its model selection:
 
 ```yaml
 services:
   embeddings:
-    backend: local
-    local: {device: auto, device_id: 0}
+    upstream: {protocol: onnx, device: auto, device_id: 0}
   rerank:
-    backend: local
-    local: {device: cpu, device_id: 0}
+    upstream: {protocol: onnx, device: cpu, device_id: 0}
 ```
 
 Strict NVIDIA and Apple configurations use the same field:
@@ -385,14 +385,12 @@ Strict NVIDIA and Apple configurations use the same field:
 # Linux or Windows with NVIDIA driver, CUDA and cuDNN available.
 services:
   embeddings:
-    backend: local
-    local: {device: cuda, device_id: 0}
+    upstream: {protocol: onnx, device: cuda, device_id: 0}
 
 # macOS; CoreML chooses the available Apple compute units.
 services:
   rerank:
-    backend: local
-    local: {device: coreml, device_id: 0}
+    upstream: {protocol: onnx, device: coreml, device_id: 0}
 ```
 
 - `auto` prefers CoreML on macOS, or a visible NVIDIA GPU on Linux/Windows, and falls back to CPU.

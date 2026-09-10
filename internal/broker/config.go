@@ -21,17 +21,7 @@ type Config struct {
 	Server         ServerConfig         `yaml:"server" json:"server"`
 	Authentication AuthenticationConfig `yaml:"authentication" json:"authentication"`
 	Administration AdministrationConfig `yaml:"administration" json:"administration"`
-	Models         ModelsConfig         `yaml:"models" json:"models"`
 	Services       ServicesConfig       `yaml:"services" json:"services"`
-}
-
-// ModelsConfig selects task models from the persistent global model catalog.
-// Each selected ID resolves below Directory as <id>/manifest.json.
-type ModelsConfig struct {
-	Directory string `yaml:"directory" json:"directory"`
-	Embedding string `yaml:"embedding" json:"embedding"`
-	Rerank    string `yaml:"rerank" json:"rerank"`
-	Generate  string `yaml:"generate" json:"generate"`
 }
 
 type DatabaseConfig struct {
@@ -159,58 +149,51 @@ type ACLRuleConfig struct {
 }
 
 type ServicesConfig struct {
-	Embeddings EmbeddingServiceConfig `yaml:"embeddings"`
-	Rerank     RerankServiceConfig    `yaml:"rerank"`
-	S3         S3ServiceConfig        `yaml:"s3"`
+	Embeddings EmbeddingServiceConfig `yaml:"embeddings" json:"embeddings"`
+	Rerank     RerankServiceConfig    `yaml:"rerank" json:"rerank"`
+	S3         S3ServiceConfig        `yaml:"s3" json:"s3"`
 }
 
-type HTTPUpstreamConfig struct {
-	URL            string        `yaml:"url"`
-	Protocol       string        `yaml:"protocol"`
-	Model          string        `yaml:"model"`
-	APIKey         string        `yaml:"api_key"`
-	APIKeyHeader   string        `yaml:"api_key_header"`
-	APIKeyScheme   string        `yaml:"api_key_scheme"`
-	SendDimensions bool          `yaml:"send_dimensions"`
-	Timeout        time.Duration `yaml:"timeout"`
-}
-
-// LocalModelConfig controls only execution placement. Model selection and all
-// model semantics live in the global models catalog and its manifests.
-type LocalModelConfig struct {
-	Device        string `yaml:"device" json:"device"`
-	DeviceID      int    `yaml:"device_id" json:"device_id"`
-	resolvedModel *ResolvedModel
+// UpstreamConfig selects an HTTP adapter or the in-process ONNX runtime.
+type UpstreamConfig struct {
+	URL            string        `yaml:"url" json:"url"`
+	Protocol       string        `yaml:"protocol" json:"protocol"`
+	Model          string        `yaml:"model" json:"model"`
+	APIKey         string        `yaml:"api_key" json:"api_key"`
+	APIKeyHeader   string        `yaml:"api_key_header" json:"api_key_header"`
+	APIKeyScheme   string        `yaml:"api_key_scheme" json:"api_key_scheme"`
+	SendDimensions bool          `yaml:"send_dimensions" json:"send_dimensions"`
+	Timeout        time.Duration `yaml:"timeout" json:"timeout"`
+	Directory      string        `yaml:"directory" json:"directory,omitempty"`
+	Device         string        `yaml:"device" json:"device,omitempty"`
+	DeviceID       int           `yaml:"device_id" json:"device_id,omitempty"`
+	resolvedModel  *ResolvedModel
 }
 
 type CacheConfig struct {
-	TTL        time.Duration `yaml:"ttl"`
-	MaxEntries int           `yaml:"max_entries"`
+	TTL        time.Duration `yaml:"ttl" json:"ttl"`
+	MaxEntries int           `yaml:"max_entries" json:"max_entries"`
 }
 
 type EmbeddingServiceConfig struct {
-	Enabled       bool               `yaml:"enabled"`
-	Backend       string             `yaml:"backend"`
-	Route         string             `yaml:"route"`
-	Revision      string             `yaml:"revision"`
-	Dimensions    int                `yaml:"dimensions"`
-	MaxBatch      int                `yaml:"max_batch"`
-	MaxInputBytes int                `yaml:"max_input_bytes"`
-	Upstream      HTTPUpstreamConfig `yaml:"upstream"`
-	Local         LocalModelConfig   `yaml:"local"`
-	Cache         CacheConfig        `yaml:"cache"`
+	Enabled       bool           `yaml:"enabled" json:"enabled"`
+	Route         string         `yaml:"route" json:"route"`
+	Revision      string         `yaml:"revision" json:"revision"`
+	Dimensions    int            `yaml:"dimensions" json:"dimensions"`
+	MaxBatch      int            `yaml:"max_batch" json:"max_batch"`
+	MaxInputBytes int            `yaml:"max_input_bytes" json:"max_input_bytes"`
+	Upstream      UpstreamConfig `yaml:"upstream" json:"upstream"`
+	Cache         CacheConfig    `yaml:"cache" json:"cache"`
 }
 
 type RerankServiceConfig struct {
-	Enabled          bool               `yaml:"enabled"`
-	Backend          string             `yaml:"backend"`
-	Route            string             `yaml:"route"`
-	Revision         string             `yaml:"revision"`
-	MaxDocuments     int                `yaml:"max_documents"`
-	MaxDocumentBytes int                `yaml:"max_document_bytes"`
-	Upstream         HTTPUpstreamConfig `yaml:"upstream"`
-	Local            LocalModelConfig   `yaml:"local"`
-	Cache            CacheConfig        `yaml:"cache"`
+	Enabled          bool           `yaml:"enabled" json:"enabled"`
+	Route            string         `yaml:"route" json:"route"`
+	Revision         string         `yaml:"revision" json:"revision"`
+	MaxDocuments     int            `yaml:"max_documents" json:"max_documents"`
+	MaxDocumentBytes int            `yaml:"max_document_bytes" json:"max_document_bytes"`
+	Upstream         UpstreamConfig `yaml:"upstream" json:"upstream"`
+	Cache            CacheConfig    `yaml:"cache" json:"cache"`
 }
 
 type S3ServiceConfig struct {
@@ -378,15 +361,6 @@ func (c *Config) defaults() {
 			issuer.Scopes = []string{"openid", "profile", "email"}
 		}
 	}
-	if strings.TrimSpace(c.Models.Directory) == "" {
-		c.Models.Directory = "/var/cache/graphit-broker/models"
-	}
-	if strings.TrimSpace(c.Models.Embedding) == "" {
-		c.Models.Embedding = "coderankembed"
-	}
-	if strings.TrimSpace(c.Models.Rerank) == "" {
-		c.Models.Rerank = "bge-reranker-base"
-	}
 	if c.Services.Embeddings.Route == "" {
 		c.Services.Embeddings.Route = "graphit-default"
 	}
@@ -397,7 +371,7 @@ func (c *Config) defaults() {
 	if c.Services.Embeddings.MaxInputBytes == 0 {
 		c.Services.Embeddings.MaxInputBytes = 1 << 20
 	}
-	if c.Services.Embeddings.Upstream.Timeout == 0 {
+	if !c.Services.Embeddings.Upstream.isONNX() && c.Services.Embeddings.Upstream.Timeout == 0 {
 		c.Services.Embeddings.Upstream.Timeout = 45 * time.Second
 	}
 	if c.Services.Rerank.Route == "" {
@@ -410,7 +384,7 @@ func (c *Config) defaults() {
 	if c.Services.Rerank.MaxDocumentBytes == 0 {
 		c.Services.Rerank.MaxDocumentBytes = 1 << 20
 	}
-	if c.Services.Rerank.Upstream.Timeout == 0 {
+	if !c.Services.Rerank.Upstream.isONNX() && c.Services.Rerank.Upstream.Timeout == 0 {
 		c.Services.Rerank.Upstream.Timeout = 45 * time.Second
 	}
 	if c.Services.S3.DefaultRoute == "" && len(c.Services.S3.Routes) == 1 {
@@ -600,23 +574,30 @@ func (c LocalAuthenticationRateLimit) validate() error {
 	return nil
 }
 
-func (c *EmbeddingServiceConfig) setDefaults() {
-	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
-	if c.Backend == "" {
-		c.Backend = "upstream"
-	}
-	c.Local.setDefaults()
-}
+func (c *EmbeddingServiceConfig) setDefaults() { c.Upstream.setDefaults("embedding") }
+func (c *RerankServiceConfig) setDefaults()    { c.Upstream.setDefaults("rerank") }
 
-func (c *RerankServiceConfig) setDefaults() {
-	c.Backend = strings.ToLower(strings.TrimSpace(c.Backend))
-	if c.Backend == "" {
-		c.Backend = "upstream"
-	}
-	c.Local.setDefaults()
-}
+const defaultModelDirectory = "/var/cache/graphit-broker/models"
 
-func (c *LocalModelConfig) setDefaults() {
+func (c UpstreamConfig) isONNX() bool { return c.Protocol == "onnx" }
+
+func (c *UpstreamConfig) setDefaults(task string) {
+	c.Protocol = strings.ToLower(strings.TrimSpace(c.Protocol))
+	if !c.isONNX() {
+		return
+	}
+	if strings.TrimSpace(c.Directory) == "" {
+		c.Directory = defaultModelDirectory
+	}
+	c.Model = strings.TrimSpace(c.Model)
+	if c.Model == "" {
+		switch task {
+		case "embedding":
+			c.Model = "coderankembed"
+		case "rerank":
+			c.Model = "bge-reranker-base"
+		}
+	}
 	c.Device = strings.ToLower(strings.TrimSpace(c.Device))
 	if c.Device == "" {
 		c.Device = "auto"
@@ -714,49 +695,26 @@ func (c Config) Validate() error {
 			return errors.New("administration.cli provider_name and profile_name must be safe names")
 		}
 	}
-	if !filepath.IsAbs(c.Models.Directory) {
-		return errors.New("models.directory must be an absolute path")
-	}
-	for task, id := range map[string]string{"embedding": c.Models.Embedding, "rerank": c.Models.Rerank, "generate": c.Models.Generate} {
-		if strings.TrimSpace(id) != "" && !safeSegment(id) {
-			return fmt.Errorf("models.%s must be a safe model ID", task)
-		}
-	}
 	if c.Services.Embeddings.Enabled {
-		switch c.Services.Embeddings.Backend {
-		case "local":
-			if c.Services.Embeddings.Dimensions < 0 {
+		cfg := c.Services.Embeddings
+		if err := cfg.Upstream.validate("services.embeddings.upstream", embeddingUpstreamProtocols...); err != nil {
+			return err
+		}
+		if cfg.Upstream.isONNX() {
+			if cfg.Dimensions < 0 {
 				return errors.New("services.embeddings.dimensions must not be negative")
 			}
-			if err := c.Services.Embeddings.Local.validate("services.embeddings.local"); err != nil {
-				return err
-			}
-		case "upstream":
-			if c.Services.Embeddings.Revision == "" || c.Services.Embeddings.Dimensions <= 0 {
-				return errors.New("upstream services.embeddings needs revision and positive dimensions")
-			}
-			if err := c.Services.Embeddings.Upstream.validate("services.embeddings.upstream", embeddingUpstreamProtocols...); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("services.embeddings.backend %q is unsupported (use local or upstream)", c.Services.Embeddings.Backend)
+		} else if cfg.Revision == "" || cfg.Dimensions <= 0 {
+			return errors.New("HTTP services.embeddings needs revision and positive dimensions")
 		}
 	}
 	if c.Services.Rerank.Enabled {
-		switch c.Services.Rerank.Backend {
-		case "local":
-			if err := c.Services.Rerank.Local.validate("services.rerank.local"); err != nil {
-				return err
-			}
-		case "upstream":
-			if c.Services.Rerank.Revision == "" {
-				return errors.New("upstream services.rerank.revision is required")
-			}
-			if err := c.Services.Rerank.Upstream.validate("services.rerank.upstream", rerankUpstreamProtocols...); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("services.rerank.backend %q is unsupported (use local or upstream)", c.Services.Rerank.Backend)
+		cfg := c.Services.Rerank
+		if err := cfg.Upstream.validate("services.rerank.upstream", rerankUpstreamProtocols...); err != nil {
+			return err
+		}
+		if !cfg.Upstream.isONNX() && cfg.Revision == "" {
+			return errors.New("HTTP services.rerank.revision is required")
 		}
 	}
 	if c.Services.S3.Enabled {
@@ -817,7 +775,16 @@ var rerankUpstreamProtocols = []string{
 	"google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta",
 }
 
-func (c LocalModelConfig) validate(name string) error {
+func (c UpstreamConfig) validateONNX(name string) error {
+	if !filepath.IsAbs(c.Directory) {
+		return fmt.Errorf("%s.directory must be an absolute path", name)
+	}
+	if !safeSegment(c.Model) {
+		return fmt.Errorf("%s.model must be a safe model ID", name)
+	}
+	if c.URL != "" || c.APIKey != "" || c.APIKeyHeader != "" || c.APIKeyScheme != "" || c.SendDimensions || c.Timeout != 0 {
+		return fmt.Errorf("%s with protocol onnx does not accept HTTP URL, authentication, send_dimensions, or timeout", name)
+	}
 	switch c.Device {
 	case "auto", "cpu", "cuda", "coreml":
 	default:
@@ -873,7 +840,13 @@ func validateACLRule(rule ACLRuleConfig) error {
 	return nil
 }
 
-func (c HTTPUpstreamConfig) validate(name string, protocols ...string) error {
+func (c UpstreamConfig) validate(name string, protocols ...string) error {
+	if c.isONNX() {
+		return c.validateONNX(name)
+	}
+	if c.Directory != "" || c.Device != "" || c.DeviceID != 0 {
+		return fmt.Errorf("%s.directory, device, and device_id require protocol onnx", name)
+	}
 	if err := validateHTTPURL(c.URL, name+" URL"); err != nil {
 		return err
 	}

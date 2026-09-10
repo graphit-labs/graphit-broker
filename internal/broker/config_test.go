@@ -460,52 +460,45 @@ services:
 	}
 }
 
-func TestConfigSupportsLocalBackendsDevicesAndLegacyUpstreams(t *testing.T) {
+func TestConfigSupportsONNXAndHTTPUpstreams(t *testing.T) {
 	input := `
 services:
   embeddings:
     enabled: true
-    backend: local
-    revision: local-embedding-v1
-    dimensions: 768
-    local:
-      device: auto
+    upstream:
+      protocol: ONNX
   rerank:
     enabled: true
-    backend: local
-    revision: local-rerank-v1
-    local:
+    upstream:
+      protocol: onnx
       device: cpu
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Services.Embeddings.Backend != "local" || cfg.Services.Embeddings.Local.Device != "auto" || cfg.Services.Rerank.Local.Device != "cpu" {
-		t.Fatalf("local defaults=%#v", cfg.Services)
+	e, r := cfg.Services.Embeddings.Upstream, cfg.Services.Rerank.Upstream
+	if e.Protocol != "onnx" || e.Device != "auto" || r.Device != "cpu" || e.Directory != defaultModelDirectory || r.Directory != defaultModelDirectory || e.Model != "coderankembed" || r.Model != "bge-reranker-base" || e.Timeout != 0 {
+		t.Fatalf("ONNX defaults=%#v", cfg.Services)
 	}
-	if cfg.Models.Directory != "/var/cache/graphit-broker/models" || cfg.Models.Embedding != "coderankembed" || cfg.Models.Rerank != "bge-reranker-base" {
-		t.Fatalf("catalog defaults=%#v", cfg.Models)
-	}
-
-	legacy := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
-		Enabled: true, Revision: "legacy", Dimensions: 3,
-		Upstream: HTTPUpstreamConfig{Protocol: "openai-embeddings-v1", URL: "http://127.0.0.1/embeddings", Model: "legacy"},
+	remote := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+		Enabled: true, Revision: "r", Dimensions: 3,
+		Upstream: UpstreamConfig{Protocol: "openai-embeddings-v1", URL: "http://127.0.0.1/embeddings", Model: "remote"},
 	}}}
-	legacy.defaults()
-	if legacy.Services.Embeddings.Backend != "upstream" {
-		t.Fatalf("legacy backend=%q", legacy.Services.Embeddings.Backend)
+	remote.defaults()
+	if err := remote.Validate(); err != nil {
+		t.Fatalf("HTTP upstream rejected: %v", err)
 	}
-	if err := legacy.Validate(); err != nil {
-		t.Fatalf("legacy upstream rejected: %v", err)
+	if u := remote.Services.Embeddings.Upstream; u.Device != "" || u.Directory != "" || u.Timeout != 45*time.Second {
+		t.Fatalf("HTTP defaults=%#v", u)
 	}
 }
 
 func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *testing.T) {
 	for _, protocol := range embeddingUpstreamProtocols {
 		cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
-			Enabled: true, Backend: "upstream", Revision: "r", Dimensions: 3,
-			Upstream: HTTPUpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
+			Enabled: true, Revision: "r", Dimensions: 3,
+			Upstream: UpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
 		}}}
 		cfg.defaults()
 		if err := cfg.Validate(); err != nil {
@@ -513,16 +506,16 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 		}
 	}
 	coreML := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
-		Enabled: true, Backend: "local", Revision: "r", Dimensions: localEmbeddingDimensions,
-		Local: LocalModelConfig{Device: "coreml"},
+		Enabled: true, Revision: "r", Dimensions: localEmbeddingDimensions,
+		Upstream: UpstreamConfig{Protocol: "onnx", Device: "coreml"},
 	}}}
 	coreML.defaults()
 	if err := coreML.Validate(); err != nil {
 		t.Fatalf("CoreML local device rejected: %v", err)
 	}
 	cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
-		Enabled: true, Backend: "local", Revision: "r", Dimensions: localEmbeddingDimensions,
-		Local: LocalModelConfig{Device: "metal"},
+		Enabled: true, Revision: "r", Dimensions: localEmbeddingDimensions,
+		Upstream: UpstreamConfig{Protocol: "onnx", Device: "metal"},
 	}}}
 	cfg.defaults()
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auto, cpu, cuda, or coreml") {
@@ -533,8 +526,8 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 func TestConfigAcceptsRerankProviderParity(t *testing.T) {
 	for _, protocol := range rerankUpstreamProtocols {
 		cfg := Config{Services: ServicesConfig{Rerank: RerankServiceConfig{
-			Enabled: true, Backend: "upstream", Revision: "r",
-			Upstream: HTTPUpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
+			Enabled: true, Revision: "r",
+			Upstream: UpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
 		}}}
 		cfg.defaults()
 		if err := cfg.Validate(); err != nil {
@@ -543,29 +536,84 @@ func TestConfigAcceptsRerankProviderParity(t *testing.T) {
 	}
 }
 
-func TestConfigSelectsCatalogModelsAndRejectsRemovedLegacyLocalFields(t *testing.T) {
+func TestConfigSelectsONNXModelsAndRejectsLegacyFields(t *testing.T) {
 	input := `
-models:
-  directory: /models
-  embedding: custom-embedding
-  rerank: custom-rerank
 services:
   embeddings:
     enabled: true
-    backend: local
-    local:
+    upstream:
+      protocol: onnx
+      directory: /embedding-models
+      model: custom-embedding
       device: cpu
+  rerank:
+    enabled: true
+    upstream:
+      protocol: onnx
+      directory: /rerank-models
+      model: custom-rerank
+      device: cuda
+      device_id: 2
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
-		t.Fatalf("catalog selection rejected: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.Models.Directory != "/models" || cfg.Models.Embedding != "custom-embedding" {
-		t.Fatalf("models=%#v", cfg.Models)
+	e, r := cfg.Services.Embeddings.Upstream, cfg.Services.Rerank.Upstream
+	if e.Directory != "/embedding-models" || e.Model != "custom-embedding" || r.Directory != "/rerank-models" || r.Model != "custom-rerank" || r.DeviceID != 2 {
+		t.Fatalf("selection=%#v", cfg.Services)
 	}
-	legacy := strings.Replace(input, "      device: cpu\n", "      device: cpu\n      model_path: /models/model.onnx\n", 1)
-	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "field model_path not found") {
-		t.Fatalf("removed legacy field error=%v", err)
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Services struct {
+			Embeddings struct{ Upstream UpstreamConfig }
+			Rerank     struct{ Upstream UpstreamConfig }
+		}
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Services.Embeddings.Upstream != e || decoded.Services.Rerank.Upstream != r || strings.Contains(string(data), `"models":`) || strings.Contains(string(data), `"backend":`) {
+		t.Fatalf("unexpected JSON: %s", data)
+	}
+	for _, legacy := range []string{
+		"models: {}", "models: {generate: reserved}",
+		"services: {embeddings: {backend: local}}", "services: {rerank: {backend: upstream}}",
+		"services: {embeddings: {local: {device: cpu}}}", "services: {rerank: {local: {}}}",
+		"services: {embeddings: {upstream: {model_path: /model.onnx}}}",
+	} {
+		if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
+			t.Errorf("legacy accepted: %s", legacy)
+		}
+	}
+}
+
+func TestConfigRejectsIncompatibleUpstreamOptions(t *testing.T) {
+	for _, service := range []string{"embeddings", "rerank"} {
+		for _, options := range []string{
+			"protocol: onnx, directory: relative", "protocol: onnx, model: ../escape",
+			"protocol: onnx, device: metal", "protocol: onnx, device_id: -1",
+			"protocol: onnx, device: coreml, device_id: 1",
+			"protocol: onnx, url: https://example.com", "protocol: onnx, api_key: secret",
+			"protocol: onnx, api_key_header: Authorization", "protocol: onnx, api_key_scheme: Bearer",
+			"protocol: onnx, send_dimensions: true", "protocol: onnx, timeout: 1s",
+			"protocol: openai, url: https://example.com, model: m, directory: /models",
+			"protocol: openai, url: https://example.com, model: m, device: cpu",
+			"protocol: openai, url: https://example.com, model: m, device_id: 1",
+			"protocol: unknown, url: https://example.com, model: m",
+		} {
+			input := "services: {" + service + ": {enabled: true, revision: r, "
+			if service == "embeddings" {
+				input += "dimensions: 3, "
+			}
+			input += "upstream: {" + options + "}}}"
+			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+				t.Errorf("invalid config accepted: %s", input)
+			}
+		}
 	}
 }
 

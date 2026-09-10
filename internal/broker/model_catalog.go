@@ -39,7 +39,6 @@ type ResolvedModel struct {
 }
 
 type ModelCatalog struct {
-	config    ModelsConfig
 	artifacts *ArtifactResolver
 }
 
@@ -52,71 +51,46 @@ type ArtifactResolver struct {
 
 var modelArtifactLocks sync.Map
 
-func NewModelCatalog(config ModelsConfig) *ModelCatalog {
-	if strings.TrimSpace(config.Directory) == "" {
-		config.Directory = "/var/cache/graphit-broker/models"
-	}
-	if strings.TrimSpace(config.Embedding) == "" {
-		config.Embedding = "coderankembed"
-	}
-	if strings.TrimSpace(config.Rerank) == "" {
-		config.Rerank = "bge-reranker-base"
-	}
-	return &ModelCatalog{config: config, artifacts: &ArtifactResolver{getenv: os.Getenv, httpClient: http.DefaultClient}}
+func NewModelCatalog() *ModelCatalog {
+	return &ModelCatalog{artifacts: &ArtifactResolver{getenv: os.Getenv, httpClient: http.DefaultClient}}
 }
 
 // SetupModels acquires selected local model artifacts without starting the
 // HTTP server or initializing ONNX sessions.
 func SetupModels(ctx context.Context, cfg Config) error {
-	catalog := NewModelCatalog(cfg.Models)
-	type selected struct {
-		task  string
-		local LocalModelConfig
-	}
-	var models []selected
-	if cfg.Services.Embeddings.Enabled && cfg.Services.Embeddings.Backend == "local" {
-		models = append(models, selected{"embedding", cfg.Services.Embeddings.Local})
-	}
-	if cfg.Services.Rerank.Enabled && cfg.Services.Rerank.Backend == "local" {
-		models = append(models, selected{"rerank", cfg.Services.Rerank.Local})
-	}
-	if cfg.Models.Generate != "" {
-		models = append(models, selected{"generate", LocalModelConfig{}})
-	}
-	for _, selected := range models {
-		if _, err := catalog.Resolve(ctx, selected.task, selected.local, resolveForSetup); err != nil {
+	catalog := NewModelCatalog()
+	for _, selected := range []struct {
+		task     string
+		enabled  bool
+		upstream UpstreamConfig
+	}{
+		{"embedding", cfg.Services.Embeddings.Enabled, cfg.Services.Embeddings.Upstream},
+		{"rerank", cfg.Services.Rerank.Enabled, cfg.Services.Rerank.Upstream},
+	} {
+		selected.upstream.setDefaults(selected.task)
+		if !selected.enabled || !selected.upstream.isONNX() {
+			continue
+		}
+		if _, err := catalog.Resolve(ctx, selected.task, selected.upstream, resolveForSetup); err != nil {
 			return fmt.Errorf("setup %s model: %w", selected.task, err)
 		}
 	}
 	return nil
 }
 
-func (c *ModelCatalog) selectedID(task string) string {
-	switch task {
-	case "embedding":
-		return c.config.Embedding
-	case "rerank":
-		return c.config.Rerank
-	case "generate":
-		return c.config.Generate
-	default:
-		return ""
+func (c *ModelCatalog) Resolve(ctx context.Context, task string, upstream UpstreamConfig, mode modelResolveMode) (*ResolvedModel, error) {
+	upstream.setDefaults(task)
+	if !upstream.isONNX() {
+		return nil, errors.New("model catalog requires upstream.protocol onnx")
 	}
-}
-
-func (c *ModelCatalog) Resolve(ctx context.Context, task string, local LocalModelConfig, mode modelResolveMode) (*ResolvedModel, error) {
-	_ = local
-	if err := os.MkdirAll(c.config.Directory, 0o750); err != nil {
+	if err := upstream.validateONNX("upstream"); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(upstream.Directory, 0o750); err != nil {
 		return nil, fmt.Errorf("create models directory: %w", err)
 	}
-	id := strings.TrimSpace(c.selectedID(task))
-	if id == "" {
-		return nil, fmt.Errorf("models.%s must select a model for a local service", task)
-	}
-	if !safeSegment(id) {
-		return nil, fmt.Errorf("models.%s contains unsafe model ID %q", task, id)
-	}
-	bundleDir, err := secureBundlePath(c.config.Directory, id)
+	id := upstream.Model
+	bundleDir, err := secureBundlePath(upstream.Directory, id)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model %q bundle: %w", id, err)
 	}

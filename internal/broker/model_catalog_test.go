@@ -41,14 +41,14 @@ func TestModelCatalogOnDemandDownloadsOnceWithAuthAndStablePaths(t *testing.T) {
 		testRemoteArtifact("tokenizer", "tokenizer.json", server.URL+"/tokenizer", "private-hf", tokenizerData),
 	})
 	writeTestManifest(t, root, manifest)
-	catalog := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "custom"})
+	catalog := NewModelCatalog()
 	var wg sync.WaitGroup
 	errs := make(chan error, 6)
 	for range 6 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resolved, err := catalog.Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime)
+			resolved, err := catalog.Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "custom"}, resolveForRuntime)
 			if err == nil && (resolved.ModelPath != filepath.Join(root, "custom", "model.onnx") || resolved.TokenizerPath == "") {
 				err = fmtError("unexpected resolved paths")
 			}
@@ -89,12 +89,12 @@ func TestModelCatalogLoadsInstalledNeverBundleWithoutNetwork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bundle, "tokenizer.json"), []byte("local-tokenizer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	catalog := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "installed"})
+	catalog := NewModelCatalog()
 	catalog.artifacts.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("installed never bundle attempted network access")
 		return nil, nil
 	})}
-	resolved, err := catalog.Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime)
+	resolved, err := catalog.Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "installed"}, resolveForRuntime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestModelCatalogFetchPoliciesAndValidation(t *testing.T) {
 				testRemoteArtifact("tokenizer", "tokenizer.json", server.URL, "", content),
 			})
 			writeTestManifest(t, root, manifest)
-			_, err := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "custom"}).Resolve(context.Background(), "embedding", LocalModelConfig{}, tc.mode)
+			_, err := NewModelCatalog().Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "custom"}, tc.mode)
 			if tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
 				t.Fatalf("error=%v, want %q", err, tc.wantError)
 			}
@@ -150,7 +150,7 @@ func TestModelCatalogFetchPoliciesAndValidation(t *testing.T) {
 		{Role: "tokenizer", Path: "tokenizer.json", Required: true},
 	})
 	writeTestManifest(t, root, missingSHA)
-	if _, err := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "bad"}).Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "no sha256") {
+	if _, err := NewModelCatalog().Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "bad"}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "no sha256") {
 		t.Fatalf("remote source without sha256 error=%v", err)
 	}
 }
@@ -169,8 +169,8 @@ func TestSetupModelsAcquiresSelectedLocalBundlesWithoutRuntimeInitialization(t *
 		testRemoteArtifact("tokenizer", "tokenizer.json", server.URL, "", content),
 	})
 	writeTestManifest(t, root, manifest)
-	cfg := Config{Models: ModelsConfig{Directory: root, Embedding: "setup-embedding"}, Services: ServicesConfig{
-		Embeddings: EmbeddingServiceConfig{Enabled: true, Backend: "local"},
+	cfg := Config{Services: ServicesConfig{
+		Embeddings: EmbeddingServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "onnx", Directory: root, Model: "setup-embedding"}},
 	}}
 	if err := SetupModels(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestModelCatalogConfinesPathsAndSymlinks(t *testing.T) {
 	})
 	absolute.Runtime.Entrypoints["model"] = "/tmp/outside.onnx"
 	writeTestManifest(t, root, absolute)
-	if _, err := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "absolute"}).Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "relative") {
+	if _, err := NewModelCatalog().Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "absolute"}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "relative") {
 		t.Fatalf("absolute path error=%v", err)
 	}
 
@@ -201,7 +201,7 @@ func TestModelCatalogConfinesPathsAndSymlinks(t *testing.T) {
 	})
 	escape.Runtime.Entrypoints["model"] = "../outside.onnx"
 	writeTestManifest(t, root, escape)
-	if _, err := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "escape"}).Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "escapes") {
+	if _, err := NewModelCatalog().Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "escape"}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "escapes") {
 		t.Fatalf("path escape error=%v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestModelCatalogConfinesPathsAndSymlinks(t *testing.T) {
 	})
 	symlink.Runtime.Entrypoints["model"] = "linked/model.onnx"
 	writeTestManifest(t, root, symlink)
-	if _, err := NewModelCatalog(ModelsConfig{Directory: root, Embedding: "symlink"}).Resolve(context.Background(), "embedding", LocalModelConfig{}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := NewModelCatalog().Resolve(context.Background(), "embedding", UpstreamConfig{Protocol: "onnx", Directory: root, Model: "symlink"}, resolveForRuntime); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("symlink escape error=%v", err)
 	}
 }
@@ -387,4 +387,66 @@ func wireVarint(value uint64) []byte {
 		value >>= 7
 	}
 	return append(result, byte(value))
+}
+
+func TestSetupModelsUsesIndependentUpstreamSelections(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("artifact"))
+	}))
+	defer server.Close()
+	roots := []string{t.TempDir(), t.TempDir()}
+	ids := []string{"custom-embedding", "custom-rerank"}
+	for i, task := range []string{"embedding", "rerank"} {
+		writeTestManifest(t, roots[i], testManifest(ids[i], task, "setup", []ModelArtifact{
+			testRemoteArtifact("model", "model.onnx", server.URL, "", []byte("artifact")),
+			testRemoteArtifact("tokenizer", "tokenizer.json", server.URL, "", []byte("artifact")),
+		}))
+	}
+	cfg := Config{Services: ServicesConfig{
+		Embeddings: EmbeddingServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "onnx", Model: ids[0], Directory: roots[0]}},
+		Rerank:     RerankServiceConfig{Enabled: true, Upstream: UpstreamConfig{Protocol: "onnx", Model: ids[1], Directory: roots[1]}},
+	}}
+	if err := SetupModels(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 4 {
+		t.Fatalf("requests=%d, want 4", requests.Load())
+	}
+	for i := range roots {
+		if _, err := os.Stat(filepath.Join(roots[i], ids[i], "model.onnx")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(roots[i], ids[1-i])); !os.IsNotExist(err) {
+			t.Fatalf("model resolved in the wrong directory: %v", err)
+		}
+	}
+	if err := SetupModels(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 4 {
+		t.Fatalf("installed artifacts fetched again: %d", requests.Load())
+	}
+}
+
+func TestSetupModelsSkipsDisabledAndHTTPServices(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		root := filepath.Join(t.TempDir(), "untouched")
+		protocol := "onnx"
+		if enabled {
+			protocol = "openai"
+		}
+		// A catalog touch would create this directory and fail on the missing manifest.
+		cfg := Config{Services: ServicesConfig{
+			Embeddings: EmbeddingServiceConfig{Enabled: enabled, Upstream: UpstreamConfig{Protocol: protocol, Directory: root, Model: "missing"}},
+			Rerank:     RerankServiceConfig{Enabled: enabled, Upstream: UpstreamConfig{Protocol: protocol, Directory: root, Model: "missing"}},
+		}}
+		if err := SetupModels(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			t.Fatalf("inactive ONNX catalog was accessed: %v", err)
+		}
+	}
 }

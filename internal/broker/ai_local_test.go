@@ -102,7 +102,7 @@ func TestExplicitCoreMLSessionFailsClearlyOutsideMacOS(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		t.Skip("non-macOS behavior")
 	}
-	_, _, err := newLocalONNXSession("unused.onnx", nil, nil, LocalModelConfig{Device: "coreml"})
+	_, _, err := newLocalONNXSession("unused.onnx", nil, nil, UpstreamConfig{Device: "coreml"})
 	if err == nil || !strings.Contains(err.Error(), "supported only on macOS") {
 		t.Fatalf("CoreML session error=%v", err)
 	}
