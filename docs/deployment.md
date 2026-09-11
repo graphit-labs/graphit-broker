@@ -152,7 +152,9 @@ Graphit Code first reads `/.well-known/graphit-broker`, then uses only the stand
 metadata and endpoints. The Broker-owned authorization page offers local and upstream OIDC login
 when both exist, shows only local when that is the sole method, and redirects immediately when only
 upstream OIDC exists. An upstream token is never returned to Graphit Code: after successful
-authentication, the Broker issues its own EdDSA ID token and opaque access/refresh tokens.
+authentication, the Broker issues its own EdDSA ID/access JWTs and an opaque rotating refresh token.
+The access JWT is audience-bound and verifiable through the Broker JWKS; offline validators accept
+an already issued token until `exp`, even after Broker-side revocation.
 
 Grant only required upstream scopes and map stable claims. Claim mappings accept exact top-level
 keys or RFC 9535 JSONPath. If `authentication.oidc[].role_claim` is enabled, its additional roles

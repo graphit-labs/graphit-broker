@@ -271,7 +271,11 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		}
 		audiences = append(audiences, issuer.Audiences...)
 	}
-	authentication := map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}
+	authentication := map[string]any{
+		"schemes":               []string{"anonymous", "bearer"},
+		"audiences":             cleanStrings(audiences),
+		"access_token_audience": state.config.Authentication.Local.Tokens.Audience,
+	}
 	methods := s.oauthLoginMethods()
 	if len(methods) > 0 {
 		authentication["type"] = "openid_connect"
@@ -531,7 +535,7 @@ func (s *Server) resolvePrincipal(next http.Handler) http.Handler {
 
 func (s *Server) authenticateCredential(ctx context.Context, raw string) (Principal, error) {
 	if s.oidcProvider != nil {
-		if principal, err := s.oidcProvider.storage.AuthenticateAccessToken(ctx, raw, s.oidcProvider.op.Crypto()); err == nil {
+		if principal, err := s.oidcProvider.AuthenticateAccessToken(ctx, raw); err == nil {
 			return principal, nil
 		}
 	}

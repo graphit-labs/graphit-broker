@@ -17,6 +17,9 @@ import (
 
 	coreoidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/pquerna/otp/totp"
+	zitcrypto "github.com/zitadel/oidc/v3/pkg/crypto"
+	zitoidc "github.com/zitadel/oidc/v3/pkg/oidc"
+	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
 func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T) {
@@ -120,8 +123,12 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	if err := verified.Claims(&claims); err != nil || claims["nonce"] != "client-nonce" || claims["preferred_username"] != "consumer" || !strings.HasPrefix(verified.Subject, "gb_sub_") {
 		t.Fatalf("local ID token claims=%#v subject=%q err=%v", claims, verified.Subject, err)
 	}
-	if principal, err := service.oidcProvider.storage.AuthenticateAccessToken(context.Background(), tokens.AccessToken, service.oidcProvider.op.Crypto()); err != nil || principal.Username != "consumer" {
-		t.Fatalf("authenticate Broker access token principal=%#v err=%v", principal, err)
+	if _, exists := claims["organization"]; exists {
+		t.Fatalf("local ID token must omit empty optional organization claim: %#v", claims)
+	}
+	accessClaims := verifyBrokerAccessToken(t, providerContext, provider, tokens.AccessToken, "consumer", "", nil)
+	if principal, err := service.oidcProvider.AuthenticateAccessToken(context.Background(), tokens.AccessToken); err != nil || principal.Username != "consumer" {
+		t.Fatalf("authenticate Broker access token principal=%#v err=%v claims=%#v", principal, err, accessClaims)
 	}
 	userinfo := bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", tokens.AccessToken, "")
 	var userinfoClaims map[string]any
@@ -146,6 +153,10 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	_ = rotatedResponse.Body.Close()
 	if rotated.RefreshToken == "" || rotated.RefreshToken == tokens.RefreshToken {
 		t.Fatalf("refresh token was not rotated: %#v", rotated)
+	}
+	rotatedClaims := verifyBrokerAccessToken(t, providerContext, provider, rotated.AccessToken, "consumer", "", nil)
+	if rotated.AccessToken == tokens.AccessToken || rotatedClaims["jti"] == accessClaims["jti"] || rotatedClaims["sub"] != accessClaims["sub"] {
+		t.Fatalf("refresh did not issue a distinct JWT for the same subject: first=%#v rotated=%#v", accessClaims, rotatedClaims)
 	}
 
 	reused := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
@@ -176,6 +187,25 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	}
 	_ = revoked.Body.Close()
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", revocable.AccessToken, http.StatusUnauthorized)
+	verifyBrokerAccessToken(t, providerContext, provider, revocable.AccessToken, "consumer", "", nil)
+
+	validVerifier := provider.Verifier(&coreoidc.Config{ClientID: "graphit-broker"})
+	invalidTokens := map[string]string{
+		"tampered signature": tamperJWT(tokens.AccessToken),
+		"wrong issuer":       signedBrokerAccessToken(t, service, "https://other-issuer.example", "graphit-broker", time.Now().Add(time.Minute)),
+		"wrong audience":     signedBrokerAccessToken(t, service, httpServer.URL, "other-audience", time.Now().Add(time.Minute)),
+		"expired":            signedBrokerAccessToken(t, service, httpServer.URL, "graphit-broker", time.Now().Add(-time.Minute)),
+	}
+	for name, raw := range invalidTokens {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validVerifier.Verify(providerContext, raw); err == nil {
+				t.Fatal("public discovery/JWKS verifier accepted invalid access token")
+			}
+			if _, err := service.oidcProvider.AuthenticateAccessToken(context.Background(), raw); err == nil {
+				t.Fatal("Broker internal verifier accepted invalid access token")
+			}
+		})
+	}
 
 	var rawPersisted int
 	if err := service.control.db.QueryRow(`SELECT COUNT(*) FROM local_tokens WHERE token_hash=? OR token_id=?`, tokens.AccessToken, tokens.AccessToken).Scan(&rawPersisted); err != nil || rawPersisted != 0 {
@@ -286,6 +316,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	if err != nil || claims["preferred_username"] != "root" || claims["nonce"] != "graphit-nonce" || !strings.HasPrefix(verifiedSubject, "gb_sub_") {
 		t.Fatalf("OIDC token claims=%#v subject=%q err=%v", claims, verifiedSubject, err)
 	}
+	accessClaims := verifyBrokerAccessToken(t, providerContext, provider, token.AccessToken, "root", "acme", []string{"platform"})
 	if token.RefreshToken == "" {
 		t.Fatal("upstream-authenticated Broker OIDC login omitted refresh token")
 	}
@@ -309,6 +340,10 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	_ = refreshResponse.Body.Close()
 	if refreshed.AccessToken == "" || refreshed.RefreshToken == "" || refreshed.RefreshToken == token.RefreshToken {
 		t.Fatalf("upstream-authenticated refresh did not rotate: %#v", refreshed)
+	}
+	refreshedClaims := verifyBrokerAccessToken(t, providerContext, provider, refreshed.AccessToken, "root", "acme", []string{"platform"})
+	if refreshed.AccessToken == token.AccessToken || refreshedClaims["jti"] == accessClaims["jti"] || refreshedClaims["sub"] != accessClaims["sub"] {
+		t.Fatalf("upstream refresh did not issue a distinct Broker JWT for the same subject: first=%#v refreshed=%#v", accessClaims, refreshedClaims)
 	}
 	userinfo = bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", refreshed.AccessToken, "")
 	userinfoClaims = map[string]any{}
@@ -358,6 +393,78 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 		t.Fatalf("unavailable OIDC method status=%d", unavailableOIDC.StatusCode)
 	}
 	_ = unavailableOIDC.Body.Close()
+}
+
+func verifyBrokerAccessToken(t *testing.T, ctx context.Context, provider *coreoidc.Provider, raw, username, organization string, groups []string) map[string]any {
+	t.Helper()
+	if strings.Count(raw, ".") != 2 {
+		t.Fatalf("Broker access token is not a compact signed JWT")
+	}
+	verified, err := provider.Verifier(&coreoidc.Config{ClientID: "graphit-broker"}).Verify(ctx, raw)
+	if err != nil {
+		t.Fatalf("verify Broker access token through discovery/JWKS: %v", err)
+	}
+	var claims map[string]any
+	if err := verified.Claims(&claims); err != nil {
+		t.Fatalf("decode verified Broker access token claims: %v", err)
+	}
+	scope, scopeOK := claims["scope"].(string)
+	if verified.Issuer == "" || verified.Subject == "" || verified.Expiry.Before(time.Now()) || claims["iat"] == nil || claims["jti"] == "" ||
+		claims["client_id"] != "graphit-cli" || claims["preferred_username"] != username || !scopeOK || !strings.Contains(scope, localAPIScope) {
+		t.Fatalf("incomplete Broker access token claims=%#v", claims)
+	}
+	if organization == "" {
+		if _, exists := claims["organization"]; exists {
+			t.Fatalf("empty optional organization claim must be omitted: %#v", claims)
+		}
+	} else if claims["organization"] != organization {
+		t.Fatalf("organization claim=%#v expected=%q", claims["organization"], organization)
+	}
+	if len(groups) == 0 {
+		if _, exists := claims["groups"]; exists {
+			t.Fatalf("empty optional groups claim must be omitted: %#v", claims)
+		}
+	} else {
+		got, _ := claims["groups"].([]any)
+		if len(got) != len(groups) {
+			t.Fatalf("groups claim=%#v expected=%v", claims["groups"], groups)
+		}
+		for i := range groups {
+			if got[i] != groups[i] {
+				t.Fatalf("groups claim=%#v expected=%v", claims["groups"], groups)
+			}
+		}
+	}
+	return claims
+}
+
+func signedBrokerAccessToken(t *testing.T, service *Server, issuer, audience string, expiry time.Time) string {
+	t.Helper()
+	claims := zitoidc.NewAccessTokenClaims(issuer, "gb_sub_test", []string{audience}, expiry, "test-jti", "graphit-cli", 0)
+	claims.Scopes = zitoidc.SpaceDelimitedArray{localAPIScope}
+	signer, err := op.SignerFromKey(service.oidcProvider.storage.signingKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := zitcrypto.Sign(claims, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func tamperJWT(raw string) string {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 || parts[2] == "" {
+		return raw + "invalid"
+	}
+	first := parts[2][0]
+	replacement := byte('A')
+	if first == replacement {
+		replacement = 'B'
+	}
+	parts[2] = string(replacement) + parts[2][1:]
+	return strings.Join(parts, ".")
 }
 
 func TestOAuthOIDCStartURLPreservesRequestID(t *testing.T) {

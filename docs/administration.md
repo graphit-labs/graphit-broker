@@ -177,17 +177,20 @@ A desktop client first reads `/.well-known/graphit-broker`, then uses the Broker
 `/.well-known/openid-configuration`, authorization, token, JWKS, userinfo, and revocation endpoints.
 The protocol implementation is provided by `github.com/zitadel/oidc/v3`; the Broker-owned page
 offers local and OIDC login only when each method is configured and available. The Broker completes
-either method and returns a signed ID token plus opaque access/refresh tokens. Graphit Code never
+either method and returns signed ID/access JWTs plus an opaque rotating refresh token. Graphit Code never
 needs the upstream issuer or client secret. If only upstream OIDC is enabled, the choice page is
 skipped and the browser is redirected automatically. The broker
 requires PKCE S256, the configured public client ID, an exact callback path, and an explicit
 `127.0.0.1` or `::1` port. A headless CLI starts at `POST /oauth/device/authorize`, shows the returned
 user code, and polls `/oauth/token` only after the user approves it locally at `/oauth/device`.
 
-ID tokens use EdDSA and are verified through `/oauth/keys`; `sub` is stable and distinct from
-`preferred_username`. Access tokens default to ten minutes. Requesting `offline_access` also returns a rotating refresh
+ID and access tokens use EdDSA and are verified through `/oauth/keys`; `sub` is stable and distinct from
+`preferred_username`. Access tokens default to ten minutes and use the configured Broker audience.
+Requesting `offline_access` also returns a rotating refresh
 token. Reuse of an already rotated refresh token revokes the whole token family. Clients revoke a
-token at `POST /oauth/revoke`. Browser/device login security—temporary-password replacement, TOTP
+token at `POST /oauth/revoke`. Revocation takes effect immediately at Broker endpoints, while an
+offline JWKS validator accepts an access JWT already issued until `exp`. Browser/device login
+security—temporary-password replacement, TOTP
 enrollment/verification, MFA reset and adaptive CAPTCHA—remains enforced before authorization.
 
 ## Grant API workflow

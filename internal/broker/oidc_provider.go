@@ -48,6 +48,11 @@ type brokerOIDCProvider struct {
 	storage *brokerOIDCStorage
 }
 
+func (p *brokerOIDCProvider) AuthenticateAccessToken(ctx context.Context, raw string) (Principal, error) {
+	issuerContext := op.ContextWithIssuer(ctx, strings.TrimRight(strings.TrimSpace(p.storage.cfg.Server.PublicURL), "/"))
+	return p.storage.AuthenticateAccessToken(issuerContext, raw, p.op.AccessTokenVerifier(issuerContext))
+}
+
 func newBrokerOIDCProvider(cfg Config, control *ControlStore) (*brokerOIDCProvider, error) {
 	if control == nil {
 		return nil, errors.New("OIDC provider requires the control store")
@@ -70,6 +75,7 @@ func newBrokerOIDCProvider(cfg Config, control *ControlStore) (*brokerOIDCProvid
 	}
 	options := []op.Option{
 		op.WithCORSOptions(nil),
+		op.WithAccessTokenVerifierOpts(op.WithSupportedAccessTokenSigningAlgorithms(string(jose.EdDSA))),
 		op.WithCustomAuthEndpoint(op.NewEndpoint(oidcAuthorizationPath)),
 		op.WithCustomTokenEndpoint(op.NewEndpoint(oidcTokenPath)),
 		op.WithCustomUserinfoEndpoint(op.NewEndpoint(oidcUserinfoPath)),
@@ -130,7 +136,7 @@ func (c *brokerOIDCClient) GrantTypes() []zitoidc.GrantType {
 func (c *brokerOIDCClient) LoginURL(id string) string {
 	return oidcLoginPath + "?id=" + url.QueryEscape(id)
 }
-func (c *brokerOIDCClient) AccessTokenType() op.AccessTokenType { return op.AccessTokenTypeBearer }
+func (c *brokerOIDCClient) AccessTokenType() op.AccessTokenType { return op.AccessTokenTypeJWT }
 func (c *brokerOIDCClient) IDTokenLifetime() time.Duration      { return c.cfg.AccessTTL }
 func (c *brokerOIDCClient) DevMode() bool                       { return false }
 func (c *brokerOIDCClient) RestrictAdditionalIdTokenScopes() func([]string) []string {
@@ -148,6 +154,7 @@ func (c *brokerOIDCClient) ClockSkew() time.Duration             { return 0 }
 type brokerOIDCAuthRequest struct {
 	ID                  string               `json:"-"`
 	ClientID            string               `json:"client_id"`
+	Audience            string               `json:"audience"`
 	RedirectURI         string               `json:"redirect_uri"`
 	State               string               `json:"state"`
 	Scopes              []string             `json:"scopes"`
@@ -166,7 +173,7 @@ type brokerOIDCAuthRequest struct {
 func (r *brokerOIDCAuthRequest) GetID() string                         { return r.ID }
 func (r *brokerOIDCAuthRequest) GetACR() string                        { return "" }
 func (r *brokerOIDCAuthRequest) GetAMR() []string                      { return append([]string(nil), r.AMR...) }
-func (r *brokerOIDCAuthRequest) GetAudience() []string                 { return []string{r.ClientID} }
+func (r *brokerOIDCAuthRequest) GetAudience() []string                 { return []string{r.Audience} }
 func (r *brokerOIDCAuthRequest) GetAuthTime() time.Time                { return r.AuthTime }
 func (r *brokerOIDCAuthRequest) GetClientID() string                   { return r.ClientID }
 func (r *brokerOIDCAuthRequest) GetNonce() string                      { return r.Nonce }
@@ -187,7 +194,7 @@ func (r *brokerOIDCAuthRequest) GetCodeChallenge() *zitoidc.CodeChallenge {
 type brokerOIDCRefreshRequest struct{ grant LocalTokenGrant }
 
 func (r *brokerOIDCRefreshRequest) GetAMR() []string       { return []string{r.grant.Principal.AuthMethod} }
-func (r *brokerOIDCRefreshRequest) GetAudience() []string  { return []string{r.grant.ClientID} }
+func (r *brokerOIDCRefreshRequest) GetAudience() []string  { return []string{r.grant.Audience} }
 func (r *brokerOIDCRefreshRequest) GetAuthTime() time.Time { return r.grant.AuthTime }
 func (r *brokerOIDCRefreshRequest) GetClientID() string    { return r.grant.ClientID }
 func (r *brokerOIDCRefreshRequest) GetScopes() []string {
@@ -228,7 +235,7 @@ func (s *brokerOIDCStorage) CreateAuthRequest(ctx context.Context, input *zitoid
 	if err != nil {
 		return nil, err
 	}
-	request := &brokerOIDCAuthRequest{ID: id, ClientID: input.ClientID, RedirectURI: input.RedirectURI, State: input.State,
+	request := &brokerOIDCAuthRequest{ID: id, ClientID: input.ClientID, Audience: s.cfg.Authentication.Local.Tokens.Audience, RedirectURI: input.RedirectURI, State: input.State,
 		Scopes: cleanStrings(input.Scopes), ResponseType: input.ResponseType, ResponseMode: input.ResponseMode, Nonce: input.Nonce,
 		CodeChallenge: input.CodeChallenge, CodeChallengeMethod: string(input.CodeChallengeMethod)}
 	payload, err := json.Marshal(request)
@@ -553,9 +560,15 @@ func (s *brokerOIDCStorage) setUserinfo(userinfo *zitoidc.UserInfo, subject stri
 	userinfo.Name = principal.Name
 	userinfo.Email = principal.Email
 	userinfo.PreferredUsername = principal.Username
-	userinfo.AppendClaims("organization", principal.Organization)
-	userinfo.AppendClaims("groups", cleanStrings(principal.Teams))
-	userinfo.AppendClaims("roles", cleanStrings(principal.Roles))
+	if organization := strings.TrimSpace(principal.Organization); organization != "" {
+		userinfo.AppendClaims("organization", organization)
+	}
+	if groups := cleanStrings(principal.Teams); len(groups) > 0 {
+		userinfo.AppendClaims("groups", groups)
+	}
+	if roles := cleanStrings(principal.Roles); len(roles) > 0 {
+		userinfo.AppendClaims("roles", roles)
+	}
 }
 
 func (s *brokerOIDCStorage) SetIntrospectionFromToken(ctx context.Context, response *zitoidc.IntrospectionResponse, tokenID, oidcSubject, clientID string) error {
@@ -572,6 +585,37 @@ func (s *brokerOIDCStorage) SetIntrospectionFromToken(ctx context.Context, respo
 func (s *brokerOIDCStorage) GetPrivateClaimsFromScopes(context.Context, string, string, []string) (map[string]any, error) {
 	return nil, nil
 }
+
+func (s *brokerOIDCStorage) GetPrivateClaimsFromRequest(ctx context.Context, request op.TokenRequest, _ []string) (map[string]any, error) {
+	grant, err := s.grantFromRequest(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	principal, err := s.validPrincipal(ctx, grant)
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]any{
+		"preferred_username": principal.Username,
+		"scope":              strings.Join(cleanStrings(request.GetScopes()), " "),
+	}
+	if name := strings.TrimSpace(principal.Name); name != "" {
+		claims["name"] = name
+	}
+	if email := strings.TrimSpace(principal.Email); email != "" {
+		claims["email"] = email
+	}
+	if organization := strings.TrimSpace(principal.Organization); organization != "" {
+		claims["organization"] = organization
+	}
+	if groups := cleanStrings(principal.Teams); len(groups) > 0 {
+		claims["groups"] = groups
+	}
+	if roles := cleanStrings(principal.Roles); len(roles) > 0 {
+		claims["roles"] = roles
+	}
+	return claims, nil
+}
 func (s *brokerOIDCStorage) GetKeyByIDAndClientID(context.Context, string, string) (*jose.JSONWebKey, error) {
 	return nil, errors.New("JWT client authentication is not supported")
 }
@@ -579,23 +623,21 @@ func (s *brokerOIDCStorage) ValidateJWTProfileScopes(context.Context, string, []
 	return nil, errors.New("JWT bearer grants are not supported")
 }
 
-func (s *brokerOIDCStorage) AuthenticateAccessToken(ctx context.Context, raw string, crypto op.Crypto) (Principal, error) {
-	decrypted, err := crypto.Decrypt(raw)
-	if err != nil {
+func (s *brokerOIDCStorage) AuthenticateAccessToken(ctx context.Context, raw string, verifier *op.AccessTokenVerifier) (Principal, error) {
+	claims, err := op.VerifyAccessToken[*zitoidc.AccessTokenClaims](ctx, raw, verifier)
+	if err != nil || claims.JWTID == "" || claims.Subject == "" || claims.ClientID != s.client.GetID() ||
+		!slices.Contains(claims.Audience, s.cfg.Authentication.Local.Tokens.Audience) || !slices.Contains([]string(claims.Scopes), localAPIScope) {
 		return Principal{}, ErrUnauthenticated
 	}
-	tokenID, oidcSubject, ok := strings.Cut(decrypted, ":")
-	if !ok || tokenID == "" || oidcSubject == "" {
-		return Principal{}, ErrUnauthenticated
-	}
-	grant, err := s.control.OIDCAccessTokenGrant(ctx, tokenID)
+	grant, err := s.control.OIDCAccessTokenGrant(ctx, claims.JWTID)
 	if err != nil {
 		return Principal{}, ErrUnauthenticated
 	}
 	principal, err := s.validPrincipal(ctx, grant)
-	if err != nil || subtle.ConstantTimeCompare([]byte(oidcSubject), []byte(s.subject(principal))) != 1 {
+	if err != nil || grant.ClientID != claims.ClientID || !slices.Contains(claims.Audience, grant.Audience) ||
+		subtle.ConstantTimeCompare([]byte(claims.Subject), []byte(s.subject(principal))) != 1 {
 		return Principal{}, ErrUnauthenticated
 	}
-	principal.Scopes = cleanStrings(grant.Scopes)
+	principal.Scopes = cleanStrings([]string(claims.Scopes))
 	return principal, nil
 }

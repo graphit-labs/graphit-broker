@@ -59,7 +59,7 @@ reverse proxy in production. For local HTTP development, set `administration.coo
 
 `authentication.token_pepper` is the single deployment secret used with domain separation for
 local password preprocessing, administration sessions, upstream OIDC state, Broker OIDC subjects,
-Ed25519 signing seeds, bearer encryption, authorization grants, access/refresh records, MFA secrets,
+Ed25519 signing seeds, authorization grants, access/refresh records, MFA secrets,
 and service credentials. It must contain at least 32 bytes whenever administration,
 local login, or browser OIDC login is enabled and is never stored in SQL.
 
@@ -180,10 +180,17 @@ authentication:
 
 Desktop authorization is a standard public/native OIDC client and accepts only a loopback redirect
 with a nonzero dynamic port and the configured exact path. PKCE method `S256`, `state`, `nonce`,
-`openid`, and `graphit.use` are mandatory. ID tokens use EdDSA and the public JWKS. Access tokens are short-lived;
+`openid`, and `graphit.use` are mandatory. ID and access tokens use EdDSA and the public JWKS. Access
+tokens are short-lived JWTs whose `aud` is `authentication.local.tokens.audience` and whose signed
+claims include `sub`, `client_id`, `scope`, `preferred_username`, and any non-empty optional identity
+attributes;
 refresh tokens are issued only when `offline_access` is requested, rotate on every use, retain one
 absolute lifetime, and revoke their family when reuse is detected. Service credential expiration
 is mandatory and may not exceed `service_credential_max_ttl`.
+
+The Broker consults SQL token state for its own API, userinfo, introspection, and revocation
+endpoints, so revocation is immediate there. A service that validates an access JWT offline through
+discovery/JWKS has no revocation lookup and will accept an already issued token until `exp`.
 
 `authentication.oidc` is the shared list of trusted issuers for consumer bearer validation and
 browser login. Each entry accepts `enabled` (default `true`). Setting it to `false` disables issuer
@@ -247,9 +254,11 @@ verification page. It is never accepted in `Authorization`. Desktop CLI login us
 Authorization Code with PKCE through the Broker-owned method chooser; headless login uses local
 Device Authorization. Local and upstream browser methods both produce the same Broker OIDC session whose
 raw values are never stored in SQL. Automation uses a credential attached to a `service` identity.
-All local tokens are audience- and scope-bound, expire, can be revoked, and stop authenticating
-when the owning identity revision changes. Omitting the header creates an anonymous principal,
-which can work only when an explicit `anonymous` resource grant matches.
+All local credentials are audience- and scope-bound and expire. The Broker's own request path also
+checks revocation and the current identity revision. Broker-issued access JWTs validated by another
+service through JWKS are intentionally self-contained and remain valid there until `exp`; use a
+short `access_ttl` to bound that window. Omitting the header creates an anonymous principal, which
+can work only when an explicit `anonymous` resource grant matches.
 
 ## Administration
 

@@ -21,6 +21,7 @@ Example discovery:
   "authentication": {
     "schemes": ["anonymous", "bearer"],
     "audiences": ["graphit-broker"],
+    "access_token_audience": "graphit-broker",
     "type": "openid_connect",
     "issuer": "https://broker.example",
     "client_id": "graphit-cli",
@@ -220,7 +221,7 @@ principal has the effective default `user` role.
 ## Graphit Code OpenID Connect API
 
 - `GET /.well-known/openid-configuration` — standard provider metadata;
-- `GET /oauth/keys` — Ed25519 JSON Web Key Set used to verify ID tokens;
+- `GET /oauth/keys` — Ed25519 JSON Web Key Set used to verify ID and access tokens;
 - `GET/POST /oauth/authorize` — standard authorization endpoint; transfers control to the Broker-owned local/upstream method page;
 - `GET /oauth/authorize/callback` — resumes the library-owned authorization after the selected method succeeds;
 - `GET /oauth/oidc/callback` — completes an upstream OIDC login and resumes the Graphit Code authorization;
@@ -236,12 +237,14 @@ The Broker is an OpenID Provider implemented with `github.com/zitadel/oidc/v3`. 
 client uses Authorization Code, PKCE S256, `state`, `nonce`, and no client secret. Its callback has
 the configured exact path on a dynamic loopback port. Graphit Code learns issuer, client ID, scopes,
 and callback path from Broker discovery, then uses only standard OIDC discovery and endpoints; it
-never receives upstream IdP configuration. The ID token is signed with EdDSA and exposes a stable,
-pairwise-style `sub` derived from the underlying canonical identity. Issued opaque access tokens
-contain the `graphit.use` scope, are audience-bound and expire after ten
-minutes by default. Requesting `offline_access` produces a refresh token with rotation and family
-reuse detection. Token responses are `Cache-Control: no-store`; SQL contains only domain-separated
-HMACs of raw codes and tokens.
+never receives upstream IdP configuration. ID and access tokens are signed with EdDSA. The ID token
+exposes a stable, pairwise-style `sub` derived from the underlying canonical identity. The access
+token is a JWT verifiable through discovery/JWKS; it uses `authentication.access_token_audience`,
+contains `graphit.use`, client and identity claims, and expires after ten minutes by default.
+Requesting `offline_access` produces an opaque refresh token with rotation and family reuse
+detection. Token responses are `Cache-Control: no-store`; SQL stores no raw JWT or refresh token,
+only the access-token `jti`, domain-separated credential HMACs, and lifecycle metadata. Revocation
+is immediate at Broker endpoints; offline JWKS validators accept an issued access JWT until `exp`.
 
 The device grant is deliberately separate from the Graphit Code browser login contract. It issues
 only a short-lived local API access token and rejects `offline_access`; it does not produce an ID

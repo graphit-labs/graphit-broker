@@ -94,6 +94,11 @@ selectors, then either creates a short-lived administration cookie session or re
 Broker authorization. The OIDC provider library then returns a one-time code to Graphit Code's
 loopback callback and signs an EdDSA ID token whose `sub` is derived from the canonical underlying
 identity, independent of mutable username.
+The access token is also an EdDSA JWT signed by the Broker and verifiable through its standard
+discovery/JWKS. Its audience is the configured Broker token audience, and it carries the stable
+Broker subject, client, scopes, preferred username, and non-empty optional organization/group/role
+claims. Refresh tokens remain opaque and rotate on every use. Broker-side revocation is immediate
+for Broker endpoints; offline JWKS validators accept an already issued access token until `exp`.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
 

@@ -75,19 +75,21 @@ The Broker's public/native OpenID Connect client registration requires Authoriza
 unpredictable state and nonce, and an exact loopback callback path with a nonzero dynamic port.
 The mature ZITADEL Go OIDC provider library owns protocol parsing, discovery, authorization, token,
 JWKS, userinfo, introspection, revocation, and end-session behavior. Request objects are disabled,
-CORS is disabled, and ID tokens are signed with an Ed25519 key derived in a dedicated pepper domain.
+CORS is disabled, and ID/access tokens are signed with an Ed25519 key derived in a dedicated pepper domain.
 The stable Broker `sub` is an HMAC-derived identifier over the canonical underlying issuer/subject,
 so local and upstream identities cannot collide and username changes do not change authorization identity.
 The Broker issuer is `server.public_url`. Graphit Code bootstraps its public client settings from
 Broker discovery and thereafter follows only standard OIDC discovery/endpoints; it never receives
 the upstream issuer configuration, client secret, password, or IdP token. Headless login remains a
 separate OAuth Device Authorization flow and does not issue an ID token or refresh token. Browser
-OIDC access tokens are opaque, audience- and
-scope-bound, and expire after ten minutes by default. Optional refresh tokens rotate on each use;
+OIDC access tokens are signed JWTs verifiable through the public JWKS, audience- and scope-bound,
+and expire after ten minutes by default. Optional opaque refresh tokens rotate on each use;
 reuse revokes the whole family. Automation uses passwordless service identities with independent,
 expiring credentials that can be listed by metadata and revoked individually. All local tokens are
-bound to the current identity revision, so password/attribute changes, disablement, or deletion
-invalidates them. A short-lived access token remains replayable if stolen during its lifetime;
+bound to the current identity revision when used against the Broker, so password/attribute changes,
+disablement, deletion, or revocation invalidate them there. Offline JWKS validators cannot observe
+that SQL state and accept an already issued access JWT until `exp`. A short-lived access token
+remains replayable if stolen during its lifetime;
 HTTPS and secret-safe clients remain mandatory. DPoP and mTLS are not claimed by this implementation.
 
 Password preprocessing uses a dedicated domain and

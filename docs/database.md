@@ -21,9 +21,10 @@ cryptographic domains, and a callback consumes a row only when both values match
 
 OIDC authorization requests store a domain-separated HMAC of the request ID, serialized protocol
 state, and later a one-time code HMAC; raw request IDs and codes are not persisted. Authorization
-codes and device codes are short-lived and one-time. Access and refresh tokens are
-bound to the owning local identity revision. Refresh-token rows retain their family identifier so
-reuse can revoke every related token. Service credential rows retain a non-secret ID, expiry,
+codes and device codes are short-lived and one-time. The raw signed access JWT is never persisted;
+SQL keeps its non-secret `jti` and lifecycle metadata. Refresh tokens are stored only by
+domain-separated HMAC and remain bound to the owning local identity revision. Refresh-token rows
+retain their family identifier so reuse can revoke every related token. Service credential rows retain a non-secret ID, expiry,
 revocation, and last-use timestamps for administration without exposing the secret again.
 
 ## Common configuration

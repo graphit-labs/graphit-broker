@@ -48,7 +48,7 @@ flows, then scale.
 ## Rotation
 
 - Upstream OIDC validation keys follow the upstream issuer's JWKS rotation.
-- The Broker OpenID Provider's Ed25519 signing key, opaque-token encryption key, and stable-subject
+- The Broker OpenID Provider's Ed25519 signing key, internal protocol key, and stable-subject
   derivation are separate keys derived from `authentication.token_pepper`. The current development
   implementation publishes one signing key and has no online key ring: changing the pepper rotates
   all three at restart and deliberately invalidates every Broker-issued token, local credential,
@@ -69,7 +69,9 @@ flows, then scale.
 
 For a leaked upstream OIDC token, revoke or expire it at that upstream IdP. For a leaked
 Broker-issued OIDC access or refresh token, call `/oauth/revoke`; refresh-token reuse also revokes
-its complete family. Revoke a service credential through administration. Changing or disabling the
+its complete family. Broker endpoints enforce that state immediately, but services performing
+offline JWKS validation accept an access JWT already issued until `exp`; keep `access_ttl` short.
+Revoke a service credential through administration. Changing or disabling the
 owning local identity increments its revision and invalidates its existing sessions and tokens.
 For a leaked S3 or AI key, rotate it at the upstream, update deployment secrets, and restart. For
 database exposure, invalidate live admin sessions, reset local passwords, and restore trusted

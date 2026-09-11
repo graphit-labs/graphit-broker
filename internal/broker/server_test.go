@@ -508,7 +508,8 @@ func TestDisabledOIDCIssuerIsExcludedFromDiscoverySessionsAndGrants(t *testing.T
 	}
 	var body struct {
 		Authentication struct {
-			Audiences []string `json:"audiences"`
+			Audiences           []string `json:"audiences"`
+			AccessTokenAudience string   `json:"access_token_audience"`
 		} `json:"authentication"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
@@ -516,6 +517,9 @@ func TestDisabledOIDCIssuerIsExcludedFromDiscoverySessionsAndGrants(t *testing.T
 	}
 	if containsString(body.Authentication.Audiences, "disabled-audience") || !containsString(body.Authentication.Audiences, "active-audience") {
 		t.Fatalf("unexpected audiences=%v", body.Authentication.Audiences)
+	}
+	if body.Authentication.AccessTokenAudience != cfg.Authentication.Local.Tokens.Audience {
+		t.Fatalf("access token audience=%q expected=%q", body.Authentication.AccessTokenAudience, cfg.Authentication.Local.Tokens.Audience)
 	}
 	store, err := OpenControlStore(testDatabase(":memory:"), testPasswordPepper)
 	if err != nil {
