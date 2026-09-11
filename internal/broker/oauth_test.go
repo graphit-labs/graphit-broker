@@ -214,7 +214,9 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	}
 	pageBody, _ := io.ReadAll(page.Body)
 	_ = page.Body.Close()
-	if page.StatusCode != http.StatusOK || !strings.Contains(string(pageBody), "Sign in locally") || !strings.Contains(string(pageBody), "Continue with OpenID Connect") {
+	if page.StatusCode != http.StatusOK || !strings.HasPrefix(page.Header.Get("Content-Type"), "text/html") ||
+		!strings.Contains(string(pageBody), `data-ui="graphit-auth"`) || !strings.Contains(string(pageBody), `class="auth-shell"`) ||
+		!strings.Contains(string(pageBody), "Sign in locally") || !strings.Contains(string(pageBody), "Continue with OpenID Connect") {
 		t.Fatalf("authorization methods status=%d body=%s", page.StatusCode, pageBody)
 	}
 
@@ -332,6 +334,25 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	_ = unavailableOIDC.Body.Close()
 }
 
+func TestOAuthLoginInvalidRequestRendersStyledBrowserError(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+
+	response, err := http.Get(httpServer.URL + "/oauth/login?id=xpto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") || response.Header.Get("X-Frame-Options") != "DENY" ||
+		!bytes.Contains(body, []byte(`data-ui="graphit-auth"`)) || !bytes.Contains(body, []byte(`class="alert" role="alert"`)) ||
+		!bytes.Contains(body, []byte("authorization request is invalid or has expired")) || !bytes.Contains(body, []byte("Authorization cannot continue")) ||
+		bytes.Contains(body, []byte(`name="username"`)) || bytes.Contains(body, []byte(`"error":"invalid_request"`)) {
+		t.Fatalf("invalid OAuth login status=%d content-type=%q body=%s", response.StatusCode, response.Header.Get("Content-Type"), body)
+	}
+}
+
 func absoluteTestURL(base, target string) string {
 	if strings.HasPrefix(target, "/") {
 		return base + target
@@ -353,6 +374,18 @@ func TestDeviceAuthorizationRequiresApprovalAndIsOneTime(t *testing.T) {
 		t.Fatalf("device authorization status=%d", response.StatusCode)
 	}
 	_ = response.Body.Close()
+	verification, err := http.Get(httpServer.URL + "/oauth/device?user_code=" + url.QueryEscape(device.UserCode))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationBody, _ := io.ReadAll(verification.Body)
+	_ = verification.Body.Close()
+	if verification.StatusCode != http.StatusOK || !strings.HasPrefix(verification.Header.Get("Content-Type"), "text/html") ||
+		!bytes.Contains(verificationBody, []byte(`data-ui="graphit-auth"`)) || !bytes.Contains(verificationBody, []byte(`class="auth-shell"`)) ||
+		!bytes.Contains(verificationBody, []byte(`name="user_code"`)) || !bytes.Contains(verificationBody, []byte(device.UserCode)) ||
+		!bytes.Contains(verificationBody, []byte(`name="username"`)) || !bytes.Contains(verificationBody, []byte(`name="password"`)) {
+		t.Fatalf("device verification status=%d content-type=%q body=%s", verification.StatusCode, verification.Header.Get("Content-Type"), verificationBody)
+	}
 	pending := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{"grant_type": {deviceGrantType}, "client_id": {"graphit-cli"}, "device_code": {device.DeviceCode}})
 	pendingBody, _ := io.ReadAll(pending.Body)
 	_ = pending.Body.Close()

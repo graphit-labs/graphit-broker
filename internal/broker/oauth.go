@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -15,43 +16,37 @@ import (
 
 const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
-const localCaptchaWidget = `{{if .Captcha}}{{if eq .Captcha.Provider "turnstile"}}<div class="cf-turnstile" data-sitekey="{{.Captcha.SiteKey}}" data-action="{{.Captcha.Action}}"></div><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{{else}}<div class="g-recaptcha" data-sitekey="{{.Captcha.SiteKey}}"></div><script src="https://www.google.com/recaptcha/api.js" async defer></script>{{end}}{{end}}`
+//go:embed oauthui/index.html
+var oauthHTML string
 
-const localLoginForms = `{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
-{{if eq .Status "password-change"}}<p>You must replace the temporary password before continuing.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>New password <input name="new_password" type="password" minlength="15" autocomplete="new-password" required></label><label>Confirm password <input name="confirm_password" type="password" minlength="15" autocomplete="new-password" required></label><button type="submit">Change password</button></form>
-{{else if eq .Status "mfa-enrollment"}}<p>Set up MFA in Google Authenticator or another TOTP application, then enter the displayed code.</p><img src="{{.QRCodeDataURL}}" width="256" height="256" alt="TOTP enrollment QR code"><p>Manual key: <code>{{.Secret}}</code></p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication code <input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><button type="submit">Confirm MFA</button></form>
-{{else if eq .Status "mfa"}}<p>Enter a six-digit authenticator code or one unused recovery code.</p><form method="post"><input type="hidden" name="challenge_token" value="{{.ChallengeToken}}">{{if .UserCode}}<input type="hidden" name="user_code" value="{{.UserCode}}">{{end}}<label>Authentication or recovery code <input name="code" autocomplete="one-time-code" required></label><button type="submit">Verify</button></form>
-{{else if .RecoveryCodes}}<h2>Save your recovery codes</h2><p>Each code works once. They will not be shown again.</p><ul>{{range .RecoveryCodes}}<li><code>{{.}}</code></li>{{end}}</ul>{{if .Redirect}}<p><a href="{{.Redirect}}">Continue to Graphit CLI</a></p>{{else}}<p>Device authorized. You may close this page.</p>{{end}}
-	{{else}}{{if .Device}}<form method="post"><label>Device code <input name="user_code" value="{{.UserCode}}" autocomplete="one-time-code" required></label><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label>` + localCaptchaWidget + `<button type="submit">Authorize</button></form>{{else if .Local}}<form method="post"><input type="hidden" name="login_method" value="local"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" minlength="15" autocomplete="current-password" required></label>` + localCaptchaWidget + `<button type="submit">Sign in locally</button></form>{{end}}{{end}}`
-
-var localAuthorizationPage = template.Must(template.New("authorize").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Graphit</title></head><body><main><h1>Sign in to Graphit</h1><p>Choose an authentication method managed by this Graphit Broker.</p>{{if .OIDC}}<section><h2>Organization account</h2><form method="post"><button type="submit" name="login_method" value="oidc">Continue with OpenID Connect</button></form></section>{{end}}{{if or .Local .Status .RecoveryCodes}}<section><h2>Local account</h2><p>Your password is used only for this login and is never issued as an API credential.</p>` + localLoginForms + `</section>{{end}}</main></body></html>`))
-
-var deviceVerificationPage = template.Must(template.New("device").Parse(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Authorize device</title></head><body><main><h1>Authorize device</h1>{{if .Approved}}<p>Device authorized. You may close this page.</p>{{else}}<p>Enter the code shown by the CLI and sign in with a local human account.</p>` + localLoginForms + `{{end}}</main></body></html>`))
+var oauthAuthorizationPage = template.Must(template.New("oauth-browser").Parse(oauthHTML))
+var localAuthorizationPage = oauthAuthorizationPage
+var deviceVerificationPage = oauthAuthorizationPage
 
 type localLoginPageData struct {
 	Error, Status, ChallengeToken, Secret, UserCode, Redirect string
 	QRCodeDataURL                                             template.URL
 	RecoveryCodes                                             []string
-	Device, Approved                                          bool
+	Device, Approved, Fatal                                   bool
 	Local, OIDC                                               bool
 	Captcha                                                   *localCaptchaChallenge
 }
 
 func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if s.control == nil {
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization is unavailable")
+		s.writeOAuthLoginError(w, http.StatusServiceUnavailable, "Authorization is temporarily unavailable.")
 		return
 	}
 	requestID := strings.TrimSpace(r.URL.Query().Get("id"))
 	authRequest, err := s.oidcProvider.storage.AuthRequestByID(r.Context(), requestID)
 	if err != nil || authRequest.Done() {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OpenID authorization request is invalid or expired")
+		s.writeOAuthLoginError(w, http.StatusBadRequest, "This OpenID authorization request is invalid or has expired.")
 		return
 	}
 	methods := s.oauthLoginMethods()
 	localEnabled, oidcEnabled := containsString(methods, "local"), containsString(methods, "oidc")
 	if !localEnabled && !oidcEnabled {
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no authentication method is available")
+		s.writeOAuthLoginError(w, http.StatusServiceUnavailable, "No authentication method is currently available.")
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -66,19 +61,19 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid authorization form")
+		s.writeOAuthLoginError(w, http.StatusBadRequest, "The authorization form is invalid. Please try again.")
 		return
 	}
 	if r.PostForm.Get("login_method") == "oidc" {
 		if !oidcEnabled {
-			writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OIDC login is unavailable")
+			s.writeOAuthLoginError(w, http.StatusBadRequest, "Organization sign-in is unavailable.")
 			return
 		}
 		s.startOAuthOIDC(w, r, requestID)
 		return
 	}
 	if !localEnabled {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "local login is unavailable")
+		s.writeOAuthLoginError(w, http.StatusBadRequest, "Local sign-in is unavailable.")
 		return
 	}
 	binding := requestID
@@ -113,7 +108,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 			data.Local, data.OIDC = localEnabled, oidcEnabled
 			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, data)
 		default:
-			writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete local authorization")
+			s.writeOAuthLoginError(w, http.StatusInternalServerError, "Local authorization could not be completed.")
 		}
 		return
 	}
@@ -124,7 +119,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.oidcProvider.storage.AuthorizeRequest(r.Context(), requestID, step.Principal, s.localAuthenticationMethods(r.Context(), step.Principal)); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete OpenID authorization")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "OpenID authorization could not be completed.")
 		return
 	}
 	redirect := s.oidcProvider.op.AuthorizationEndpoint().Absolute(s.publicURL(r)) + "/callback?id=" + url.QueryEscape(requestID)
@@ -174,33 +169,33 @@ func (s *Server) oauthLoginMethods() []string {
 func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestID string) {
 	rawState, err := randomURLToken(32)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	nonce, err := randomURLToken(32)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	verifier, err := randomURLToken(48)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	browserBinding, err := randomURLToken(32)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	continuation, err := json.Marshal(oauthOIDCContinuation{RequestID: requestID})
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not start OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	expires := time.Now().Add(oidcFlowTTL)
 	flow := OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, Purpose: oidcPurposeOAuth, Continuation: string(continuation), ExpiresAt: expires}
 	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, flow); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not persist OIDC login")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
 	http.SetCookie(w, s.oidcFlowCookie(rawState, browserBinding, expires))
@@ -210,14 +205,14 @@ func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestI
 func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request, flow OIDCFlow, identity AdminIdentity) {
 	requestID, err := s.requestIDFromOIDCFlow(r.Context(), flow)
 	if err != nil {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_request", "OIDC authorization continuation is invalid")
+		s.writeOAuthLoginError(w, http.StatusUnauthorized, "The organization sign-in continuation is invalid or has expired.")
 		return
 	}
 	principal := Principal{Issuer: identity.Issuer, Subject: identity.Subject, Name: identity.Name, Email: identity.Email,
 		Username: identity.Username, Organization: identity.Organization, Teams: identity.Teams, Roles: identity.Roles,
 		RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}
 	if err := s.oidcProvider.storage.AuthorizeRequest(r.Context(), requestID, principal, []string{"federated"}); err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not complete OpenID authorization")
+		s.writeOAuthLoginError(w, http.StatusInternalServerError, "OpenID authorization could not be completed.")
 		return
 	}
 	redirect := s.oidcProvider.op.AuthorizationEndpoint().Absolute(s.publicURL(r)) + "/callback?id=" + url.QueryEscape(requestID)
@@ -319,7 +314,7 @@ func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) oauthDeviceVerification(w http.ResponseWriter, r *http.Request) {
 	if s.control == nil || !s.runtime().config.Authentication.Local.Login.isEnabled() || s.runtime().localPasswords == nil {
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "local authorization is unavailable")
+		s.writeOAuthHTMLStatus(w, http.StatusServiceUnavailable, deviceVerificationPage, localLoginPageData{Device: true, Fatal: true, Error: "Local device authorization is temporarily unavailable."})
 		return
 	}
 	if r.Method == http.MethodGet {
@@ -537,6 +532,10 @@ func writeOAuthError(w http.ResponseWriter, status int, code, description string
 	writeJSON(w, status, map[string]string{"error": code, "error_description": description})
 }
 
+func (s *Server) writeOAuthLoginError(w http.ResponseWriter, status int, message string) {
+	s.writeOAuthHTMLStatus(w, status, localAuthorizationPage, localLoginPageData{Error: message, Fatal: true})
+}
+
 func (s *Server) writeOAuthHTML(w http.ResponseWriter, page *template.Template, data any) {
 	s.writeOAuthHTMLStatus(w, http.StatusOK, page, data)
 }
@@ -556,6 +555,7 @@ func (s *Server) writeOAuthHTMLStatus(w http.ResponseWriter, status int, page *t
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src"+scriptSources+"; style-src 'unsafe-inline'; connect-src"+connectSources+"; frame-src "+localCaptchaFrameSources(captcha)+"; img-src data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.WriteHeader(status)
 	_ = page.Execute(w, data)
 }
