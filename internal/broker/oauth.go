@@ -24,12 +24,12 @@ var localAuthorizationPage = oauthAuthorizationPage
 var deviceVerificationPage = oauthAuthorizationPage
 
 type localLoginPageData struct {
-	Error, Status, ChallengeToken, Secret, UserCode, Redirect string
-	QRCodeDataURL                                             template.URL
-	RecoveryCodes                                             []string
-	Device, Approved, Fatal                                   bool
-	Local, OIDC                                               bool
-	Captcha                                                   *localCaptchaChallenge
+	Error, Status, ChallengeToken, Secret, UserCode, Redirect, OIDCStartURL string
+	QRCodeDataURL                                                           template.URL
+	RecoveryCodes                                                           []string
+	Device, Approved, Fatal                                                 bool
+	Local, OIDC                                                             bool
+	Captcha                                                                 *localCaptchaChallenge
 }
 
 func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
@@ -50,11 +50,19 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
+		if strings.TrimSpace(r.URL.Query().Get("login_method")) == "oidc" {
+			if !oidcEnabled {
+				s.writeOAuthLoginError(w, http.StatusBadRequest, "Organization sign-in is unavailable.")
+				return
+			}
+			s.startOAuthOIDC(w, r, requestID)
+			return
+		}
 		if oidcEnabled && !localEnabled {
 			s.startOAuthOIDC(w, r, requestID)
 			return
 		}
-		data := localLoginPageData{Local: localEnabled, OIDC: oidcEnabled}
+		data := oauthLoginPageData(requestID, localLoginPageData{Local: localEnabled, OIDC: oidcEnabled})
 		data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
@@ -81,6 +89,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if challenge, required := captchaChallengeFromError(authErr); required {
 		data := loginPageData(step, "Complete human verification before signing in.")
 		data.Local, data.OIDC, data.Captcha = localEnabled, oidcEnabled, &challenge
+		data = oauthLoginPageData(requestID, data)
 		s.writeOAuthHTMLStatus(w, http.StatusForbidden, localAuthorizationPage, data)
 		return
 	}
@@ -88,6 +97,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
 		data := loginPageData(step, "Too many authentication attempts. Try again later.")
 		data.Local, data.OIDC = localEnabled, oidcEnabled
+		data = oauthLoginPageData(requestID, data)
 		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, data)
 		return
 	}
@@ -98,14 +108,17 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 			data := loginPageData(step, "Invalid local credentials.")
 			data.Local, data.OIDC = localEnabled, oidcEnabled
 			data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
+			data = oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
 			data := loginPageData(step, authErr.Error())
 			data.Local, data.OIDC = localEnabled, oidcEnabled
+			data = oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.As(authErr, &inputError):
 			data := loginPageData(step, inputError.Error())
 			data.Local, data.OIDC = localEnabled, oidcEnabled
+			data = oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, data)
 		default:
 			s.writeOAuthLoginError(w, http.StatusInternalServerError, "Local authorization could not be completed.")
@@ -115,6 +128,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if step.Status != "complete" {
 		data := loginPageData(step, "")
 		data.Local, data.OIDC = localEnabled, oidcEnabled
+		data = oauthLoginPageData(requestID, data)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
@@ -128,10 +142,20 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		data := loginPageData(step, "")
 		data.Redirect = redirect
 		data.Local, data.OIDC = localEnabled, oidcEnabled
+		data = oauthLoginPageData(requestID, data)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
 	http.Redirect(w, r, redirect, http.StatusFound)
+}
+
+func oauthLoginPageData(requestID string, data localLoginPageData) localLoginPageData {
+	if !data.OIDC {
+		return data
+	}
+	query := url.Values{"id": {requestID}, "login_method": {"oidc"}}
+	data.OIDCStartURL = oidcLoginPath + "?" + query.Encode()
+	return data
 }
 
 func (s *Server) localAuthenticationMethods(ctx context.Context, principal Principal) []string {

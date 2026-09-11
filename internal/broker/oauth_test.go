@@ -215,12 +215,30 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	pageBody, _ := io.ReadAll(page.Body)
 	_ = page.Body.Close()
 	if page.StatusCode != http.StatusOK || !strings.HasPrefix(page.Header.Get("Content-Type"), "text/html") ||
+		!strings.Contains(page.Header.Get("Content-Security-Policy"), "form-action 'self'") ||
 		!strings.Contains(string(pageBody), `data-ui="graphit-auth"`) || !strings.Contains(string(pageBody), `class="auth-shell"`) ||
-		!strings.Contains(string(pageBody), "Sign in locally") || !strings.Contains(string(pageBody), "Continue with OpenID Connect") {
+		!strings.Contains(string(pageBody), `<form method="post">`) || !strings.Contains(string(pageBody), "Sign in locally") ||
+		!strings.Contains(string(pageBody), "Continue with OpenID Connect") {
 		t.Fatalf("authorization methods status=%d body=%s", page.StatusCode, pageBody)
 	}
 
-	oidcStart := oauthFormWithClient(t, client, loginURL, url.Values{"login_method": {"oidc"}})
+	oidcLink := regexp.MustCompile(`href="([^"]+login_method=oidc[^"]*)"`).FindStringSubmatch(string(pageBody))
+	if len(oidcLink) != 2 {
+		t.Fatalf("authorization page omitted OIDC navigation link: %s", pageBody)
+	}
+	oidcStartURL := absoluteTestURL(httpServer.URL, html.UnescapeString(oidcLink[1]))
+	loginLocation, err := url.Parse(loginURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oidcLocation, err := url.Parse(oidcStartURL)
+	if err != nil || oidcLocation.Query().Get("id") != loginLocation.Query().Get("id") || oidcLocation.Query().Get("login_method") != "oidc" {
+		t.Fatalf("OIDC navigation URL=%q err=%v", oidcStartURL, err)
+	}
+	oidcStart, err := client.Get(oidcStartURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if oidcStart.StatusCode != http.StatusFound || !strings.HasPrefix(oidcStart.Header.Get("Location"), "https://identity.example/authorize?") {
 		t.Fatalf("OIDC start status=%d location=%q", oidcStart.StatusCode, oidcStart.Header.Get("Location"))
 	}
@@ -327,11 +345,30 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	if !strings.Contains(string(onlyLocalBody), "Sign in locally") || strings.Contains(string(onlyLocalBody), "Continue with OpenID Connect") {
 		t.Fatalf("local-only login page=%s", onlyLocalBody)
 	}
-	unavailableOIDC := oauthFormWithClient(t, client, onlyLocalLogin, url.Values{"login_method": {"oidc"}})
+	unavailableOIDC, err := client.Get(onlyLocalLogin + "&login_method=oidc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unavailableOIDC.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unavailable OIDC GET status=%d", unavailableOIDC.StatusCode)
+	}
+	_ = unavailableOIDC.Body.Close()
+	unavailableOIDC = oauthFormWithClient(t, client, onlyLocalLogin, url.Values{"login_method": {"oidc"}})
 	if unavailableOIDC.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unavailable OIDC method status=%d", unavailableOIDC.StatusCode)
 	}
 	_ = unavailableOIDC.Body.Close()
+}
+
+func TestOAuthOIDCStartURLPreservesRequestID(t *testing.T) {
+	requestID := "request with spaces & symbols/=?"
+	location, err := url.Parse(oauthLoginPageData(requestID, localLoginPageData{OIDC: true}).OIDCStartURL)
+	if err != nil || location.Path != oidcLoginPath || location.Query().Get("id") != requestID || location.Query().Get("login_method") != "oidc" {
+		t.Fatalf("OIDC start URL=%q err=%v", location, err)
+	}
+	if disabled := oauthLoginPageData(requestID, localLoginPageData{}).OIDCStartURL; disabled != "" {
+		t.Fatalf("disabled OIDC start URL=%q", disabled)
+	}
 }
 
 func TestOAuthLoginInvalidRequestRendersStyledBrowserError(t *testing.T) {
