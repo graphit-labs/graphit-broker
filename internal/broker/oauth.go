@@ -48,11 +48,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "OpenID authorization request is invalid or expired")
 		return
 	}
-	methods, err := s.oauthLoginMethods(r)
-	if err != nil {
-		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization methods are unavailable")
-		return
-	}
+	methods := s.oauthLoginMethods()
 	localEnabled, oidcEnabled := containsString(methods, "local"), containsString(methods, "oidc")
 	if !localEnabled && !oidcEnabled {
 		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no authentication method is available")
@@ -157,22 +153,22 @@ type oauthOIDCContinuation struct {
 	RequestID string `json:"request_id"`
 }
 
-func (s *Server) oauthLoginMethods(r *http.Request) ([]string, error) {
+func (s *Server) localLoginAvailable() bool {
+	state := s.runtime()
+	return s.control != nil && state.config.Authentication.Local.Login.isEnabled() &&
+		state.localPasswords != nil && state.localAuth != nil
+}
+
+func (s *Server) oauthLoginMethods() []string {
 	methods := []string{}
 	state := s.runtime()
-	if state.config.Authentication.Local.Login.isEnabled() && state.localAuth != nil && s.control != nil {
-		count, err := s.control.EnabledLocalHumanCount(r.Context())
-		if err != nil {
-			return nil, err
-		}
-		if count > 0 {
-			methods = append(methods, "local")
-		}
+	if s.localLoginAvailable() {
+		methods = append(methods, "local")
 	}
 	if state.adminOIDC != nil {
 		methods = append(methods, "oidc")
 	}
-	return methods, nil
+	return methods
 }
 
 func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestID string) {

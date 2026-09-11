@@ -187,6 +187,12 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	service, httpServer, upstream := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
 	defer httpServer.Close()
+	if _, err := service.control.db.Exec(`UPDATE local_users SET enabled=0`); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := service.control.EnabledLocalHumanCount(context.Background()); err != nil || count != 0 {
+		t.Fatalf("enabled local human count=%d err=%v", count, err)
+	}
 
 	verifier := strings.Repeat("v", 64)
 	digest := sha256.Sum256([]byte(verifier))

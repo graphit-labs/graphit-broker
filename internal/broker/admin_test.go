@@ -184,6 +184,49 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	_ = response.Body.Close()
 }
 
+func TestAdminLoginOptionsExposeConfiguredLocalAndOIDCWithoutLocalUsers(t *testing.T) {
+	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+
+	if _, err := service.control.db.Exec(`UPDATE local_users SET enabled=0`); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := service.control.EnabledLocalHumanCount(context.Background()); err != nil || count != 0 {
+		t.Fatalf("enabled local human count=%d err=%v", count, err)
+	}
+
+	response, err := http.Get(httpServer.URL + "/admin/api/v1/login-options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options map[string]bool
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&options) != nil {
+		t.Fatalf("login options status=%d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	if !options["local"] || !options["oidc"] {
+		t.Fatalf("configured login options=%#v", options)
+	}
+
+	disabled := *service.runtime()
+	localDisabled := false
+	disabled.config.Authentication.Local.Login.Enabled = &localDisabled
+	service.state.Store(&disabled)
+	response, err = http.Get(httpServer.URL + "/admin/api/v1/login-options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options = map[string]bool{}
+	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&options) != nil {
+		t.Fatalf("disabled local login options status=%d", response.StatusCode)
+	}
+	_ = response.Body.Close()
+	if options["local"] || !options["oidc"] {
+		t.Fatalf("disabled local login options=%#v", options)
+	}
+}
+
 func TestAdminOIDCAllowsConcurrentBrowserFlows(t *testing.T) {
 	service, httpServer, provider := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()

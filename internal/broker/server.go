@@ -272,11 +272,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		audiences = append(audiences, issuer.Audiences...)
 	}
 	authentication := map[string]any{"schemes": []string{"anonymous", "bearer"}, "audiences": cleanStrings(audiences)}
-	methods, methodsErr := s.oauthLoginMethods(r)
-	if methodsErr != nil {
-		writeError(w, http.StatusServiceUnavailable, "authentication_unavailable", "authentication discovery is unavailable", requestID(r.Context()))
-		return
-	}
+	methods := s.oauthLoginMethods()
 	if len(methods) > 0 {
 		authentication["type"] = "openid_connect"
 		authentication["issuer"] = s.publicURL(r)

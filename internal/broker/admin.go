@@ -333,16 +333,13 @@ func cookieMaxAge(expires time.Time) int {
 
 func (s *Server) adminLoginOptions(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
-	localCount := 0
-	if s.control != nil && state.config.Authentication.Local.Login.isEnabled() {
-		localCount, _ = s.control.EnabledLocalHumanCount(r.Context())
-	}
+	localEnabled := s.localLoginAvailable()
 	w.Header().Set("Cache-Control", "no-store")
 	body := map[string]any{
 		"oidc":  state.adminOIDC != nil,
-		"local": localCount > 0,
+		"local": localEnabled,
 	}
-	if localCount > 0 {
+	if localEnabled {
 		if challenge := state.localPasswords.CaptchaChallenge(localCaptchaActionAdmin); challenge != nil {
 			body["captcha"] = challenge
 		}
