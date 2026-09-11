@@ -115,14 +115,36 @@ authentication:
 	}
 }
 
-func TestServerPublicURLMustBeHTTPSOrigin(t *testing.T) {
+func TestServerPublicURLRequiresHTTPSOrLoopbackOrigin(t *testing.T) {
 	enabled := true
 	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
 		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{Login: LocalLoginConfig{Enabled: &enabled}},
 	}}
 	base.defaults()
 	for _, raw := range []string{
+		"https://broker.example.com",
+		"http://localhost:8080",
+		"http://127.0.0.1:8080",
+		"http://127.0.0.2:8080/",
+		"http://[::1]:8080",
+	} {
+		valid := base
+		valid.Server.PublicURL = raw
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("valid server.public_url %q rejected: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{
 		"http://broker.example.com",
+		"http://192.168.1.10:8080",
+		"http://0.0.0.0:8080",
+		"http://[::]:8080",
+		"http://localhost.example.com:8080",
+		"http://localhost:8080/base",
+		"http://localhost:8080?tenant=one",
+		"http://localhost:8080#fragment",
+		"http://user:password@localhost:8080",
+		"ftp://localhost:8080",
 		"https://broker.example.com/base",
 		"https://broker.example.com?tenant=one",
 		"https://broker.example.com#fragment",

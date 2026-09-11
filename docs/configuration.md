@@ -4,7 +4,6 @@ The broker reads strict YAML: unknown fields are errors. Environment expressions
 before decoding:
 
 - `${NAME}` — empty when unset;
-- `${NAME:-default}` — use a default;
 - `${NAME:?message}` — fail startup with the supplied message.
 
 Run `graphit-broker --config config.yaml --check-config` to validate without serving.
@@ -25,8 +24,18 @@ state; the pepper and resource grants are never persisted from YAML.
 | `max_idle_conns` | SQLite 1; remote 10 | Idle pool connections |
 | `conn_max_lifetime` | `3m` | Maximum connection lifetime |
 
-Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides are
-`BROKER_DATABASE_DRIVER` and `BROKER_DATABASE_DSN`. See [database backends](database.md).
+Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment variables never override
+literal YAML fields. To read a driver or DSN from the environment, reference it explicitly:
+
+```yaml
+database:
+  driver: "${BROKER_DATABASE_DRIVER}"
+  dsn: "${BROKER_DATABASE_DSN:?set the database DSN}"
+```
+
+The variable names are chosen by the YAML; `BROKER_DATABASE_*` has no special precedence.
+Deployments that previously relied on implicit database overrides must add these references.
+See [database backends](database.md).
 
 ## Server
 
@@ -40,9 +49,11 @@ Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment overrides a
 | `shutdown_timeout` | `15s` |
 | `max_request_bytes` | 4 MiB |
 
-`public_url` is required when local or upstream browser authentication is enabled and must be
-HTTPS. It is the OpenID Provider issuer. Put the broker
-behind a TLS reverse proxy in production.
+`public_url` is required when local or upstream browser authentication is enabled. It is the
+OpenID Provider issuer and must be an origin without a path, query, or fragment. HTTPS is required
+except for HTTP on `localhost` or a loopback IP such as `127.0.0.1` or `::1`. Private-network and
+wildcard bind addresses do not qualify as loopback public URLs. Put the broker behind a TLS
+reverse proxy in production. For local HTTP development, set `administration.cookie_secure: false`.
 
 ## Authentication
 
@@ -476,6 +487,10 @@ services:
         sts_session_name: graphit-broker
         sts_duration: 1h
 ```
+
+`base_prefix` is the storage root inside the bucket. For example, `bucket: artifacts` with
+`base_prefix: graphit` puts broker-managed paths under `s3://artifacts/graphit/`. The Broker joins
+this base with the paths authorized by resource grants when building the STS session policy.
 
 Every enabled route requires region, bucket, a non-empty base prefix, access key, secret, and STS
 role ARN. `endpoint` may select an S3-compatible service. `sts_endpoint` selects its STS endpoint;

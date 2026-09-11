@@ -1,5 +1,6 @@
 database:
   # sqlite (default), postgres, or mysql. The DSN and driver are deployment-owned.
+  # ENV is opt-in: replace literals with explicit references as shown in docs/configuration.md.
   driver: "sqlite"
   dsn: "/var/lib/graphit-broker/broker.db"
   max_open_conns: 1
@@ -8,6 +9,7 @@ database:
 
 server:
   address: ":8080"
+  # HTTP is allowed only on localhost/loopback; also set administration.cookie_secure: false.
   public_url: "https://broker.example.com"
   read_timeout: 15s
   write_timeout: 60s
@@ -76,9 +78,9 @@ authentication:
       required_scopes: ["graphit.use"]
       # This issuer validates consumer bearers and supplies the optional upstream browser method
       # used by both Broker-managed Graphit Code login and administration login.
-      client_id: "${BROKER_OIDC_CLIENT_ID:?set the confidential browser client ID}"
+      client_id: "graphit-broker"
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
-      redirect_url: "${BROKER_OIDC_REDIRECT_URL:?set the exact /oauth/oidc/callback URL}"
+      redirect_url: "https://broker.example.com/admin/auth/callback"
       scopes: ["openid", "profile", "email"]
       subject_claim: "sub"
       name_claim: "name"

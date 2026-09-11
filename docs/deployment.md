@@ -30,7 +30,10 @@ correctly. Set `server.public_url` to the externally visible HTTPS origin; that 
 the Broker's OpenID issuer. When upstream OIDC browser login is enabled, register the public
 `/oauth/oidc/callback` URL exactly with the upstream IdP.
 
-If adaptive local-login CAPTCHA is enabled, `server.public_url` must be the exact HTTPS origin whose
+Local development may use `server.public_url: http://localhost:8080` (or a loopback IP) with
+`administration.cookie_secure: false`. HTTP public URLs on remote or private-network hosts are rejected.
+
+If adaptive local-login CAPTCHA is enabled, `server.public_url` must be the exact origin whose
 hostname is registered with the selected provider. Allow browser CSP access and backend egress only
 to `challenges.cloudflare.com` for Turnstile, or to Google's documented reCAPTCHA origins and
 `www.google.com` Siteverify for reCAPTCHA v2. Store the provider secret in the secret manager; only

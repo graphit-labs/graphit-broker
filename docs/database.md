@@ -37,7 +37,9 @@ database:
   conn_max_lifetime: 3m
 ```
 
-`BROKER_DATABASE_DRIVER` and `BROKER_DATABASE_DSN` override the corresponding YAML fields.
+Environment values are used only through explicit YAML references, such as
+`driver: "${BROKER_DATABASE_DRIVER}"` and `dsn: "${BROKER_DATABASE_DSN:?set the database DSN}"`.
+Exporting these variables alone does not override literal fields or omitted-field defaults.
 Driver values are `sqlite`, `postgres`, and `mysql`. The database selection and DSN are
 deployment-owned and cannot be changed through the UI.
 

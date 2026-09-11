@@ -16,7 +16,7 @@ credentials, bodies, or upstream secrets.
 | Symptom | Likely cause | Check |
 |---|---|---|
 | startup rejects schema | database belongs to another development build | restore matching backup or recreate; no migration exists |
-| startup cannot connect | driver/DSN/TLS/network/credentials | `BROKER_DATABASE_*`, database policy, CA |
+| startup cannot connect | driver/DSN/TLS/network/credentials | YAML `database.driver`/`database.dsn` and their explicit ENV references, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
 | UI identity gets 403 | default `user` or assigned/claimed roles do not permit the action | unified OIDC `role_claim`, canonical-subject assignments |

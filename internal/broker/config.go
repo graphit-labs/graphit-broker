@@ -241,12 +241,6 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
-	if driver := strings.TrimSpace(getenv("BROKER_DATABASE_DRIVER")); driver != "" {
-		cfg.Database.Driver = driver
-	}
-	if dsn := strings.TrimSpace(getenv("BROKER_DATABASE_DSN")); dsn != "" {
-		cfg.Database.DSN = dsn
-	}
 	cfg.defaults()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -869,12 +863,12 @@ func validateHTTPSURL(raw, name string) error {
 }
 
 func validatePublicURL(raw string) error {
-	if err := validateHTTPSURL(raw, "server public URL"); err != nil {
+	if err := validateHTTPSOrLoopbackURL(raw, "server public URL"); err != nil {
 		return err
 	}
 	u, _ := url.Parse(strings.TrimSpace(raw))
 	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("server public URL must be an HTTPS origin without path, query, or fragment")
+		return errors.New("server public URL must be an origin without path, query, or fragment")
 	}
 	return nil
 }
