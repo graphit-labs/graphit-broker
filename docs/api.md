@@ -204,8 +204,10 @@ never return the submitted password, CAPTCHA token, provider secret, or provider
 | `GET/POST /admin/api/v1/local-users/{username}/credentials` | `users.read` / `users.write` | list or issue credentials for a service identity |
 | `DELETE /admin/api/v1/local-users/{username}/credentials/{id}` | `users.write` | revoke a service credential |
 
-`GET /admin/api/v1/login-options` is public and reports whether OIDC and local-password login are
-available. When the next local attempt would require CAPTCHA, it also reports the same public
+`GET /admin/api/v1/login-options` is public and returns `local` plus the ordered
+`oidc_providers` array of public provider IDs and display names, for example
+`{"local":true,"oidc_providers":[{"id":"oidc_...","name":"Corporate SSO"}]}`. When the next
+local attempt would require CAPTCHA, it also reports the same public
 `captcha` object so the UI can render the selected widget; it contains no credentials or identity
 data.
 

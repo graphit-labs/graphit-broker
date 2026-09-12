@@ -248,7 +248,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 		!strings.Contains(page.Header.Get("Content-Security-Policy"), "form-action 'self'") ||
 		!strings.Contains(string(pageBody), `data-ui="graphit-auth"`) || !strings.Contains(string(pageBody), `class="auth-shell"`) ||
 		!strings.Contains(string(pageBody), `<form method="post">`) || !strings.Contains(string(pageBody), "Sign in locally") ||
-		!strings.Contains(string(pageBody), "Continue with OpenID Connect") {
+		!strings.Contains(string(pageBody), "Continue with Corporate SSO") {
 		t.Fatalf("authorization methods status=%d body=%s", page.StatusCode, pageBody)
 	}
 
@@ -262,7 +262,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 		t.Fatal(err)
 	}
 	oidcLocation, err := url.Parse(oidcStartURL)
-	if err != nil || oidcLocation.Query().Get("id") != loginLocation.Query().Get("id") || oidcLocation.Query().Get("login_method") != "oidc" {
+	if err != nil || oidcLocation.Query().Get("id") != loginLocation.Query().Get("id") || oidcLocation.Query().Get("login_method") != "oidc" || oidcLocation.Query().Get("provider") == "" {
 		t.Fatalf("OIDC navigation URL=%q err=%v", oidcStartURL, err)
 	}
 	oidcStart, err := client.Get(oidcStartURL)
@@ -369,7 +369,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	localOnly := *service.runtime()
 	localEnabled := true
 	localOnly.config.Authentication.Local.Login.Enabled = &localEnabled
-	localOnly.adminOIDC = nil
+	localOnly.browserOIDC = nil
 	service.state.Store(&localOnly)
 	onlyLocalStart, _ := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
 	onlyLocalLogin := absoluteTestURL(httpServer.URL, onlyLocalStart.Header.Get("Location"))
@@ -377,7 +377,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	onlyLocal, _ := client.Get(onlyLocalLogin)
 	onlyLocalBody, _ := io.ReadAll(onlyLocal.Body)
 	_ = onlyLocal.Body.Close()
-	if !strings.Contains(string(onlyLocalBody), "Sign in locally") || strings.Contains(string(onlyLocalBody), "Continue with OpenID Connect") {
+	if !strings.Contains(string(onlyLocalBody), "Sign in locally") || strings.Contains(string(onlyLocalBody), "Choose an organization account") {
 		t.Fatalf("local-only login page=%s", onlyLocalBody)
 	}
 	unavailableOIDC, err := client.Get(onlyLocalLogin + "&login_method=oidc")
@@ -393,6 +393,67 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 		t.Fatalf("unavailable OIDC method status=%d", unavailableOIDC.StatusCode)
 	}
 	_ = unavailableOIDC.Body.Close()
+}
+
+func TestBrokerOIDCPageLetsUserChooseAmongMultipleProviders(t *testing.T) {
+	service, httpServer, corporate := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+	partner := &fakeAdminOIDC{
+		authorizationBase: "https://partner.example/authorize",
+		identities: map[string]AdminIdentity{
+			"root-token": {Issuer: "https://partner.example", Subject: "partner-subject", Username: "partner-admin"},
+		},
+	}
+	runtime := *service.runtime()
+	localDisabled := false
+	runtime.config.Authentication.Local.Login.Enabled = &localDisabled
+	runtime.browserOIDC = []browserOIDCProvider{
+		{ID: "corporate", Name: "Corporate SSO", Identity: corporate},
+		{ID: "partner", Name: "Partner Login", Identity: partner},
+	}
+	service.state.Store(&runtime)
+
+	verifier := strings.Repeat("v", 64)
+	digest := sha256.Sum256([]byte(verifier))
+	query := url.Values{
+		"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {"http://127.0.0.1:49152/oauth/callback"},
+		"code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"},
+		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid graphit.use"},
+	}
+	client := noRedirectClient()
+	start, err := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	if err != nil || start.StatusCode != http.StatusFound {
+		t.Fatalf("authorization start status=%s err=%v", statusText(start), err)
+	}
+	loginURL := absoluteTestURL(httpServer.URL, start.Header.Get("Location"))
+	_ = start.Body.Close()
+	page, err := client.Get(loginURL)
+	if err != nil || page.StatusCode != http.StatusOK {
+		t.Fatalf("provider selection status=%s err=%v", statusText(page), err)
+	}
+	body, _ := io.ReadAll(page.Body)
+	_ = page.Body.Close()
+	if !bytes.Contains(body, []byte("Continue with Corporate SSO")) || !bytes.Contains(body, []byte("Continue with Partner Login")) {
+		t.Fatalf("provider selection page=%s", body)
+	}
+	partnerLink := regexp.MustCompile(`href="([^"]*provider=partner[^"]*)"`).FindStringSubmatch(string(body))
+	if len(partnerLink) != 2 {
+		t.Fatalf("partner provider link missing: %s", body)
+	}
+	selected, err := client.Get(absoluteTestURL(httpServer.URL, html.UnescapeString(partnerLink[1])))
+	if err != nil || selected.StatusCode != http.StatusFound || !strings.HasPrefix(selected.Header.Get("Location"), "https://partner.example/authorize?") {
+		t.Fatalf("partner selection status=%s location=%q err=%v", statusText(selected), selected.Header.Get("Location"), err)
+	}
+	_ = selected.Body.Close()
+	if partner.state == "" || corporate.state != "" {
+		t.Fatalf("wrong provider started: partner state=%q corporate state=%q", partner.state, corporate.state)
+	}
+	callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(partner.state) + "&code=valid-code")
+	if err != nil || callback.StatusCode != http.StatusFound {
+		t.Fatalf("partner callback status=%s err=%v", statusText(callback), err)
+	}
+	_ = callback.Body.Close()
 }
 
 func verifyBrokerAccessToken(t *testing.T, ctx context.Context, provider *coreoidc.Provider, raw, username, organization string, groups []string) map[string]any {
@@ -469,12 +530,19 @@ func tamperJWT(raw string) string {
 
 func TestOAuthOIDCStartURLPreservesRequestID(t *testing.T) {
 	requestID := "request with spaces & symbols/=?"
-	location, err := url.Parse(oauthLoginPageData(requestID, localLoginPageData{OIDC: true}).OIDCStartURL)
-	if err != nil || location.Path != oidcLoginPath || location.Query().Get("id") != requestID || location.Query().Get("login_method") != "oidc" {
+	service := &Server{}
+	service.state.Store(&runtimeState{browserOIDC: []browserOIDCProvider{{ID: "corporate", Name: "Corporate SSO"}}})
+	data := service.oauthLoginPageData(requestID, localLoginPageData{})
+	if len(data.OIDCProviders) != 1 || data.OIDCProviders[0].Name != "Corporate SSO" {
+		t.Fatalf("OIDC options=%#v", data.OIDCProviders)
+	}
+	location, err := url.Parse(data.OIDCProviders[0].StartURL)
+	if err != nil || location.Path != oidcLoginPath || location.Query().Get("id") != requestID || location.Query().Get("login_method") != "oidc" || location.Query().Get("provider") != "corporate" {
 		t.Fatalf("OIDC start URL=%q err=%v", location, err)
 	}
-	if disabled := oauthLoginPageData(requestID, localLoginPageData{}).OIDCStartURL; disabled != "" {
-		t.Fatalf("disabled OIDC start URL=%q", disabled)
+	service.state.Store(&runtimeState{})
+	if disabled := service.oauthLoginPageData(requestID, localLoginPageData{}); disabled.OIDC || len(disabled.OIDCProviders) != 0 {
+		t.Fatalf("disabled OIDC options=%#v", disabled.OIDCProviders)
 	}
 }
 

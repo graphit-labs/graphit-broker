@@ -12,6 +12,7 @@ authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
   oidc:
     - enabled: true
+      display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
@@ -38,8 +39,10 @@ Broker-issued grants after restart. The Broker's own OpenID Provider remains ava
 login is enabled. Required environment references are still expanded even in disabled entries.
 
 `issuer`, `audiences`, required scopes, and signature/temporal checks protect bearer tokens.
-`client_id`, `client_secret`, `redirect_url`, and `scopes` enable browser login on at most one
-enabled issuer entry. A deployment using only local browser login may omit those client fields.
+`client_id`, `client_secret`, `redirect_url`, and `scopes` enable browser login independently on
+each enabled issuer entry. `display_name` is required with those fields and is the label shown for
+that issuer on the Broker and administration login screens. A deployment using only local browser
+login may omit the browser-client fields and `display_name` from every issuer.
 
 ## Claims and identity
 
@@ -66,14 +69,15 @@ privileged role, not a different authentication path.
 
 The Broker is itself an OpenID Provider for Graphit Code. Graphit Code always uses standard
 Authorization Code + PKCE against the Broker issuer, regardless of whether the Broker authenticates
-the person with a local password or the configured upstream issuer. With both methods enabled the
-Broker renders the choice; with only upstream OIDC it redirects immediately; with only local login
-it renders only the local form.
+the person with a local password or any configured upstream issuer. When multiple methods or
+upstream issuers are enabled, the Broker renders each choice using its `display_name`; with exactly
+one upstream OIDC provider and no local login it redirects immediately; with only local login it
+renders only the local form.
 
 ```text
 Graphit Code ── Authorization Code + PKCE ──> Broker OpenID Provider
                                                ├─ local password/change/TOTP
-                                               └─ upstream OIDC client ──> organization IdP
+                                               └─ selected upstream OIDC client ──> organization IdP
 Graphit Code <── Broker code/ID/access/refresh tokens ───────────────────┘
 ```
 
@@ -82,8 +86,10 @@ stable Broker `sub`. The upstream issuer and its authorization code, client secr
 access token, and refresh token are never returned to Graphit Code. The local branch implements an
 OIDC login outcome without turning the password into an API credential.
 
-Upstream OIDC may start from `GET /admin/auth/login` for administration or from the upstream choice
-inside the Broker authorization. Both create random state, nonce, PKCE verifier, and browser-binding values. The
+Upstream OIDC may start from `GET /admin/auth/login?provider=ID` for administration or from a
+provider choice inside the Broker authorization. Both create random state, nonce, PKCE verifier,
+and browser-binding values. The selected provider ID is stored in the protected one-time flow, so
+the callback exchanges the code only with the issuer that started the login. The
 binding is held in an `HttpOnly`, `SameSite=Lax` cookie whose per-flow name permits concurrent
 logins. Only HMAC-protected state and binding are stored in SQL, using
 `authentication.token_pepper` and domains distinct from session and password domains. The callback

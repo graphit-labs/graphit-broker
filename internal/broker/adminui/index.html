@@ -526,9 +526,9 @@
           <div class="signin-methods">
             <div id="oidc-login-panel" class="subpanel">
               <div class="section-label">Organization</div>
-              <h2>Organization account</h2>
-              <p class="muted">Continue through the configured OpenID Connect provider.</p>
-              <a class="button primary" href="/admin/auth/login">Sign in with OIDC</a>
+              <h2>Choose an organization account</h2>
+              <p class="muted">Continue through one of the configured OpenID Connect providers.</p>
+              <div id="oidc-provider-buttons"></div>
             </div>
             <div id="local-login-panel" class="subpanel">
               <div class="section-label">Broker identity</div>
@@ -679,7 +679,7 @@
   </main>
 </div>
 <script>
-const $=id=>document.getElementById(id);let csrf='',accessETag='',policy={v:1,rules:[]},editingRule=-1,editingUsername='',selectedService='',localUsers=[],roles=[],actions=[],providerCommand='',loginOptions={oidc:true,local:true},localChallenge='',localCaptchaToken='',localCaptchaProvider='',localCaptchaWidget=null;const captchaScripts={};
+const $=id=>document.getElementById(id);let csrf='',accessETag='',policy={v:1,rules:[]},editingRule=-1,editingUsername='',selectedService='',localUsers=[],roles=[],actions=[],providerCommand='',loginOptions={oidc_providers:[],local:true},localChallenge='',localCaptchaToken='',localCaptchaProvider='',localCaptchaWidget=null;const captchaScripts={};
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tags=xs=>(xs||[]).map(x=>`<span class="tag">${escapeHTML(x)}</span>`).join('');
 const split=id=>$(id).value.split(',').map(x=>x.trim()).filter(Boolean);
@@ -687,8 +687,10 @@ function message(text,type='muted'){$('status').textContent=text;$('status').cla
 async function api(path,options={}){options.credentials='same-origin';options.headers={Accept:'application/json',...(options.headers||{})};if(options.method&&!['GET','HEAD'].includes(options.method))options.headers['X-CSRF-Token']=csrf;const response=await fetch(path,options);let body={};try{body=await response.json()}catch{}if(response.status===401){showSignedOut();throw new Error('Sign in required.')}if(!response.ok)throw new Error(body.error?.message||`HTTP ${response.status}`);return [response,body]}
 function setPageHeader(title,kicker,description){$('page-title').textContent=title;$('page-kicker').textContent=kicker;$('page-description').textContent=description}
 function closeMobileMenu(){document.body.classList.remove('menu-open');$('mobile-menu').setAttribute('aria-expanded','false')}
-function showSignedOut(){$('app').classList.add('hidden');$('admin-nav').classList.add('hidden');$('signed-out').classList.remove('hidden');$('signin').classList.toggle('hidden',!loginOptions.oidc);$('logout').classList.add('hidden');$('identity').textContent='Signed out';setPageHeader('Sign in','Broker / administration','Authenticate to continue to the secure workspace');closeMobileMenu();if(!localChallenge)showLocalStep('local-credentials-step')}
-async function loadLoginOptions(){try{const response=await fetch('/admin/api/v1/login-options',{credentials:'same-origin',headers:{Accept:'application/json'}});loginOptions=await response.json();$('oidc-login-panel').classList.toggle('hidden',!loginOptions.oidc);$('local-login-panel').classList.toggle('hidden',!loginOptions.local);$('signin').classList.toggle('hidden',!loginOptions.oidc);if(loginOptions.captcha)await renderLocalCaptcha(loginOptions.captcha)}catch{}}
+function oidcProviders(){return Array.isArray(loginOptions.oidc_providers)?loginOptions.oidc_providers:[]}
+function renderOIDCProviders(){const providers=oidcProviders(),container=$('oidc-provider-buttons');container.replaceChildren();for(const provider of providers){const link=document.createElement('a');link.className='button primary';link.href='/admin/auth/login?provider='+encodeURIComponent(provider.id);link.textContent='Continue with '+provider.name;container.appendChild(link)}const signin=$('signin');signin.href=providers.length===1?'/admin/auth/login?provider='+encodeURIComponent(providers[0].id):'#signed-out'}
+function showSignedOut(){$('app').classList.add('hidden');$('admin-nav').classList.add('hidden');$('signed-out').classList.remove('hidden');$('signin').classList.toggle('hidden',oidcProviders().length===0);$('logout').classList.add('hidden');$('identity').textContent='Signed out';setPageHeader('Sign in','Broker / administration','Authenticate to continue to the secure workspace');closeMobileMenu();if(!localChallenge)showLocalStep('local-credentials-step')}
+async function loadLoginOptions(){try{const response=await fetch('/admin/api/v1/login-options',{credentials:'same-origin',headers:{Accept:'application/json'}});loginOptions=await response.json();renderOIDCProviders();$('oidc-login-panel').classList.toggle('hidden',oidcProviders().length===0);$('local-login-panel').classList.toggle('hidden',!loginOptions.local);$('signin').classList.toggle('hidden',oidcProviders().length===0);if(loginOptions.captcha)await renderLocalCaptcha(loginOptions.captcha)}catch{}}
 async function localAuthAPI(path,body){const response=await fetch(path,{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify(body)});let data={};try{data=await response.json()}catch{}if(!response.ok&&data.error?.code==='captcha_required'&&data.captcha)return data;if(!response.ok)throw new Error(data.error?.message||`HTTP ${response.status}`);return data}
 function showLocalStep(id){['local-credentials-step','local-password-step','local-mfa-step','local-recovery-step'].forEach(name=>$(name).classList.toggle('hidden',name!==id))}
 function loadCaptchaScript(provider){if(captchaScripts[provider])return captchaScripts[provider];const script=document.createElement('script');script.async=true;script.defer=true;script.src=provider==='turnstile'?'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit':'https://www.google.com/recaptcha/api.js?render=explicit';captchaScripts[provider]=new Promise((resolve,reject)=>{script.onload=resolve;script.onerror=()=>reject(new Error('Human verification could not be loaded.'))});document.head.appendChild(script);return captchaScripts[provider]}

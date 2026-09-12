@@ -1,14 +1,15 @@
 # Administration
 
 The control plane is served at `/admin/`. It uses the same authentication model as every broker
-consumer: one configured OIDC issuer mapping or a SQL-backed local user. Administration is an RBAC
+consumer: any configured OIDC issuer mapping or a SQL-backed local user. Administration is an RBAC
 decision, not a separate identity provider. Deployment configuration remains read-only; local
 users, roles, assignments, and resource grants are mutable SQL state.
 
 ## Unified OIDC login
 
-Configure the browser client on one `authentication.oidc` entry. That same entry supplies issuer,
-subject, username, organization, teams, and role mappings for bearer validation and browser login.
+Configure browser clients on one or more `authentication.oidc` entries. Each entry supplies issuer,
+subject, username, organization, teams, and role mappings for bearer validation and browser login,
+and its `display_name` labels the corresponding button on the login screen.
 Register the exact redirect URI `https://BROKER/oauth/oidc/callback`, authorization-code flow,
 PKCE-capable endpoints, the selected scopes, and a confidential client secret. HTTP callbacks are
 accepted only on loopback.
@@ -46,6 +47,7 @@ authentication:
       refresh_ttl: 720h
   oidc:
     - enabled: true
+      display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
@@ -176,10 +178,11 @@ Local passwords and upstream IdP tokens are never passed to Graphit Code as Bear
 A desktop client first reads `/.well-known/graphit-broker`, then uses the Broker's standard
 `/.well-known/openid-configuration`, authorization, token, JWKS, userinfo, and revocation endpoints.
 The protocol implementation is provided by `github.com/zitadel/oidc/v3`; the Broker-owned page
-offers local and OIDC login only when each method is configured and available. The Broker completes
-either method and returns signed ID/access JWTs plus an opaque rotating refresh token. Graphit Code never
-needs the upstream issuer or client secret. If only upstream OIDC is enabled, the choice page is
-skipped and the browser is redirected automatically. The broker
+offers local login and one named choice per available upstream OIDC provider. The Broker completes
+either method and returns signed ID/access JWTs plus an opaque rotating refresh token. Graphit Code
+never needs the upstream issuer or client secret. If exactly one upstream OIDC provider is enabled and
+local login is disabled, the choice page is skipped and the browser is redirected automatically.
+The broker
 requires PKCE S256, the configured public client ID, an exact callback path, and an explicit
 `127.0.0.1` or `::1` port. A headless CLI starts at `POST /oauth/device/authorize`, shows the returned
 user code, and polls `/oauth/token` only after the user approves it locally at `/oauth/device`.

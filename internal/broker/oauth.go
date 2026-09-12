@@ -24,12 +24,13 @@ var localAuthorizationPage = oauthAuthorizationPage
 var deviceVerificationPage = oauthAuthorizationPage
 
 type localLoginPageData struct {
-	Error, Status, ChallengeToken, Secret, UserCode, Redirect, OIDCStartURL string
-	QRCodeDataURL                                                           template.URL
-	RecoveryCodes                                                           []string
-	Device, Approved, Fatal                                                 bool
-	Local, OIDC                                                             bool
-	Captcha                                                                 *localCaptchaChallenge
+	Error, Status, ChallengeToken, Secret, UserCode, Redirect string
+	QRCodeDataURL                                             template.URL
+	RecoveryCodes                                             []string
+	OIDCProviders                                             []browserOIDCOption
+	Device, Approved, Fatal                                   bool
+	Local, OIDC                                               bool
+	Captcha                                                   *localCaptchaChallenge
 }
 
 func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
@@ -45,25 +46,30 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	methods := s.oauthLoginMethods()
 	localEnabled, oidcEnabled := containsString(methods, "local"), containsString(methods, "oidc")
+	oidcProviders := s.browserOIDCOptions()
 	if !localEnabled && !oidcEnabled {
 		s.writeOAuthLoginError(w, http.StatusServiceUnavailable, "No authentication method is currently available.")
 		return
 	}
 	if r.Method == http.MethodGet {
 		if strings.TrimSpace(r.URL.Query().Get("login_method")) == "oidc" {
-			if !oidcEnabled {
-				s.writeOAuthLoginError(w, http.StatusBadRequest, "Organization sign-in is unavailable.")
+			provider, ok := s.browserOIDCProvider(r.URL.Query().Get("provider"))
+			if !oidcEnabled || !ok {
+				s.writeOAuthLoginError(w, http.StatusBadRequest, "Choose a valid organization sign-in provider.")
 				return
 			}
-			s.startOAuthOIDC(w, r, requestID)
+			s.startOAuthOIDC(w, r, requestID, provider)
 			return
 		}
-		if oidcEnabled && !localEnabled {
-			s.startOAuthOIDC(w, r, requestID)
+		if oidcEnabled && !localEnabled && len(oidcProviders) == 1 {
+			provider, _ := s.browserOIDCProvider(oidcProviders[0].ID)
+			s.startOAuthOIDC(w, r, requestID, provider)
 			return
 		}
-		data := oauthLoginPageData(requestID, localLoginPageData{Local: localEnabled, OIDC: oidcEnabled})
-		data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
+		data := s.oauthLoginPageData(requestID, localLoginPageData{Local: localEnabled, OIDC: oidcEnabled})
+		if localEnabled {
+			data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
+		}
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
@@ -73,11 +79,12 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostForm.Get("login_method") == "oidc" {
-		if !oidcEnabled {
-			s.writeOAuthLoginError(w, http.StatusBadRequest, "Organization sign-in is unavailable.")
+		provider, ok := s.browserOIDCProvider(r.PostForm.Get("provider"))
+		if !oidcEnabled || !ok {
+			s.writeOAuthLoginError(w, http.StatusBadRequest, "Choose a valid organization sign-in provider.")
 			return
 		}
-		s.startOAuthOIDC(w, r, requestID)
+		s.startOAuthOIDC(w, r, requestID, provider)
 		return
 	}
 	if !localEnabled {
@@ -89,7 +96,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if challenge, required := captchaChallengeFromError(authErr); required {
 		data := loginPageData(step, "Complete human verification before signing in.")
 		data.Local, data.OIDC, data.Captcha = localEnabled, oidcEnabled, &challenge
-		data = oauthLoginPageData(requestID, data)
+		data = s.oauthLoginPageData(requestID, data)
 		s.writeOAuthHTMLStatus(w, http.StatusForbidden, localAuthorizationPage, data)
 		return
 	}
@@ -97,7 +104,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retryAfter/time.Second))))
 		data := loginPageData(step, "Too many authentication attempts. Try again later.")
 		data.Local, data.OIDC = localEnabled, oidcEnabled
-		data = oauthLoginPageData(requestID, data)
+		data = s.oauthLoginPageData(requestID, data)
 		s.writeOAuthHTMLStatus(w, http.StatusTooManyRequests, localAuthorizationPage, data)
 		return
 	}
@@ -108,17 +115,17 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 			data := loginPageData(step, "Invalid local credentials.")
 			data.Local, data.OIDC = localEnabled, oidcEnabled
 			data.Captcha = s.runtime().localPasswords.CaptchaChallenge(localCaptchaActionOAuth)
-			data = oauthLoginPageData(requestID, data)
+			data = s.oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.Is(authErr, ErrLocalChallengeInvalid), errors.Is(authErr, ErrLocalMFACodeInvalid):
 			data := loginPageData(step, authErr.Error())
 			data.Local, data.OIDC = localEnabled, oidcEnabled
-			data = oauthLoginPageData(requestID, data)
+			data = s.oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusUnauthorized, localAuthorizationPage, data)
 		case errors.As(authErr, &inputError):
 			data := loginPageData(step, inputError.Error())
 			data.Local, data.OIDC = localEnabled, oidcEnabled
-			data = oauthLoginPageData(requestID, data)
+			data = s.oauthLoginPageData(requestID, data)
 			s.writeOAuthHTMLStatus(w, http.StatusBadRequest, localAuthorizationPage, data)
 		default:
 			s.writeOAuthLoginError(w, http.StatusInternalServerError, "Local authorization could not be completed.")
@@ -128,7 +135,7 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	if step.Status != "complete" {
 		data := loginPageData(step, "")
 		data.Local, data.OIDC = localEnabled, oidcEnabled
-		data = oauthLoginPageData(requestID, data)
+		data = s.oauthLoginPageData(requestID, data)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
@@ -142,19 +149,20 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 		data := loginPageData(step, "")
 		data.Redirect = redirect
 		data.Local, data.OIDC = localEnabled, oidcEnabled
-		data = oauthLoginPageData(requestID, data)
+		data = s.oauthLoginPageData(requestID, data)
 		s.writeOAuthHTML(w, localAuthorizationPage, data)
 		return
 	}
 	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
-func oauthLoginPageData(requestID string, data localLoginPageData) localLoginPageData {
-	if !data.OIDC {
-		return data
+func (s *Server) oauthLoginPageData(requestID string, data localLoginPageData) localLoginPageData {
+	data.OIDCProviders = s.browserOIDCOptions()
+	data.OIDC = len(data.OIDCProviders) > 0
+	for index := range data.OIDCProviders {
+		query := url.Values{"id": {requestID}, "login_method": {"oidc"}, "provider": {data.OIDCProviders[index].ID}}
+		data.OIDCProviders[index].StartURL = oidcLoginPath + "?" + query.Encode()
 	}
-	query := url.Values{"id": {requestID}, "login_method": {"oidc"}}
-	data.OIDCStartURL = oidcLoginPath + "?" + query.Encode()
 	return data
 }
 
@@ -168,8 +176,9 @@ func (s *Server) localAuthenticationMethods(ctx context.Context, principal Princ
 	return methods
 }
 
-type oauthOIDCContinuation struct {
-	RequestID string `json:"request_id"`
+type browserOIDCContinuation struct {
+	RequestID  string `json:"request_id,omitempty"`
+	ProviderID string `json:"provider_id"`
 }
 
 func (s *Server) localLoginAvailable() bool {
@@ -184,13 +193,13 @@ func (s *Server) oauthLoginMethods() []string {
 	if s.localLoginAvailable() {
 		methods = append(methods, "local")
 	}
-	if state.adminOIDC != nil {
+	if len(state.browserOIDC) > 0 {
 		methods = append(methods, "oidc")
 	}
 	return methods
 }
 
-func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestID string) {
+func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestID string, provider browserOIDCProvider) {
 	rawState, err := randomURLToken(32)
 	if err != nil {
 		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
@@ -211,7 +220,7 @@ func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestI
 		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
 	}
-	continuation, err := json.Marshal(oauthOIDCContinuation{RequestID: requestID})
+	continuation, err := json.Marshal(browserOIDCContinuation{RequestID: requestID, ProviderID: provider.ID})
 	if err != nil {
 		s.writeOAuthLoginError(w, http.StatusInternalServerError, "Organization sign-in could not be started.")
 		return
@@ -223,7 +232,7 @@ func (s *Server) startOAuthOIDC(w http.ResponseWriter, r *http.Request, requestI
 		return
 	}
 	http.SetCookie(w, s.oidcFlowCookie(rawState, browserBinding, expires))
-	http.Redirect(w, r, s.runtime().adminOIDC.AuthorizationURL(rawState, nonce, verifier), http.StatusFound)
+	http.Redirect(w, r, provider.Identity.AuthorizationURL(rawState, nonce, verifier), http.StatusFound)
 }
 
 func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request, flow OIDCFlow, identity AdminIdentity) {
@@ -244,7 +253,7 @@ func (s *Server) finishOIDCAuthorization(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) requestIDFromOIDCFlow(ctx context.Context, flow OIDCFlow) (string, error) {
-	var saved oauthOIDCContinuation
+	var saved browserOIDCContinuation
 	if flow.Purpose != oidcPurposeOAuth || json.Unmarshal([]byte(flow.Continuation), &saved) != nil {
 		return "", errors.New("invalid OIDC continuation")
 	}

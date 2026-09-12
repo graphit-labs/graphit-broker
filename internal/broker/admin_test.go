@@ -19,12 +19,13 @@ import (
 )
 
 type fakeAdminOIDC struct {
-	identities  map[string]AdminIdentity
-	flows       map[string]struct{ nonce, verifier string }
-	state       string
-	nonce       string
-	verifier    string
-	exchangeErr error
+	identities        map[string]AdminIdentity
+	flows             map[string]struct{ nonce, verifier string }
+	state             string
+	nonce             string
+	verifier          string
+	authorizationBase string
+	exchangeErr       error
 }
 
 func (f *fakeAdminOIDC) AuthorizationURL(state, nonce, verifier string) string {
@@ -34,7 +35,11 @@ func (f *fakeAdminOIDC) AuthorizationURL(state, nonce, verifier string) string {
 	}
 	f.flows[state] = struct{ nonce, verifier string }{nonce: nonce, verifier: verifier}
 	values := url.Values{"state": {state}, "nonce": {nonce}, "code_challenge_method": {"S256"}}
-	return "https://identity.example/authorize?" + values.Encode()
+	base := f.authorizationBase
+	if base == "" {
+		base = "https://identity.example/authorize"
+	}
+	return base + "?" + values.Encode()
 }
 
 func (f *fakeAdminOIDC) Exchange(_ context.Context, code, verifier, nonce string) (AdminIdentity, error) {
@@ -85,7 +90,7 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("admin page security headers missing: %#v", page.Header)
 	}
 	pageBody, _ := io.ReadAll(page.Body)
-	if !bytes.Contains(pageBody, []byte("Sign in with OIDC")) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
+	if !bytes.Contains(pageBody, []byte("Choose an organization account")) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
 		t.Fatalf("administration UI is incomplete: %s", pageBody)
 	}
 	if bytes.Contains(pageBody, []byte("sessionStorage")) || bytes.Contains(pageBody, []byte("Administrator bearer token")) {
@@ -184,6 +189,79 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	_ = response.Body.Close()
 }
 
+func TestAdminMultipleOIDCProvidersAreSelectableAndBoundToFlow(t *testing.T) {
+	service, httpServer, corporate := newAdminTestServer(t, "http://127.0.0.1:1")
+	defer service.Close()
+	defer httpServer.Close()
+
+	partner := &fakeAdminOIDC{
+		authorizationBase: "https://partner.example/authorize",
+		identities: map[string]AdminIdentity{
+			"root-token": {
+				Issuer: "https://partner.example", Subject: "partner-subject", Name: "Partner Admin",
+				Username: "partner-admin", Organization: "partner",
+			},
+		},
+	}
+	runtime := *service.runtime()
+	runtime.browserOIDC = []browserOIDCProvider{
+		{ID: "corporate", Name: "Corporate SSO", Identity: corporate},
+		{ID: "partner", Name: "Partner Login", Identity: partner},
+	}
+	service.state.Store(&runtime)
+	if err := service.control.AssignRole(context.Background(), "https://partner.example|partner-subject", adminRole); err != nil {
+		t.Fatal(err)
+	}
+
+	optionsResponse, err := http.Get(httpServer.URL + "/admin/api/v1/login-options")
+	if err != nil || optionsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("login options status=%s err=%v", statusText(optionsResponse), err)
+	}
+	var options struct {
+		Providers []browserOIDCOption `json:"oidc_providers"`
+	}
+	if err := json.NewDecoder(optionsResponse.Body).Decode(&options); err != nil {
+		t.Fatal(err)
+	}
+	_ = optionsResponse.Body.Close()
+	if len(options.Providers) != 2 || options.Providers[0].ID != "corporate" || options.Providers[0].Name != "Corporate SSO" || options.Providers[1].ID != "partner" || options.Providers[1].Name != "Partner Login" {
+		t.Fatalf("login options=%#v", options.Providers)
+	}
+
+	client := noRedirectClient()
+	missing, err := client.Get(httpServer.URL + "/admin/auth/login")
+	if err != nil || missing.StatusCode != http.StatusBadRequest {
+		t.Fatalf("login without provider status=%s err=%v", statusText(missing), err)
+	}
+	_ = missing.Body.Close()
+	invalid, err := client.Get(httpServer.URL + "/admin/auth/login?provider=unknown")
+	if err != nil || invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("login with invalid provider status=%s err=%v", statusText(invalid), err)
+	}
+	_ = invalid.Body.Close()
+
+	login, err := client.Get(httpServer.URL + "/admin/auth/login?provider=partner")
+	if err != nil || login.StatusCode != http.StatusFound {
+		t.Fatalf("partner login status=%s err=%v", statusText(login), err)
+	}
+	if location := login.Header.Get("Location"); !strings.HasPrefix(location, "https://partner.example/authorize?") {
+		t.Fatalf("partner login redirect=%q", location)
+	}
+	_ = login.Body.Close()
+	if partner.state == "" || corporate.state != "" {
+		t.Fatalf("wrong provider started: partner state=%q corporate state=%q", partner.state, corporate.state)
+	}
+
+	callback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(partner.state) + "&code=valid-code")
+	if err != nil || callback.StatusCode != http.StatusSeeOther {
+		t.Fatalf("partner callback status=%s err=%v", statusText(callback), err)
+	}
+	_ = callback.Body.Close()
+	if corporate.verifier != "" {
+		t.Fatal("callback exchanged the code with a provider other than the one saved in the flow")
+	}
+}
+
 func TestAdminLoginOptionsExposeConfiguredLocalAndOIDCWithoutLocalUsers(t *testing.T) {
 	service, httpServer, _ := newAdminTestServer(t, "http://127.0.0.1:1")
 	defer service.Close()
@@ -200,12 +278,15 @@ func TestAdminLoginOptionsExposeConfiguredLocalAndOIDCWithoutLocalUsers(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	var options map[string]bool
+	var options struct {
+		Local     bool                `json:"local"`
+		Providers []browserOIDCOption `json:"oidc_providers"`
+	}
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&options) != nil {
 		t.Fatalf("login options status=%d", response.StatusCode)
 	}
 	_ = response.Body.Close()
-	if !options["local"] || !options["oidc"] {
+	if !options.Local || len(options.Providers) != 1 || options.Providers[0].Name != "Corporate SSO" {
 		t.Fatalf("configured login options=%#v", options)
 	}
 
@@ -217,12 +298,15 @@ func TestAdminLoginOptionsExposeConfiguredLocalAndOIDCWithoutLocalUsers(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	options = map[string]bool{}
+	options = struct {
+		Local     bool                `json:"local"`
+		Providers []browserOIDCOption `json:"oidc_providers"`
+	}{}
 	if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&options) != nil {
 		t.Fatalf("disabled local login options status=%d", response.StatusCode)
 	}
 	_ = response.Body.Close()
-	if options["local"] || !options["oidc"] {
+	if options.Local || len(options.Providers) != 1 {
 		t.Fatalf("disabled local login options=%#v", options)
 	}
 }
@@ -686,10 +770,13 @@ func TestLocalOnlyUserCanBootstrapAdministrationWithoutOIDC(t *testing.T) {
 	if err != nil || optionsResponse.StatusCode != http.StatusOK {
 		t.Fatalf("login options status=%s err=%v", statusText(optionsResponse), err)
 	}
-	var options map[string]bool
+	var options struct {
+		Local     bool                `json:"local"`
+		Providers []browserOIDCOption `json:"oidc_providers"`
+	}
 	_ = json.NewDecoder(optionsResponse.Body).Decode(&options)
 	_ = optionsResponse.Body.Close()
-	if options["oidc"] || !options["local"] {
+	if len(options.Providers) != 0 || !options.Local {
 		t.Fatalf("login options=%#v", options)
 	}
 
@@ -961,7 +1048,7 @@ func newAdminTestServer(t *testing.T, embeddingURL string) (*Server, *httptest.S
 	cfg.Server.PublicURL = "http://" + httpServer.Listener.Addr().String()
 	cfg.Authentication = AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{
 		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"}, SubjectClaim: "sub", UsernameClaim: "preferred_username",
-		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/oauth/oidc/callback", Scopes: []string{"openid", "profile", "email"},
+		ClientID: "admin-client", ClientSecret: "admin-client-secret", RedirectURL: "http://127.0.0.1/oauth/oidc/callback", Scopes: []string{"openid", "profile", "email"}, DisplayName: "Corporate SSO",
 	}}}
 	requireMFA := false
 	cfg.Authentication.Local.MFA.Required = &requireMFA

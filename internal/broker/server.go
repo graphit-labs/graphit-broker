@@ -25,7 +25,7 @@ type runtimeState struct {
 	acl            *ACL
 	ai             *AIService
 	s3Credentials  S3CredentialService
-	adminOIDC      AdminIdentityProvider
+	browserOIDC    []browserOIDCProvider
 }
 
 type Server struct {
@@ -103,12 +103,19 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	if cfg.Services.S3.Enabled {
 		s3Credentials = NewAWSSTSCredentialService()
 	}
-	var adminOIDC AdminIdentityProvider
-	if loginConfig, ok := browserLoginOIDC(cfg.Authentication.OIDC); ok {
-		adminOIDC, err = factory(ctx, loginConfig)
-		if err != nil {
-			return nil, err
+	browserProviders := make([]browserOIDCProvider, 0)
+	for _, loginConfig := range browserLoginOIDCConfigs(cfg.Authentication.OIDC) {
+		identity, providerErr := factory(ctx, loginConfig)
+		if providerErr != nil {
+			err = providerErr
+			break
 		}
+		browserProviders = append(browserProviders, browserOIDCProvider{
+			ID: browserOIDCProviderID(loginConfig), Name: browserOIDCProviderName(loginConfig), Identity: identity,
+		})
+	}
+	if err != nil {
+		return nil, err
 	}
 	ai := NewAIService(cfg.Services)
 	if err := ai.InitializeLocal(ctx); err != nil {
@@ -117,23 +124,47 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	}
 	cfg.Services = ai.EffectiveServices()
 	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords, localAuth: localAuth,
-		acl: NewACL(grants), ai: ai, s3Credentials: s3Credentials, adminOIDC: adminOIDC}, nil
+		acl: NewACL(grants), ai: ai, s3Credentials: s3Credentials, browserOIDC: browserProviders}, nil
 }
 
-func browserLoginOIDC(configs []OIDCIssuerConfig) (OIDCIssuerConfig, bool) {
+func browserLoginOIDCConfigs(configs []OIDCIssuerConfig) []OIDCIssuerConfig {
+	result := make([]OIDCIssuerConfig, 0)
 	for _, cfg := range configs {
 		if cfg.loginConfigured() {
-			return cfg, true
+			result = append(result, cfg)
 		}
 	}
-	return OIDCIssuerConfig{}, false
+	return result
+}
+
+func (s *Server) browserOIDCProvider(id string) (browserOIDCProvider, bool) {
+	providers := s.runtime().browserOIDC
+	id = strings.TrimSpace(id)
+	if id == "" && len(providers) == 1 {
+		return providers[0], true
+	}
+	for _, provider := range providers {
+		if provider.ID == id {
+			return provider, true
+		}
+	}
+	return browserOIDCProvider{}, false
+}
+
+func (s *Server) browserOIDCOptions() []browserOIDCOption {
+	providers := s.runtime().browserOIDC
+	options := make([]browserOIDCOption, 0, len(providers))
+	for _, provider := range providers {
+		options = append(options, browserOIDCOption{ID: provider.ID, Name: provider.Name})
+	}
+	return options
 }
 
 func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server, error) {
 	s := &Server{control: control}
 	s.state.Store(runtime)
 	s.ready.Store(true)
-	if control != nil && strings.TrimSpace(runtime.config.Server.PublicURL) != "" && (runtime.config.Authentication.Local.Login.isEnabled() || runtime.adminOIDC != nil) {
+	if control != nil && strings.TrimSpace(runtime.config.Server.PublicURL) != "" && (runtime.config.Authentication.Local.Login.isEnabled() || len(runtime.browserOIDC) > 0) {
 		provider, err := newBrokerOIDCProvider(runtime.config, control)
 		if err != nil {
 			return nil, err
@@ -163,7 +194,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 		mux.Handle("POST /oauth/end-session", s.oidcProvider.handler)
 		mux.Handle("GET /oauth/keys", s.oidcProvider.handler)
 	}
-	if runtime.adminOIDC != nil {
+	if len(runtime.browserOIDC) > 0 {
 		mux.HandleFunc("GET /oauth/oidc/callback", s.adminCallback)
 	}
 	mux.Handle("POST /v1/embeddings", s.resolvePrincipal(http.HandlerFunc(s.embeddings)))

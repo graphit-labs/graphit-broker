@@ -143,15 +143,16 @@ The Broker has two distinct OIDC roles that share one deployment configuration:
    and end-session endpoints. The configured `authentication.local.tokens.cli_client_id` is a
    public/native client using Authorization Code, PKCE S256, state, nonce, and a dynamic loopback
    redirect whose path is `cli_redirect_path`.
-2. It may be an OIDC client of one upstream organization IdP. Browser-client fields on at most one
-   `authentication.oidc` entry enable that method and use the exact public
-   `/oauth/oidc/callback`. The same issuer entry validates consumer bearer tokens; there is no
+2. It may be an OIDC client of multiple upstream organization IdPs. Browser-client fields on each
+   `authentication.oidc` entry enable a named method and use the exact public
+   `/oauth/oidc/callback`. The same issuer entries validate consumer bearer tokens; there is no
    administration-specific OIDC block.
 
 Graphit Code first reads `/.well-known/graphit-broker`, then uses only the standard OpenID Provider
-metadata and endpoints. The Broker-owned authorization page offers local and upstream OIDC login
-when both exist, shows only local when that is the sole method, and redirects immediately when only
-upstream OIDC exists. An upstream token is never returned to Graphit Code: after successful
+metadata and endpoints. The Broker-owned authorization page offers local login and every named
+upstream OIDC provider that is configured, shows only local when that is the sole method, and
+redirects immediately only when exactly one upstream provider is the sole method. An upstream token
+is never returned to Graphit Code: after successful
 authentication, the Broker issues its own EdDSA ID/access JWTs and an opaque rotating refresh token.
 The access JWT is audience-bound and verifiable through the Broker JWKS; offline validators accept
 an already issued token until `exp`, even after Broker-side revocation.

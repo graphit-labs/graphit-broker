@@ -32,6 +32,28 @@ type AdminIdentityProvider interface {
 	Exchange(context.Context, string, string, string) (AdminIdentity, error)
 }
 
+type browserOIDCProvider struct {
+	ID       string
+	Name     string
+	Identity AdminIdentityProvider
+}
+
+type browserOIDCOption struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	StartURL string `json:"-"`
+}
+
+func browserOIDCProviderID(cfg OIDCIssuerConfig) string {
+	value := strings.TrimRight(strings.TrimSpace(cfg.Issuer), "/") + "\x00" + strings.TrimSpace(cfg.ClientID)
+	digest := sha256.Sum256([]byte(value))
+	return "oidc_" + base64.RawURLEncoding.EncodeToString(digest[:12])
+}
+
+func browserOIDCProviderName(cfg OIDCIssuerConfig) string {
+	return strings.TrimSpace(cfg.DisplayName)
+}
+
 type oidcAdminProvider struct {
 	oauth      oauth2.Config
 	verifier   *oidc.IDTokenVerifier

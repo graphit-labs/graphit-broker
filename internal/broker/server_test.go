@@ -32,7 +32,15 @@ func (failingGrantReader) ResourceGrants(context.Context) (PolicyDocument, error
 }
 
 func newServerWithDependencies(cfg Config, authenticator Authenticator, ai *AIService, credentials S3CredentialService, grants ResourceGrantReader, control *ControlStore, adminOIDC AdminIdentityProvider) *Server {
-	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, s3Credentials: credentials, adminOIDC: adminOIDC}
+	var browserProviders []browserOIDCProvider
+	if adminOIDC != nil {
+		configs := browserLoginOIDCConfigs(cfg.Authentication.OIDC)
+		if len(configs) != 1 {
+			panic("test server with OIDC identity requires exactly one browser configuration")
+		}
+		browserProviders = []browserOIDCProvider{{ID: browserOIDCProviderID(configs[0]), Name: browserOIDCProviderName(configs[0]), Identity: adminOIDC}}
+	}
+	runtime := &runtimeState{config: cfg, authenticator: authenticator, acl: NewACL(grants), ai: ai, s3Credentials: credentials, browserOIDC: browserProviders}
 	server, err := newServerFromRuntime(runtime, control)
 	if err != nil {
 		panic(err)
@@ -496,7 +504,7 @@ func TestDisabledOIDCIssuerIsExcludedFromDiscoverySessionsAndGrants(t *testing.T
 	disabled := false
 	cfg := Config{Authentication: AuthenticationConfig{OIDC: []OIDCIssuerConfig{
 		{Enabled: &disabled, Issuer: "https://disabled.example", Audiences: []string{"disabled-audience"}, ClientID: "disabled-browser"},
-		{Issuer: "https://active.example", Audiences: []string{"active-audience"}, ClientID: "active-browser"},
+		{Issuer: "https://active.example", Audiences: []string{"active-audience"}, ClientID: "active-browser", DisplayName: "Active SSO"},
 	}}}
 	cfg.defaults()
 	server := newServer(cfg, nil, NewAIService(cfg.Services))

@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -101,6 +103,7 @@ type LocalAuthenticationRateLimit struct {
 
 type OIDCIssuerConfig struct {
 	Enabled           *bool    `yaml:"enabled" json:"enabled"`
+	DisplayName       string   `yaml:"display_name" json:"display_name,omitempty"`
 	Issuer            string   `yaml:"issuer" json:"issuer"`
 	Audiences         []string `yaml:"audiences" json:"audiences"`
 	RequiredScopes    []string `yaml:"required_scopes" json:"required_scopes,omitempty"`
@@ -626,7 +629,8 @@ func (c Config) Validate() error {
 	if err := c.Authentication.Local.Tokens.validate(); err != nil {
 		return err
 	}
-	loginProviders := 0
+	browserLoginEnabled := false
+	browserProviderIDs := make(map[string]struct{})
 	for i, issuer := range c.Authentication.OIDC {
 		if !issuer.isEnabled() {
 			continue
@@ -653,22 +657,31 @@ func (c Config) Validate() error {
 			}
 		}
 		if issuer.loginConfigured() {
-			loginProviders++
+			browserLoginEnabled = true
+			displayName := strings.TrimSpace(issuer.DisplayName)
+			if displayName == "" {
+				return fmt.Errorf("authentication.oidc[%d].display_name is required for browser login", i)
+			}
 			if strings.TrimSpace(issuer.ClientID) == "" {
 				return fmt.Errorf("authentication.oidc[%d].client_id is required for browser login", i)
 			}
 			if err := validateHTTPSOrLoopbackURL(issuer.RedirectURL, "OIDC redirect URL"); err != nil {
 				return fmt.Errorf("authentication.oidc[%d]: %w", i, err)
 			}
+			if utf8.RuneCountInString(displayName) > 80 || strings.IndexFunc(displayName, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+				return fmt.Errorf("authentication.oidc[%d].display_name must contain at most 80 printable characters", i)
+			}
+			providerID := browserOIDCProviderID(issuer)
+			if _, exists := browserProviderIDs[providerID]; exists {
+				return fmt.Errorf("authentication.oidc[%d] duplicates browser login issuer and client", i)
+			}
+			browserProviderIDs[providerID] = struct{}{}
 		}
 	}
-	if loginProviders > 1 {
-		return errors.New("authentication.oidc must configure at most one browser login client")
-	}
-	if (c.Authentication.Local.Login.isEnabled() || loginProviders > 0) && strings.TrimSpace(c.Server.PublicURL) == "" {
+	if (c.Authentication.Local.Login.isEnabled() || browserLoginEnabled) && strings.TrimSpace(c.Server.PublicURL) == "" {
 		return errors.New("server.public_url is required when browser authentication is enabled")
 	}
-	if c.Administration.Enabled || c.Authentication.Local.Login.isEnabled() || loginProviders > 0 {
+	if c.Administration.Enabled || c.Authentication.Local.Login.isEnabled() || browserLoginEnabled {
 		if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
 			return fmt.Errorf("authentication.token_pepper must contain at least %d bytes when browser authentication is enabled", tokenPepperMinimumBytes)
 		}

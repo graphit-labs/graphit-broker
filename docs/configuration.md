@@ -196,15 +196,16 @@ discovery/JWKS has no revocation lookup and will accept an already issued token 
 browser login. Each entry accepts `enabled` (default `true`). Setting it to `false` disables issuer
 discovery, bearer validation, browser login, and continued use of its sessions and Broker-issued
 grants. Its audiences are omitted from discovery. Inactive entries do not require valid integration
-settings, but unknown YAML fields and required environment references are still checked. At most
-one enabled entry may configure the browser-client fields. This switch controls an upstream issuer;
-the Broker can still serve its own OpenID endpoints through local login. Changes require a restart.
+settings, but unknown YAML fields and required environment references are still checked. Every
+enabled entry may configure browser-client fields and appears as a separate login choice. The Broker
+can still serve its own OpenID endpoints through local login. Changes require a restart.
 
 The following requirements apply to enabled entries:
 
 | Field | Required | Meaning |
 |---|---|---|
 | `enabled` | no | Whether this upstream issuer is active; defaults to `true` |
+| `display_name` | browser login | Login-button label, with at most 80 printable characters |
 | `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
 | `audiences` | yes | At least one accepted broker audience |
 | `required_scopes` | no | Every listed scope must be present |
@@ -267,6 +268,7 @@ authentication:
   token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
   oidc:
     - enabled: true
+      display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
       required_scopes: [graphit.use]
@@ -292,8 +294,9 @@ administration:
 
 There is no administration-specific OIDC provider. The same issuer and claim mappings validate
 consumer bearers and populate browser identities; `client_id`, `client_secret`, `redirect_url`, and
-`scopes` merely enable the browser authorization-code flow on one issuer. A local-only UI may omit
-OIDC. Session TTL must be between 5 minutes and 168 hours.
+`scopes` enable the browser authorization-code flow independently on each issuer. Each configured
+browser client appears under its `display_name` in the login UI. A local-only UI may omit OIDC.
+Session TTL must be between 5 minutes and 168 hours.
 
 `authentication.oidc[].role_claim` is optional. When absent, effective roles come from SQL
 `role_assignments`. When configured, its additional role values are authoritative for that OIDC

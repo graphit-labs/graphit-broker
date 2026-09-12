@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -46,8 +47,13 @@ func (s *Server) adminPage(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	state := s.runtime()
-	if s.control == nil || state.adminOIDC == nil {
+	if s.control == nil || len(state.browserOIDC) == 0 {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "OIDC browser login is unavailable", requestID(r.Context()))
+		return
+	}
+	provider, ok := s.browserOIDCProvider(r.URL.Query().Get("provider"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "provider_required", "choose a valid OIDC login provider", requestID(r.Context()))
 		return
 	}
 	rawState, err := randomURLToken(32)
@@ -71,16 +77,21 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires := time.Now().Add(oidcFlowTTL)
-	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, Purpose: oidcPurposeAdmin, ExpiresAt: expires}); err != nil {
+	continuation, err := json.Marshal(browserOIDCContinuation{ProviderID: provider.ID})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "login_failed", "could not prepare OIDC login", requestID(r.Context()))
+		return
+	}
+	if err := s.control.SaveFlow(r.Context(), rawState, browserBinding, OIDCFlow{Nonce: nonce, PKCEVerifier: verifier, Purpose: oidcPurposeAdmin, Continuation: string(continuation), ExpiresAt: expires}); err != nil {
 		writeError(w, http.StatusInternalServerError, "login_failed", "could not persist OIDC login", requestID(r.Context()))
 		return
 	}
 	http.SetCookie(w, s.oidcFlowCookie(rawState, browserBinding, expires))
-	http.Redirect(w, r, state.adminOIDC.AuthorizationURL(rawState, nonce, verifier), http.StatusFound)
+	http.Redirect(w, r, provider.Identity.AuthorizationURL(rawState, nonce, verifier), http.StatusFound)
 }
 
 func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
-	if s.control == nil || s.runtime().adminOIDC == nil {
+	if s.control == nil || len(s.runtime().browserOIDC) == 0 {
 		writeError(w, http.StatusServiceUnavailable, "administration_unavailable", "OIDC browser login is unavailable", requestID(r.Context()))
 		return
 	}
@@ -96,6 +107,16 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login state is invalid or expired", requestID(r.Context()))
 		return
 	}
+	var continuation browserOIDCContinuation
+	if json.Unmarshal([]byte(flow.Continuation), &continuation) != nil || continuation.ProviderID == "" {
+		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", requestID(r.Context()))
+		return
+	}
+	provider, ok := s.browserOIDCProvider(continuation.ProviderID)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", requestID(r.Context()))
+		return
+	}
 	if oidcError := strings.TrimSpace(r.URL.Query().Get("error")); oidcError != "" {
 		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
 			return
@@ -103,8 +124,7 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected login", requestID(r.Context()))
 		return
 	}
-	state := s.runtime()
-	identity, err := state.adminOIDC.Exchange(r.Context(), r.URL.Query().Get("code"), flow.PKCEVerifier, flow.Nonce)
+	identity, err := provider.Identity.Exchange(r.Context(), r.URL.Query().Get("code"), flow.PKCEVerifier, flow.Nonce)
 	if err != nil {
 		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
 			return
@@ -336,8 +356,8 @@ func (s *Server) adminLoginOptions(w http.ResponseWriter, r *http.Request) {
 	localEnabled := s.localLoginAvailable()
 	w.Header().Set("Cache-Control", "no-store")
 	body := map[string]any{
-		"oidc":  state.adminOIDC != nil,
-		"local": localEnabled,
+		"oidc_providers": s.browserOIDCOptions(),
+		"local":          localEnabled,
 	}
 	if localEnabled {
 		if challenge := state.localPasswords.CaptchaChallenge(localCaptchaActionAdmin); challenge != nil {

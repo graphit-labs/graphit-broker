@@ -298,6 +298,7 @@ authentication:
   token_pepper: 0123456789abcdef0123456789abcdef
   oidc:
     - issuer: https://identity.example.com
+      display_name: Corporate SSO
       audiences: [graphit-broker]
       subject_claim: sub
       username_claim: preferred_username
@@ -699,6 +700,7 @@ authentication:
     - enabled: false
       client_id: disabled-browser
     - enabled: true
+      display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
       username_claim: preferred_username
@@ -709,12 +711,26 @@ authentication:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected, ok := browserLoginOIDC(cfg.Authentication.OIDC); !ok || selected.ClientID != "active-browser" {
-		t.Fatal("did not select the active browser issuer")
+	selected := browserLoginOIDCConfigs(cfg.Authentication.OIDC)
+	if len(selected) != 1 || selected[0].ClientID != "active-browser" || selected[0].DisplayName != "Corporate SSO" {
+		t.Fatalf("browser issuers=%#v", selected)
 	}
-	cfg.Authentication.OIDC = append(cfg.Authentication.OIDC, cfg.Authentication.OIDC[1])
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "at most one") {
-		t.Fatalf("multiple active browser clients accepted: %v", err)
+	missingName := cfg
+	missingName.Authentication.OIDC = append([]OIDCIssuerConfig(nil), cfg.Authentication.OIDC...)
+	missingName.Authentication.OIDC[1].DisplayName = ""
+	if err := missingName.Validate(); err == nil || !strings.Contains(err.Error(), "display_name is required") {
+		t.Fatalf("browser client without display_name accepted: %v", err)
+	}
+	second := cfg.Authentication.OIDC[1]
+	second.DisplayName = "Partner SSO"
+	second.Issuer = "https://partner.example.com"
+	second.ClientID = "partner-browser"
+	cfg.Authentication.OIDC = append(cfg.Authentication.OIDC, second)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("multiple active browser clients rejected: %v", err)
+	}
+	if selected = browserLoginOIDCConfigs(cfg.Authentication.OIDC); len(selected) != 2 || selected[1].DisplayName != "Partner SSO" {
+		t.Fatalf("multiple browser issuers=%#v", selected)
 	}
 }
 

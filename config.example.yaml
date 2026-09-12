@@ -73,6 +73,8 @@ authentication:
     # Defaults to true; false disables this upstream issuer for bearer and browser login.
     # Required environment references are still checked even when disabled.
     - enabled: true
+      # Shown as this provider's button label on Broker and administration login screens.
+      display_name: "Corporate SSO"
       issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
       required_scopes: ["graphit.use"]
@@ -80,7 +82,7 @@ authentication:
       # used by both Broker-managed Graphit Code login and administration login.
       client_id: "graphit-broker"
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
-      redirect_url: "https://broker.example.com/admin/auth/callback"
+      redirect_url: "https://broker.example.com/oauth/oidc/callback"
       scopes: ["openid", "profile", "email"]
       subject_claim: "sub"
       name_claim: "name"
