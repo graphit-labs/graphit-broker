@@ -174,6 +174,7 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.readyHandler)
+	mux.HandleFunc("GET /favicon.svg", favicon)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
 	if s.oidcProvider != nil {
 		mux.Handle("GET /.well-known/openid-configuration", s.oidcProvider.handler)

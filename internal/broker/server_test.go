@@ -90,7 +90,7 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 	server := httptest.NewServer(newServer(cfg, authenticator, NewAIService(cfg.Services)))
 	defer server.Close()
 
-	for _, path := range []string{"/healthz", "/readyz", "/.well-known/graphit-broker"} {
+	for _, path := range []string{"/healthz", "/readyz", "/favicon.svg", "/.well-known/graphit-broker"} {
 		resp, err := http.Get(server.URL + path)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s status=%v err=%v", path, status(resp), err)
@@ -165,6 +165,32 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("credential response is incomplete: %s", body)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestFaviconAssetAndHTMLReferences(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	favicon(recorder, httptest.NewRequest(http.MethodGet, "/favicon.svg", nil))
+	response := recorder.Result()
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "image/svg+xml; charset=utf-8" || !bytes.Equal(body, faviconSVG) {
+		t.Fatalf("favicon status=%d content-type=%q body=%s", response.StatusCode, response.Header.Get("Content-Type"), body)
+	}
+
+	links := [][]byte{
+		[]byte(`<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=4">`),
+		[]byte(`<link rel="apple-touch-icon" href="/favicon.svg?v=4">`),
+	}
+	for name, page := range map[string][]byte{"admin": adminHTML, "oauth": []byte(oauthHTML)} {
+		for _, link := range links {
+			if !bytes.Contains(page, link) {
+				t.Errorf("%s page does not reference Graphit favicon with %s", name, link)
+			}
+		}
+	}
 }
 
 func TestServerRejectsAIModelAndRouteFields(t *testing.T) {
