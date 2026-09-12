@@ -90,7 +90,7 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("admin page security headers missing: %#v", page.Header)
 	}
 	pageBody, _ := io.ReadAll(page.Body)
-	if !bytes.Contains(pageBody, []byte("Choose an organization account")) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
+	if !bytes.Contains(pageBody, []byte("Choose an organization account")) || !bytes.Contains(pageBody, []byte(`id="oidc-provider-buttons" class="provider-list"`)) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
 		t.Fatalf("administration UI is incomplete: %s", pageBody)
 	}
 	if bytes.Contains(pageBody, []byte("sessionStorage")) || bytes.Contains(pageBody, []byte("Administrator bearer token")) {

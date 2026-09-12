@@ -394,6 +394,8 @@
     .signin-copy p { color: rgba(255,255,255,.54); }
     .signin-methods { display: flex; flex-direction: column; gap: 12px; padding: 24px; }
     .signin-methods .subpanel { box-shadow: none; }
+    .provider-list { display: grid; gap: 10px; margin-top: 15px; }
+    .provider-list .button { width: 100%; }
     #local-mfa-qr { display: block; max-width: 100%; height: auto; margin: 12px auto; padding: 8px; background: #fff; border-radius: 8px; }
 
     .mobile-menu { display: none; }
@@ -528,7 +530,7 @@
               <div class="section-label">Organization</div>
               <h2>Choose an organization account</h2>
               <p class="muted">Continue through one of the configured OpenID Connect providers.</p>
-              <div id="oidc-provider-buttons"></div>
+              <div id="oidc-provider-buttons" class="provider-list"></div>
             </div>
             <div id="local-login-panel" class="subpanel">
               <div class="section-label">Broker identity</div>

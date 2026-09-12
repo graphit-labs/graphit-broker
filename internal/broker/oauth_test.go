@@ -247,6 +247,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	if page.StatusCode != http.StatusOK || !strings.HasPrefix(page.Header.Get("Content-Type"), "text/html") ||
 		!strings.Contains(page.Header.Get("Content-Security-Policy"), "form-action 'self'") ||
 		!strings.Contains(string(pageBody), `data-ui="graphit-auth"`) || !strings.Contains(string(pageBody), `class="auth-shell"`) ||
+		!strings.Contains(string(pageBody), `class="provider-list"`) ||
 		!strings.Contains(string(pageBody), `<form method="post">`) || !strings.Contains(string(pageBody), "Sign in locally") ||
 		!strings.Contains(string(pageBody), "Continue with Corporate SSO") {
 		t.Fatalf("authorization methods status=%d body=%s", page.StatusCode, pageBody)

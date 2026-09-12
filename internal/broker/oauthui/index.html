@@ -344,6 +344,9 @@
     button:hover, .button:hover { background: var(--primary-strong); border-color: var(--primary-strong); transform: translateY(-1px); }
     button:active, .button:active { transform: translateY(0); }
 
+    .provider-list { display: grid; gap: 10px; margin-top: 15px; }
+    .provider-list .button { width: 100%; margin-top: 0; }
+
     .captcha { margin-top: 14px; overflow: hidden; }
     .mfa-qr { display: block; width: min(256px, 100%); height: auto; margin: 16px auto; padding: 8px; background: #fff; border-radius: 8px; }
     .manual-key { overflow-wrap: anywhere; }
@@ -456,7 +459,9 @@
               <div class="section-label">Organization</div>
               <h2>Choose an organization account</h2>
               <p>Continue through one of the configured OpenID Connect providers.</p>
-              {{range .OIDCProviders}}<a class="button" href="{{.StartURL}}">Continue with {{.Name}}</a>{{end}}
+              <div class="provider-list">
+                {{range .OIDCProviders}}<a class="button" href="{{.StartURL}}">Continue with {{.Name}}</a>{{end}}
+              </div>
             </section>
             {{end}}
 
