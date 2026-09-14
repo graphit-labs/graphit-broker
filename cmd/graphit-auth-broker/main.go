@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/graphit-labs/graphit-broker/internal/broker"
+	"github.com/graphit-labs/graphit-broker/internal/updater"
 	"golang.org/x/term"
 )
 
@@ -26,9 +28,30 @@ func main() {
 	setupModels := flag.Bool("setup-models", false, "download and verify selected local model artifacts, then exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	selfUpdate := flag.Bool("self-update", false, "update this executable to the latest GitHub release")
 	bootstrapAdmin := flag.Bool("bootstrap-admin", false, "create the first local administrator using a password read securely from the terminal")
 	bootstrapAdminStdin := flag.Bool("bootstrap-admin-stdin", false, "create the first local administrator using a password read from standard input")
 	flag.Parse()
+	if *selfUpdate || (flag.NArg() == 1 && flag.Arg(0) == "self-update") {
+		if flag.NArg() != 0 && (flag.NArg() != 1 || flag.Arg(0) != "self-update") {
+			fmt.Fprintln(os.Stderr, "self-update does not accept arguments")
+			os.Exit(2)
+		}
+		exe, err := os.Executable()
+		if err == nil {
+			exe, err = filepath.EvalSymlinks(exe)
+		}
+		if err == nil {
+			var result string
+			result, err = updater.Update(context.Background(), version, exe, nil, "")
+			if err == nil {
+				fmt.Fprintln(os.Stdout, result)
+				return
+			}
+		}
+		fmt.Fprintln(os.Stderr, "self-update failed:", err)
+		os.Exit(1)
+	}
 	if *bootstrapAdmin && *bootstrapAdminStdin {
 		fmt.Fprintln(os.Stderr, "choose either --bootstrap-admin or --bootstrap-admin-stdin")
 		os.Exit(2)

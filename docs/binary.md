@@ -25,6 +25,47 @@ installation modes.
 
 ## Download and verify
 
+The installer downloads the latest GitHub release for the host, verifies the published SHA-256,
+and installs only the executable. It does not create a configuration, database, service, model
+cache, or administrator. Linux amd64 and macOS arm64:
+
+```bash
+sh install.sh                                  # default: $HOME/.local/bin
+sh install.sh --dir /opt/graphit-broker --version v1.0.0
+```
+
+Windows amd64, from PowerShell (with `tar.exe` available):
+
+```powershell
+.\install.ps1                                  # default: $env:LOCALAPPDATA\Graphit\bin
+.\install.ps1 -Dir 'C:\Graphit\bin' -Version 'v1.0.0'
+```
+
+Download the scripts from the matching repository release/source when installing on a fresh
+machine. Both scripts support a pinned tag; Unix also accepts `VERSION=v1.0.0`. Ensure the target
+directory is writable and on `PATH`, or invoke the executable by its full path. Neither script
+uses `sudo` or adds directories to `PATH` automatically. Do not run a downloaded script without
+reviewing it and confirming its origin. A failed checksum leaves an existing installation intact.
+
+An installed tagged build can update itself to the latest release:
+
+```bash
+graphit-broker self-update
+graphit-broker --version
+```
+
+The command refuses `dev` builds, downgrades, missing platform artifacts and checksum failures.
+`--self-update` is also accepted for scripts that use the broker's flag-style CLI.
+It stages the replacement beside the executable, retains the original until replacement succeeds,
+and follows an executable symlink to update its target. The installation directory must be writable;
+for a privileged deployment, run the command with appropriate permissions during maintenance.
+Windows may retain a `.bak-*` file until the old process exits. For a running broker service,
+restart it explicitly after updating (for example `sudo systemctl restart graphit-broker`); the
+command does not restart processes or modify configuration or SQL state. Container installations
+must instead be updated by deploying a new image.
+
+For manual installation or auditing the release assets, use the following procedure.
+
 Choose a release tag instead of `latest` for reproducible installation:
 
 ```bash
