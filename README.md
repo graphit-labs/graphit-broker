@@ -116,6 +116,25 @@ CoreML-capable ONNX dylib. They extract atomically under
 small completion marker and file metadata only. `device: auto` prefers CoreML on macOS, CUDA on
 Linux/Windows when visible, and otherwise CPU.
 
+Install a native release on Linux amd64 or macOS arm64:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.sh | sh
+```
+
+On Windows amd64, use PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.ps1 | iex
+```
+
+If you cloned the repository, run the local script instead. Review the remote script's source
+before using a one-line installer. The installers verify the release archive checksum and install
+only the executable (by default in `$HOME/.local/bin` or `$env:LOCALAPPDATA\Graphit\bin`); they do
+not set up configuration, a database, or a service. For a pinned release or another destination, see
+[native installation and configuration](docs/binary.md). A tagged installation supports
+`graphit-broker self-update`; restart an active broker service afterward.
+
 Open `https://YOUR-BROKER/admin/`, sign in, and create the first resource grants. Until then,
 consumer endpoints correctly return `403`.
 

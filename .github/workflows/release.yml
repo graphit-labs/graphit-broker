@@ -126,6 +126,13 @@ jobs:
             unzip
             tar
             gzip
+      - name: Validate PowerShell installer syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { $parseErrors | Write-Error; exit 1 }
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -199,6 +206,24 @@ jobs:
             ## What's Changed
 
             ${{ steps.changelog.outputs.changes }}
+
+            ## Installation
+
+            Linux amd64 / macOS arm64:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.sh | sh
+            ```
+
+            Windows amd64 (PowerShell):
+            ```powershell
+            irm https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.ps1 | iex
+            ```
+
+            The scripts verify the release archive SHA-256. To pin a release or choose a
+            destination, download the script and pass `--version` / `--dir` (Unix) or
+            `-Version` / `-Dir` (PowerShell).
+            Existing tagged installations can run `graphit-broker self-update` and restart
+            their broker service afterward. Review downloaded scripts before running them.
 
             ## Self-contained binaries
 
