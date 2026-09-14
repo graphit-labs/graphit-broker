@@ -1,6 +1,6 @@
 # Running the native binary
 
-GitHub releases publish the same native platform matrix as Graphit Code:
+GitHub releases publish the same native platform matrix as [Graphit Code](https://github.com/graphit-labs/graphit-code):
 
 | Archive | Host | Embedded inference runtime |
 |---|---|---|

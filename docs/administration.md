@@ -174,7 +174,7 @@ disabling, or deleting the service identity invalidates all credentials through 
 
 ## Graphit Code OpenID Connect
 
-Local passwords and upstream IdP tokens are never passed to Graphit Code as Bearer credentials.
+Local passwords and upstream IdP tokens are never passed to [Graphit Code](https://github.com/graphit-labs/graphit-code) as Bearer credentials.
 A desktop client first reads `/.well-known/graphit-broker`, then uses the Broker's standard
 `/.well-known/openid-configuration`, authorization, token, JWKS, userinfo, and revocation endpoints.
 The protocol implementation is provided by `github.com/zitadel/oidc/v3`; the Broker-owned page

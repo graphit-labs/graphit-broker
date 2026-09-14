@@ -67,7 +67,7 @@ privileged role, not a different authentication path.
 
 ## Browser flows and Broker issuer
 
-The Broker is itself an OpenID Provider for Graphit Code. Graphit Code always uses standard
+The Broker is itself an OpenID Provider for [Graphit Code](https://github.com/graphit-labs/graphit-code). Graphit Code always uses standard
 Authorization Code + PKCE against the Broker issuer, regardless of whether the Broker authenticates
 the person with a local password or any configured upstream issuer. When multiple methods or
 upstream issuers are enabled, the Broker renders each choice using its `display_name`; with exactly

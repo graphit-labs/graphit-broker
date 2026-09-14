@@ -78,7 +78,7 @@ JWKS, userinfo, introspection, revocation, and end-session behavior. Request obj
 CORS is disabled, and ID/access tokens are signed with an Ed25519 key derived in a dedicated pepper domain.
 The stable Broker `sub` is an HMAC-derived identifier over the canonical underlying issuer/subject,
 so local and upstream identities cannot collide and username changes do not change authorization identity.
-The Broker issuer is `server.public_url`. Graphit Code bootstraps its public client settings from
+The Broker issuer is `server.public_url`. [Graphit Code](https://github.com/graphit-labs/graphit-code) bootstraps its public client settings from
 Broker discovery and thereafter follows only standard OIDC discovery/endpoints; it never receives
 the upstream issuer configuration, client secret, password, or IdP token. Headless login remains a
 separate OAuth Device Authorization flow and does not issue an ID token or refresh token. Browser

@@ -68,7 +68,7 @@ and `tokens`. The former flat `local_*` keys are rejected. The shared `token_pep
 under `authentication`.
 
 Local browser login is deployment-owned. It defaults to the value of `administration.enabled`, but
-can be enabled independently for Graphit Code login or disabled while keeping OIDC login:
+can be enabled independently for [Graphit Code](https://github.com/graphit-labs/graphit-code) login or disabled while keeping OIDC login:
 
 ```yaml
 authentication:

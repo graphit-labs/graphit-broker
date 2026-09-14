@@ -226,7 +226,7 @@ principal has the effective default `user` role.
 - `GET /oauth/keys` — Ed25519 JSON Web Key Set used to verify ID and access tokens;
 - `GET/POST /oauth/authorize` — standard authorization endpoint; transfers control to the Broker-owned local/upstream method page;
 - `GET /oauth/authorize/callback` — resumes the library-owned authorization after the selected method succeeds;
-- `GET /oauth/oidc/callback` — completes an upstream OIDC login and resumes the Graphit Code authorization;
+- `GET /oauth/oidc/callback` — completes an upstream OIDC login and resumes the [Graphit Code](https://github.com/graphit-labs/graphit-code) authorization;
 - `POST /oauth/device/authorize` — create a device/user code pair for headless CLI login;
 - `GET/POST /oauth/device` — user-facing device approval;
 - `POST /oauth/token` — standard Authorization Code or rotating refresh-token exchange; it also accepts the separate access-token-only device grant;

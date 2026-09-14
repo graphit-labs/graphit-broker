@@ -84,7 +84,7 @@ principals and project IDs cannot match production grants.
 ## AI services
 
 The broker owns upstream endpoint, model, API key, timeouts, limits, and cache. It supports the
-Graphit Code provider set: OpenAI-compatible, Cohere, Voyage, and Google embeddings; Cohere,
+[Graphit Code](https://github.com/graphit-labs/graphit-code) provider set: OpenAI-compatible, Cohere, Voyage, and Google embeddings; Cohere,
 Voyage, and Jina rerank; plus local CodeRankEmbed and BGE rerank inference. Allow egress only to
 configured upstreams and, when local models are activated, to their pinned Hugging Face artifact
 URLs.
