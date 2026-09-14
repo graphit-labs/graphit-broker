@@ -260,6 +260,11 @@ func TestControlStorePersistsNormalizedResourceGrantsAndRejectsStaleWrites(t *te
 	if _, err := store.CreateResourceGrant(ctx, 1, grant, seed.Services.S3); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale create error=%v", err)
 	}
+	second := ACLRuleConfig{ID: "team-secondary", Name: "Secondary project", Access: "team", Principal: "platform", Capabilities: []string{"hub", "s3"}, Projects: []string{"project-b"}, S3Operations: []string{"read"}, S3Route: "primary"}
+	document, err = store.CreateResourceGrant(ctx, 2, second, seed.Services.S3)
+	if err != nil || document.Revision != 3 || len(document.Rules) != 2 {
+		t.Fatalf("second create document=%#v err=%v", document, err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +274,7 @@ func TestControlStorePersistsNormalizedResourceGrantsAndRejectsStaleWrites(t *te
 	}
 	defer reopened.Close()
 	persisted, err := reopened.ResourceGrants(ctx)
-	if err != nil || persisted.Revision != 2 || !reflect.DeepEqual(persisted.Rules[0].Projects, []string{"project-a"}) {
+	if err != nil || persisted.Revision != 3 || len(persisted.Rules) != 2 || !reflect.DeepEqual(persisted.Rules[0].Projects, []string{"project-a"}) {
 		t.Fatalf("persisted=%#v err=%v", persisted, err)
 	}
 }

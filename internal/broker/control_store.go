@@ -902,6 +902,13 @@ func (s *ControlStore) ReplaceResourceGrants(ctx context.Context, expected uint6
 	if changed != 1 {
 		return PolicyDocument{}, ErrRevisionConflict
 	}
+	// SQLite connections may not enforce cascading foreign keys. Remove child
+	// values explicitly before replacing grants so reused IDs remain insertable.
+	for _, table := range []string{"grant_capabilities", "grant_projects", "grant_s3_operations", "grant_s3_prefixes"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+			return PolicyDocument{}, err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM resource_grants`); err != nil {
 		return PolicyDocument{}, err
 	}
