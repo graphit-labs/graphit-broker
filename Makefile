@@ -2,7 +2,7 @@
 
 include native-deps.env
 
-VERSION ?= dev
+VERSION ?= 0.1.0
 BUILD_DIR ?= .build
 PREFIX ?= /usr/local/bin
 HOST_PLATFORM := $(shell go env GOOS)-$(shell go env GOARCH)
