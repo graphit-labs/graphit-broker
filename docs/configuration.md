@@ -335,20 +335,20 @@ services:
       protocol: onnx
       model: coderankembed
       directory: /var/cache/graphit-broker/models
-      device: auto
+      device: cpu
       device_id: 0
   rerank:
     enabled: true
     upstream:
       protocol: onnx
       model: bge-reranker-base
-      device: auto
+      device: cpu
 ```
 
 `protocol: onnx` selects in-process inference. Each `model` names
 `<directory>/<model>/manifest.json`. The default directory is `/var/cache/graphit-broker/models`;
 services can use separate directories. Model defaults are `coderankembed` for embeddings and
-`bge-reranker-base` for rerank, with `device: auto` and `device_id: 0`.
+`bge-reranker-base` for rerank, with `device: cpu` and `device_id: 0`.
 
 ONNX upstreams reject HTTP-only nonzero/nonempty options: `url`, `api_key`, `api_key_header`,
 `api_key_scheme`, `send_dimensions`, and `timeout`. HTTP upstreams reject nonempty `directory`
@@ -462,8 +462,8 @@ Gemini Embedding 2 requests use Google's retrieval text prefixes; earlier Google
 use `RETRIEVAL_QUERY` and `RETRIEVAL_DOCUMENT`. The configured rerank `revision` must change whenever
 the embedding model, dimensions, or scoring behavior changes because these determine ranking.
 
-For either local service, `local.device` accepts `auto`, `cpu`, `cuda`, or `coreml`. `auto` is the
-default: on macOS it tries CoreML and then CPU; on Linux and Windows it tries the configured CUDA
+For either local service, `upstream.device` accepts `auto`, `cpu`, `cuda`, or `coreml`. `cpu` is the
+default. Set `device: auto` explicitly to try CoreML and then CPU on macOS, or the configured CUDA
 `device_id` when an NVIDIA GPU is visible and then CPU. An accelerated-provider failure is logged
 before fallback. Explicit `cuda` or `coreml` is strict and fails broker startup when the requested
 provider cannot initialize; CoreML is valid only on macOS and uses `device_id: 0`. The model

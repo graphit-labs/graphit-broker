@@ -97,8 +97,9 @@ docker compose up -d
 ```
 
 When an enabled service has `upstream.protocol: onnx`, startup downloads and initializes only that service's
-model. On a host with the NVIDIA Container Toolkit, expose GPUs through the same Compose file. The
-same image is used in both modes; `device: auto` prefers CUDA when exposed and falls back to CPU:
+model. CPU is the default even on a GPU host. To opt in to acceleration, set `device: auto` in
+each local service's `upstream` and expose GPUs through the same Compose file on a host with the
+NVIDIA Container Toolkit. The same image is used in both modes; `auto` falls back to CPU:
 
 ```bash
 GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
@@ -113,8 +114,9 @@ Native releases for Linux amd64, macOS arm64, and Windows amd64 are single self-
 executables. Linux and Windows embed the ONNX core plus shared/CUDA providers; macOS embeds the
 CoreML-capable ONNX dylib. They extract atomically under
 `${GRAPHIT_GLOBAL_DIR:-~/.graphit}/broker/runtime/onnxruntime` on first execution; subsequent starts use a
-small completion marker and file metadata only. `device: auto` prefers CoreML on macOS, CUDA on
-Linux/Windows when visible, and otherwise CPU.
+small completion marker and file metadata only. The default `device: cpu` uses CPU on every host.
+Set `device: auto` explicitly to prefer CoreML on macOS or CUDA on Linux/Windows when visible,
+with CPU fallback.
 
 Install a native release on Linux amd64 or macOS arm64:
 

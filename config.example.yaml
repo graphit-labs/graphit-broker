@@ -117,7 +117,8 @@ services:
   embeddings:
     enabled: true
     # HTTP providers: OpenAI-compatible, Cohere, Voyage, or Google.
-    # For local execution replace upstream with protocol: onnx, model: coderankembed, device: auto.
+    # For local execution replace upstream with protocol: onnx, model: coderankembed (CPU by default).
+    # Set device: auto to try GPU with CPU fallback, or device: cuda to require NVIDIA GPU.
     # Omit dimensions to infer the ONNX width, or set 768 for coderankembed.
     # See examples/local-models.yaml; ONNX upstreams do not accept HTTP options.
     # Embedding compatibility revision published to Graphit.

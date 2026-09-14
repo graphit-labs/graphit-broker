@@ -209,12 +209,12 @@ sudo systemctl status graphit-broker
 
 ## CPU and accelerated providers
 
-`local.device` controls both embedding and rerank independently:
+`upstream.device` controls embeddings and rerank independently:
 
-- `auto` (default) tries CoreML then CPU on macOS; on Linux and Windows it tries CUDA when an
+- `cpu` (default) always uses CPU, even on a GPU host.
+- `auto` explicitly tries CoreML then CPU on macOS; on Linux and Windows it tries CUDA when an
   NVIDIA device is visible and then CPU.
-- `cpu` always uses CPU, even on a GPU host.
-- `cuda` requires the configured `local.device_id`; startup fails instead of silently falling back.
+- `cuda` requires the configured `upstream.device_id`; startup fails instead of silently falling back.
 - `coreml` requires macOS and CoreML; it uses `device_id: 0` and fails instead of silently falling
   back.
 

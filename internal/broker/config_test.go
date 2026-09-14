@@ -506,15 +506,21 @@ services:
     enabled: true
     upstream:
       protocol: onnx
-      device: cpu
 `
 	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
 	e, r := cfg.Services.Embeddings.Upstream, cfg.Services.Rerank.Upstream
-	if e.Protocol != "onnx" || e.Device != "auto" || r.Device != "cpu" || e.Directory != defaultModelDirectory || r.Directory != defaultModelDirectory || e.Model != "coderankembed" || r.Model != "bge-reranker-base" || e.Timeout != 0 {
+	if e.Protocol != "onnx" || e.Device != "cpu" || r.Device != "cpu" || e.Directory != defaultModelDirectory || r.Directory != defaultModelDirectory || e.Model != "coderankembed" || r.Model != "bge-reranker-base" || e.Timeout != 0 {
 		t.Fatalf("ONNX defaults=%#v", cfg.Services)
+	}
+	auto, err := DecodeConfig(strings.NewReader("services: {embeddings: {upstream: {protocol: onnx, device: auto}}, rerank: {upstream: {protocol: onnx, device: auto}}}"), func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.Services.Embeddings.Upstream.Device != "auto" || auto.Services.Rerank.Upstream.Device != "auto" {
+		t.Fatalf("explicit ONNX auto devices=%#v", auto.Services)
 	}
 	remote := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 		Enabled: true, Revision: "r", Dimensions: 3,

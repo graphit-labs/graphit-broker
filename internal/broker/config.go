@@ -589,7 +589,7 @@ func (c *UpstreamConfig) setDefaults(task string) {
 	}
 	c.Device = strings.ToLower(strings.TrimSpace(c.Device))
 	if c.Device == "" {
-		c.Device = "auto"
+		c.Device = "cpu"
 	}
 }
 

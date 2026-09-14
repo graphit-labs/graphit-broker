@@ -18,7 +18,7 @@ services:
       protocol: onnx
       model: coderankembed
       directory: /var/cache/graphit-broker/models
-      device: auto
+      device: cpu
       device_id: 0
   rerank:
     enabled: true
@@ -26,20 +26,20 @@ services:
     upstream:
       protocol: onnx
       model: bge-reranker-base
-      device: auto
+      device: cpu
       device_id: 0
 ```
 
 `upstream.directory` defaults to `/var/cache/graphit-broker/models` independently for each service.
 With `protocol: onnx`, `upstream.model` defaults to `coderankembed` for embeddings and
-`bge-reranker-base` for rerank. `device` defaults to `auto` and `device_id` to `0`.
+`bge-reranker-base` for rerank. `device` defaults to `cpu` and `device_id` to `0`.
 The broker does not expose local generation or a generation model selector.
 
 ONNX selects an in-process runtime adapter. Omit HTTP-only options (`url`, API-key fields,
 `send_dimensions`, and `timeout`); incompatible nonzero/nonempty values are rejected.
 Different services may select different catalog directories. Model semantics remain in manifests.
 
-A complete CPU/GPU-portable preset configuration is available at
+A complete CPU-default preset configuration is available at
 [`examples/local-models.yaml`](../examples/local-models.yaml).
 
 Model selection has no effect while the corresponding service is disabled or uses

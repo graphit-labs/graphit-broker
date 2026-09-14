@@ -22,7 +22,7 @@ services:
       protocol: onnx
       model: coderankembed
       directory: /var/cache/graphit-broker/models
-      device: auto
+      device: cpu
       device_id: 0
     cache:
       ttl: 10m
@@ -37,7 +37,7 @@ services:
       protocol: onnx
       model: bge-reranker-base
       directory: /var/cache/graphit-broker/models
-      device: auto
+      device: cpu
       device_id: 0
     cache:
       ttl: 5m

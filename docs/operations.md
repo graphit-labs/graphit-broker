@@ -30,7 +30,8 @@ credentials, bodies, or upstream secrets.
 | embedding cache misses unexpectedly | provider endpoint, model, revision, dimensions, or input type changed | compare the active embedding configuration and effective local-model identity; these changes intentionally create a new cache namespace |
 | startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
 | local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker-models` volume and broker error response |
-| `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `local.device_id` |
+| GPU is visible but local ONNX uses CPU | `upstream.device` was omitted (CPU is the default) or set to `cpu` | set `upstream.device: auto` to try GPU with CPU fallback, or `cuda` to require it |
+| `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `upstream.device_id` |
 | `device: coreml` fails | non-macOS host, unsupported model graph, or CoreML initialization failure | macOS version, broker platform, startup provider error |
 | `device: auto` uses CPU | CoreML/CUDA unavailable, provider initialization failed, or an inference exhausted accelerator memory | provider/recovery warning, macOS support, NVIDIA runtime selection, GPU memory pressure |
 
