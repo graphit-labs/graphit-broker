@@ -388,6 +388,13 @@ services:
       max_entries: 10000
 ```
 
+The `cache` settings above bound only the in-memory complete-response cache. Individual
+embeddings, including ONNX-local results, are also saved durably in the selected SQL database.
+The SQL lookup uses an indexed SHA-256 input hash plus a compatibility fingerprint covering
+provider, model, endpoint/local model identity, revision, dimensions, and input type. A batch
+calls the model only for distinct missing inputs; valid results are saved even if another item
+in the batch fails. SQL entries do not expire automatically.
+
 `upstream.protocol: onnx` uses `upstream.model` for in-process inference; the default preset
 is CodeRankEmbed-137M-INT8. Model files, tokenizer behavior,
 prefixes, pooling, normalization, and dimensions belong to the selected manifest, not this service

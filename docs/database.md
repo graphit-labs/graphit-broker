@@ -7,8 +7,9 @@ administration sessions, Broker OIDC authorization/token state, and service cred
 and code values. It stores domain-separated HMACs for those random credentials and their
 subject/client/audience/scope/expiry/revocation metadata, but no other deployment secrets. Local
 sessions store the user's revision so identity/password/state
-changes force reauthentication. In-memory AI result caches and issued STS credentials are not
-persisted.
+changes force reauthentication. Individual embeddings are persisted by SHA-256 of the input
+and a provider/model/revision compatibility fingerprint; the input text is not stored. Rerank
+response caches and issued STS credentials remain in memory.
 
 Local TOTP secrets are stored only as AES-256-GCM ciphertext. Recovery codes and local login
 challenges are stored only as domain-separated HMAC values; challenge records are short-lived and
@@ -44,9 +45,13 @@ Exporting these variables alone does not override literal fields or omitted-fiel
 Driver values are `sqlite`, `postgres`, and `mysql`. The database selection and DSN are
 deployment-owned and cannot be changed through the UI.
 
-The broker creates its current schema at startup and checks an exact schema version. It does not
-run migrations. In this development phase an incompatible database must be discarded and
-recreated; there is no automatic import or compatibility mode.
+The broker creates its current schema at startup and checks its schema version. Version 9 is
+upgraded transactionally to version 10 by adding the embedding cache table without changing
+existing rows. Other incompatible versions are rejected and require a separate upgrade or
+database recreation. The embedding table has a unique composite primary-key index on
+`(compatibility_hash, input_hash)`, so lookups do not scan the growing table. Embeddings have
+no automatic expiration; include the table in backup/storage planning and change the embedding
+revision whenever the vector space changes.
 
 ## SQLite
 

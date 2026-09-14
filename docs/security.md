@@ -140,8 +140,12 @@ secrets, plaintext passwords, or the authentication pepper. Encrypt storage/back
 
 Configuration API responses replace secrets with `[configured-secret]`. Logs and public errors
 do not include bearer tokens, request bodies, upstream response bodies, STS session credentials,
-or secrets. AI cache entries are bounded, in memory, and scoped by route/revision/principal. The
-broker does not cache temporary S3 credentials.
+or secrets. Rerank and complete-response AI caches are bounded, in memory, and scoped by
+route/revision/principal. Embedding vectors are additionally persisted in SQL per input hash,
+provider/model/revision identity, dimensions, and input type, and may be reused across principals.
+Neither input text nor provider credentials are persisted in the embedding cache. Hashes and
+vectors can still reveal information about inputs, so protect database access and backups.
+The broker does not cache temporary S3 credentials.
 
 ## Deployment hardening
 

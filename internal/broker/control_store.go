@@ -25,7 +25,7 @@ const (
 	humanIdentityKind       = "human"
 	serviceIdentityKind     = "service"
 	localIdentityIssuer     = "local"
-	schemaVersion           = 9
+	schemaVersion           = 10
 	tokenPepperMinimumBytes = 32
 	adminSessionTokenDomain = "graphit-broker/admin-session/v1"
 	oidcFlowTokenDomain     = "graphit-broker/oidc-flow/v1"
@@ -155,7 +155,7 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 	if err := tx.QueryRowContext(ctx, s.bind(`SELECT version FROM schema_meta WHERE id=?`), 1).Scan(&storedSchemaVersion); err != nil {
 		return fmt.Errorf("read database schema version: %w", err)
 	}
-	if storedSchemaVersion != schemaVersion {
+	if storedSchemaVersion != schemaVersion && storedSchemaVersion != 9 {
 		return fmt.Errorf("unsupported database schema version %d: recreate the database", storedSchemaVersion)
 	}
 	for _, statement := range []string{
@@ -182,6 +182,23 @@ func (s *ControlStore) initialize(ctx context.Context) error {
 	} {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("initialize %s schema: %w", s.dialect.Name(), err)
+		}
+	}
+	// The only supported upgrade is additive: existing version-9 state remains intact.
+	vectorType := "TEXT"
+	if s.dialect.Name() == "mysql" {
+		vectorType = "LONGTEXT"
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS embedding_cache (`+
+		`compatibility_hash VARCHAR(64) NOT NULL, input_hash VARCHAR(64) NOT NULL, `+
+		`provider TEXT NOT NULL, revision TEXT NOT NULL, model TEXT NOT NULL, `+
+		`input_type VARCHAR(16) NOT NULL, embedding_json `+vectorType+` NOT NULL, `+
+		`PRIMARY KEY(compatibility_hash, input_hash))`); err != nil {
+		return fmt.Errorf("initialize embedding cache: %w", err)
+	}
+	if storedSchemaVersion == 9 {
+		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE schema_meta SET version=? WHERE id=?`), schemaVersion, 1); err != nil {
+			return fmt.Errorf("upgrade database schema: %w", err)
 		}
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)

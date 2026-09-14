@@ -117,7 +117,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	if err != nil {
 		return nil, err
 	}
-	ai := NewAIService(cfg.Services)
+	ai := NewAIService(cfg.Services, control)
 	if err := ai.InitializeLocal(ctx); err != nil {
 		_ = ai.Close()
 		return nil, err

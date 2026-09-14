@@ -15,7 +15,7 @@ credentials, bodies, or upstream secrets.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| startup rejects schema | database belongs to another development build | restore matching backup or recreate; no migration exists |
+| startup rejects schema | database belongs to another development build | version 9 upgrades to 10 automatically; for other versions restore a matching backup or recreate |
 | startup cannot connect | driver/DSN/TLS/network/credentials | YAML `database.driver`/`database.dsn` and their explicit ENV references, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
@@ -27,6 +27,7 @@ credentials, bodies, or upstream secrets.
 | S3 credentials gets 502 | STS trust, role, signing key, endpoint, duration, or 2048-byte policy limit | route and STS logs |
 | token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
 | embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |
+| embedding cache misses unexpectedly | provider endpoint, model, revision, dimensions, or input type changed | compare the active embedding configuration and effective local-model identity; these changes intentionally create a new cache namespace |
 | startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
 | local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker-models` volume and broker error response |
 | `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `local.device_id` |
@@ -44,6 +45,14 @@ session metadata; encrypt and restrict backups.
 
 Restore into the exact schema-compatible broker build. Start one replica, verify admin and consumer
 flows, then scale.
+
+The SQL `embedding_cache` table stores vectors keyed by input SHA-256 and a compatibility
+fingerprint; it stores no input text. Its composite primary key supports indexed lookups as the
+table grows. Entries have no TTL or automatic eviction, so monitor database size and include the
+table in backup capacity planning. Changing the embedding revision prevents reuse of old vectors
+but does not delete their rows. A partially failed embedding batch can still leave successful
+vectors in this table for later reuse. A full cache hit avoids the model call; a mixed batch sends
+only distinct missing inputs to the provider.
 
 ## Rotation
 

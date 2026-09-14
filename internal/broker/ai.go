@@ -64,6 +64,7 @@ type AIService struct {
 	embeddingHTTP     *http.Client
 	rerankHTTP        *http.Client
 	embeddingCache    *responseCache
+	embeddingStore    *ControlStore
 	rerankCache       *responseCache
 	localMu           sync.Mutex
 	localEmbedding    localEmbeddingBackend
@@ -74,10 +75,10 @@ type AIService struct {
 	prepareModel      func(context.Context, string, UpstreamConfig) (*ResolvedModel, error)
 }
 
-func NewAIService(cfg ServicesConfig) *AIService {
+func NewAIService(cfg ServicesConfig, stores ...*ControlStore) *AIService {
 	cfg.Embeddings.setDefaults()
 	cfg.Rerank.setDefaults()
-	return &AIService{
+	service := &AIService{
 		embeddingCfg: cfg.Embeddings, rerankCfg: cfg.Rerank, s3Cfg: cfg.S3,
 		embeddingHTTP:     &http.Client{Timeout: cfg.Embeddings.Upstream.Timeout},
 		rerankHTTP:        &http.Client{Timeout: cfg.Rerank.Upstream.Timeout},
@@ -87,6 +88,10 @@ func NewAIService(cfg ServicesConfig) *AIService {
 		newLocalRerank:    newONNXRerankBackend,
 		modelCatalog:      NewModelCatalog(),
 	}
+	if len(stores) > 0 {
+		service.embeddingStore = stores[0]
+	}
+	return service
 }
 
 func (s *AIService) Close() error {
@@ -186,7 +191,8 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 	if len(requestedType) > 0 && requestedType[0] != "" {
 		inputType = requestedType[0]
 	}
-	key := scopedCacheKey(principal, cfg.Revision, struct {
+	compatibilityHash := embeddingCompatibilityHash(cfg, inputType)
+	key := scopedCacheKey(principal, compatibilityHash, struct {
 		InputType string
 		Input     []string
 	}{inputType, input})
@@ -195,6 +201,16 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 		if json.Unmarshal(cached, &response) == nil {
 			return response, true, nil
 		}
+	}
+	if s.embeddingStore != nil {
+		response, cached, err := s.embedPersisted(ctx, cfg, input, inputType, compatibilityHash)
+		if err != nil {
+			return EmbeddingResponse{}, false, err
+		}
+		if encoded, err := json.Marshal(response); err == nil {
+			s.embeddingCache.Put(key, encoded)
+		}
+		return response, cached, nil
 	}
 	var upstream embeddingBackendResponse
 	var err error
@@ -226,6 +242,113 @@ func (s *AIService) Embed(ctx context.Context, principal Principal, input []stri
 		s.embeddingCache.Put(key, encoded)
 	}
 	return response, false, nil
+}
+
+func (s *AIService) embedPersisted(ctx context.Context, cfg EmbeddingServiceConfig, input []string, inputType, compatibilityHash string) (EmbeddingResponse, bool, error) {
+	vectors := make(map[string][]float32, len(input))
+	missingInput := make([]string, 0, len(input))
+	missingHashes := make([]string, 0, len(input))
+	for _, value := range input {
+		hash := sha256Hex([]byte(value))
+		if _, seen := vectors[hash]; seen {
+			continue
+		}
+		// nil marks a missing hash already queued in this batch.
+		vectors[hash] = nil
+		vector, ok, err := s.embeddingStore.CachedEmbedding(ctx, compatibilityHash, hash, cfg.Dimensions)
+		if err != nil {
+			return EmbeddingResponse{}, false, err
+		}
+		if ok {
+			vectors[hash] = vector
+		} else {
+			missingInput = append(missingInput, value)
+			missingHashes = append(missingHashes, hash)
+		}
+	}
+	var upstream embeddingBackendResponse
+	if len(missingInput) > 0 {
+		limit := len(missingInput)
+		switch strings.ToLower(strings.TrimSpace(cfg.Upstream.Protocol)) {
+		case "cohere", "cohere-embed-v2":
+			limit = cohereEmbeddingBatchLimit
+		case "voyage", "voyage-embeddings-v1":
+			limit = voyageEmbeddingBatchLimit
+		case "google", "google-embed-content-v1beta", "gemini", "gemini-embed-content-v1beta":
+			limit = googleEmbeddingBatchLimit
+		}
+		var firstErr error
+		for start := 0; start < len(missingInput); start += limit {
+			end := min(start+limit, len(missingInput))
+			batch, err := s.embedAndSaveBatch(ctx, cfg, missingInput[start:end], missingHashes[start:end], inputType, compatibilityHash, vectors)
+			if err != nil && len(batch.Data) == 0 && end-start > 1 && ctx.Err() == nil {
+				// A failed batch may contain individually valid inputs. Salvage
+				// those even when the overall request cannot succeed.
+				for i := start; i < end; i++ {
+					_, itemErr := s.embedAndSaveBatch(ctx, cfg, missingInput[i:i+1], missingHashes[i:i+1], inputType, compatibilityHash, vectors)
+					if itemErr != nil && firstErr == nil {
+						firstErr = itemErr
+					}
+				}
+			} else if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if len(batch.Usage) > 0 {
+				upstream.Usage = batch.Usage
+			}
+		}
+		if firstErr != nil {
+			return EmbeddingResponse{}, false, firstErr
+		}
+	}
+	data := make([]EmbeddingData, len(input))
+	for i, value := range input {
+		data[i] = EmbeddingData{Object: "embedding", Embedding: vectors[sha256Hex([]byte(value))], Index: i}
+	}
+	return EmbeddingResponse{Object: "list", Data: data, Usage: upstream.Usage,
+		Graphit: EmbeddingMetadata{Revision: cfg.Revision, Dimensions: cfg.Dimensions}}, len(missingInput) == 0, nil
+}
+
+func (s *AIService) embedAndSaveBatch(ctx context.Context, cfg EmbeddingServiceConfig, input, hashes []string, inputType, compatibilityHash string, vectors map[string][]float32) (embeddingBackendResponse, error) {
+	var result embeddingBackendResponse
+	var err error
+	if cfg.Upstream.isONNX() {
+		result, err = s.embedLocal(ctx, input, inputType)
+	} else {
+		result, err = embedUpstream(ctx, s.embeddingHTTP, cfg, input, inputType)
+	}
+	if err != nil {
+		return result, err
+	}
+	seen := make([]bool, len(input))
+	var firstErr error
+	for _, item := range result.Data {
+		if item.Index < 0 || item.Index >= len(input) || seen[item.Index] {
+			if firstErr == nil {
+				firstErr = errors.New("embedding upstream returned an invalid or duplicate index")
+			}
+			continue
+		}
+		seen[item.Index] = true
+		if len(item.Embedding) != cfg.Dimensions {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("embedding upstream returned %d dimensions, expected %d", len(item.Embedding), cfg.Dimensions)
+			}
+			continue
+		}
+		hash := hashes[item.Index]
+		if err := s.embeddingStore.SaveEmbedding(ctx, cfg, inputType, compatibilityHash, hash, item.Embedding); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		vectors[hash] = item.Embedding
+	}
+	if len(result.Data) != len(input) && firstErr == nil {
+		firstErr = fmt.Errorf("embedding upstream returned %d vectors for %d inputs", len(result.Data), len(input))
+	}
+	return result, firstErr
 }
 
 type embeddingBackendResponse struct {
