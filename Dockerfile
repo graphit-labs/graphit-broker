@@ -13,12 +13,13 @@ COPY --chown=graphit:graphit --chmod=0755 graphit-broker /usr/local/bin/graphit-
 COPY --chown=graphit:graphit --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 ENV GRAPHIT_GLOBAL_DIR=/home/graphit/.graphit \
-    GRAPHIT_BROKER_CONFIG=/home/graphit/.graphit/broker/config.yaml
+    GRAPHIT_BROKER_CONFIG=/home/graphit/.graphit/broker/config.yaml \
+    GRAPHIT_BROKER_HEALTHCHECK_URL=http://127.0.0.1:8080/readyz
 
 WORKDIR /home/graphit/.graphit/broker
 USER graphit:graphit
 EXPOSE 8080
 VOLUME ["/home/graphit/.graphit/broker"]
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD /usr/local/bin/graphit-broker --healthcheck "http://127.0.0.1:8080/readyz"
+    CMD /usr/local/bin/graphit-broker --healthcheck "$GRAPHIT_BROKER_HEALTHCHECK_URL"
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
