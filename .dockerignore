@@ -1,8 +1,4 @@
-.git
-.github
-bin
-coverage.out
-*.log
-.env
-.build
-internal/broker/onnxruntime_payload.tar.gz
+*
+!Dockerfile
+!docker-entrypoint.sh
+!graphit-broker

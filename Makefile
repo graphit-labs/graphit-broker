@@ -1,4 +1,4 @@
-.PHONY: build install fmt vet test check docker-build release-linux release-darwin release-windows
+.PHONY: build install fmt vet test check docker-build docker-check release-linux release-darwin release-windows
 
 include native-deps.env
 
@@ -37,8 +37,11 @@ check:
 	go vet ./...
 	go test ./...
 
-docker-build:
+docker-build: build
 	docker build -t graphit-broker:dev .
+
+docker-check: docker-build
+	./scripts/container-smoke.sh graphit-broker:dev
 
 release-linux:
 	rm -rf "$(BUILD_DIR)/graphit-broker-linux-amd64" "$(BUILD_DIR)/graphit-broker-linux-amd64.tar.gz" "$(BUILD_DIR)/graphit-broker-linux-amd64.sha256"

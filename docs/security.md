@@ -135,8 +135,10 @@ When `graphit-hub-access-v1` is selected, broker SQL is the only Hub ACL source.
 The SQL database contains local identities and Argon2id PHCs, roles, grants, HMAC-protected upstream
 OIDC state, Broker authorization requests/token identifiers, service credentials, and live session keys. It does not contain
 raw passwords, raw codes/tokens, `config.yml`, or resolved OIDC/upstream/S3
-secrets, plaintext passwords, or the authentication pepper. Encrypt storage/backups and restrict database/network access. SQLite parent/file modes are
-`0700`/`0600`; PostgreSQL/MySQL access must be protected by database roles and TLS/network policy.
+secrets, plaintext passwords, or the authentication pepper. Encrypt storage/backups and restrict
+database/network access. SQLite directories created by the broker use `0700` and database files use
+`0600`; existing writable directories retain their operator-managed permissions. PostgreSQL/MySQL
+access must be protected by database roles and TLS/network policy.
 
 Configuration API responses replace secrets with `[configured-secret]`. Logs and public errors
 do not include bearer tokens, request bodies, upstream response bodies, STS session credentials,

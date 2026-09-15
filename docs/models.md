@@ -17,7 +17,7 @@ services:
     upstream:
       protocol: onnx
       model: coderankembed
-      directory: /var/cache/graphit-broker/models
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
       device_id: 0
   rerank:
@@ -26,11 +26,14 @@ services:
     upstream:
       protocol: onnx
       model: bge-reranker-base
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
       device_id: 0
 ```
 
-`upstream.directory` defaults to `/var/cache/graphit-broker/models` independently for each service.
+`upstream.directory` is required for each ONNX service. The example configuration, rather than the
+executable, chooses `BROKER_MODELS_DIRECTORY` and the `~/.graphit/broker/models` fallback. Another
+configuration may use a different variable name, a literal path, or separate paths per service.
 With `protocol: onnx`, `upstream.model` defaults to `coderankembed` for embeddings and
 `bge-reranker-base` for rerank. `device` defaults to `cpu` and `device_id` to `0`.
 The broker does not expose local generation or a generation model selector.
@@ -56,8 +59,8 @@ Each selected ID maps to one bundle:
 └── optional ONNX external-data and tokenizer files
 ```
 
-The Compose `broker-models` volume is mounted at the default directory. Native installations should
-make the configured directory persistent and writable by the broker service user.
+Compose persists the example directory as part of the `broker-global` volume. Native installations
+should make each configured directory persistent and writable by the broker service user.
 
 ## Built-in presets
 
@@ -200,8 +203,8 @@ and only become visible after their size and digest pass validation.
 installed artifact and otherwise reports that setup is required:
 
 ```bash
-graphit-broker --config /etc/graphit-broker/config.yml --setup-models
-graphit-broker --config /etc/graphit-broker/config.yml
+graphit-broker --setup-models
+graphit-broker
 ```
 
 The command processes only enabled embedding/rerank services with `upstream.protocol: onnx`,
@@ -211,7 +214,7 @@ selected `on_demand` bundles, which is useful for image deployment with controll
 With the existing Compose file, no override is needed:
 
 ```bash
-docker compose run --rm broker --config /etc/graphit-broker/config.yaml --setup-models
+docker compose run --rm broker --setup-models
 docker compose up -d
 ```
 
@@ -234,7 +237,7 @@ For the named Compose volume:
 
 ```bash
 docker compose create broker
-docker compose cp ./models/my-embedding broker:/var/cache/graphit-broker/models/my-embedding
+docker compose cp ./models/my-embedding broker:/home/graphit/.graphit/broker/models/my-embedding
 docker compose up -d
 ```
 

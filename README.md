@@ -76,25 +76,21 @@ any enabled upstream services. Local AI does not need provider credentials.
 
 ```bash
 cp .env.example .env
-# Fill the local, uncommitted environment file.
-docker compose -f docker-compose.yml up --build -d
+cp config.example.yaml config.yaml
+# Fill the local, uncommitted environment file and edit config.yaml.
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml create broker
+docker compose -f docker-compose.yml cp config.yaml broker:/home/graphit/.graphit/broker/config.yaml
+docker compose -f docker-compose.yml up -d
 curl --fail http://127.0.0.1:8080/healthz
 curl --fail http://127.0.0.1:8080/readyz
 curl --fail http://127.0.0.1:8080/.well-known/graphit-broker
 ```
 
-Compose persists `/etc/graphit-broker`, `/var/lib/graphit-broker`, and the model cache in the
-  named volumes `broker-config`, `broker-state`, and `broker-models`. On the first run Docker seeds
-`broker-config` with the image's `config.yaml`. To start from a customized file, create the service,
-copy the file into its configuration volume, and then start it:
-
-```bash
-cp config.example.yaml config.yaml
-# Edit config.yaml first.
-docker compose create broker
-docker compose cp config.yaml broker:/etc/graphit-broker/config.yaml
-docker compose up -d
-```
+The image intentionally contains no operational configuration. The entrypoint requires a regular,
+readable file at `/home/graphit/.graphit/broker/config.yaml` by default and refuses to start when it
+is absent. Compose persists that whole broker directory—including configuration, the default SQLite
+database, downloaded models, and the embedded runtime—in the `broker-global` named volume.
 
 When an enabled service has `upstream.protocol: onnx`, startup downloads and initializes only that service's
 model. CPU is the default even on a GPU host. To opt in to acceleration, set `device: auto` in
@@ -102,10 +98,11 @@ each local service's `upstream` and expose GPUs through the same Compose file on
 NVIDIA Container Toolkit. The same image is used in both modes; `auto` falls back to CPU:
 
 ```bash
-GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
+GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up -d
 ```
 
-Local ONNX models use manifest bundles under the persistent `broker-models` volume. Each service’s
+Local ONNX models use manifest bundles under `broker/models` in the persistent `broker-global`
+volume. Each service’s
 `upstream.model` selects a preset or custom ID; each manifest controls verified
 `on_demand`, explicit `setup`, or installed-only `never` acquisition and the complete inference
 semantics. See the [local model catalog](docs/models.md) for all fields and examples.
@@ -117,6 +114,12 @@ CoreML-capable ONNX dylib. They extract atomically under
 small completion marker and file metadata only. The default `device: cpu` uses CPU on every host.
 Set `device: auto` explicitly to prefer CoreML on macOS or CUDA on Linux/Windows when visible,
 with CPU fallback.
+
+The native executable resolves its default configuration and embedded runtime beneath
+`.graphit/broker` in the current user's home directory. Database and model paths come only from
+YAML. The example config chooses `BROKER_DATABASE_DSN` with a
+`~/.graphit/broker/broker.db` fallback; another config can choose another name or no environment
+reference. Configured `~/` paths are expanded with the host operating system's native path rules.
 
 Install a native release on Linux amd64 or macOS arm64:
 
@@ -143,21 +146,24 @@ consumer endpoints correctly return `403`.
 Validate a configuration without starting the service:
 
 ```bash
+make build VERSION=dev
 docker build -t graphit-broker:local .
 docker run --rm --env-file .env \
-  -v "$PWD/config.yaml:/etc/graphit-broker/config.yaml:ro" \
+  -e GRAPHIT_BROKER_CONFIG=/config.yaml \
+  -v "$PWD/config.yaml:/config.yaml:ro" \
   graphit-broker:local --check-config
 ```
 
 For a harmless health-only smoke test:
 
 ```bash
-docker build -t graphit-broker:local .
+docker pull ghcr.io/graphit-labs/graphit-broker:latest
 docker run --rm -d --name graphit-broker-smoke -p 18080:8080 \
   --tmpfs /tmp:size=16m,mode=1777 \
-  -v "$PWD/examples/health-only.yaml:/etc/graphit-broker/config.yaml:ro" \
-  graphit-broker:local
-curl --fail http://127.0.0.1:18080/healthz
+  -e GRAPHIT_BROKER_CONFIG=/config.yaml \
+  -v "$PWD/examples/health-only.yaml:/config.yaml:ro" \
+  ghcr.io/graphit-labs/graphit-broker:latest
+curl --fail http://127.0.0.1:18080/readyz
 docker rm -f graphit-broker-smoke
 ```
 

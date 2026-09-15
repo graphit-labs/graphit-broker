@@ -4,9 +4,15 @@ The broker reads strict YAML: unknown fields are errors. Environment expressions
 before decoding:
 
 - `${NAME}` — empty when unset;
+- `${NAME:-fallback}` — use `fallback` when unset or empty;
 - `${NAME:?message}` — fail startup with the supplied message.
 
 Run `graphit-broker --config config.yaml --check-config` to validate without serving.
+
+Without `--config` or `GRAPHIT_BROKER_CONFIG`, the executable reads
+`.graphit/broker/config.yaml` beneath the current user's home directory. On Windows this resolves
+through the Windows user profile; on Linux and macOS it resolves through the Unix home directory.
+Set `GRAPHIT_GLOBAL_DIR` to relocate the entire `.graphit` root.
 
 The expanded YAML document is the sole configuration authority. It is never serialized into SQL.
 Change it through deployment/secret-management tooling and restart the broker to activate the new
@@ -19,22 +25,24 @@ state; the pepper and resource grants are never persisted from YAML.
 | Field | Default | Meaning |
 |---|---:|---|
 | `driver` | `sqlite` | `sqlite`, `postgres`, or `mysql` |
-| `dsn` | SQLite file below | Driver-specific connection string |
+| `dsn` | required | Driver-specific connection string |
 | `max_open_conns` | SQLite 1; remote 20 | Maximum pool connections |
 | `max_idle_conns` | SQLite 1; remote 10 | Idle pool connections |
 | `conn_max_lifetime` | `3m` | Maximum connection lifetime |
 
-Default SQLite DSN: `/var/lib/graphit-broker/broker.db`. Environment variables never override
-literal YAML fields. To read a driver or DSN from the environment, reference it explicitly:
+`dsn` has no hidden code default. The distributed configuration chooses both its environment name
+and portable fallback:
 
 ```yaml
 database:
-  driver: "${BROKER_DATABASE_DRIVER}"
-  dsn: "${BROKER_DATABASE_DSN:?set the database DSN}"
+  driver: sqlite
+  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
 ```
 
-The variable names are chosen by the YAML; `BROKER_DATABASE_*` has no special precedence.
-Deployments that previously relied on implicit database overrides must add these references.
+The executable has no special knowledge of `BROKER_DATABASE_DSN`; another YAML can choose another
+name, a literal DSN, or a required reference such as
+`${DATABASE_URL:?set the database connection}`. For SQLite and ONNX directory fields, a configured
+leading `~/` is expanded through the operating-system user home on Linux, macOS, and Windows.
 See [database backends](database.md).
 
 ## Server
@@ -334,7 +342,7 @@ services:
     upstream:
       protocol: onnx
       model: coderankembed
-      directory: /var/cache/graphit-broker/models
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
       device_id: 0
   rerank:
@@ -342,12 +350,14 @@ services:
     upstream:
       protocol: onnx
       model: bge-reranker-base
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
 ```
 
 `protocol: onnx` selects in-process inference. Each `model` names
-`<directory>/<model>/manifest.json`. The default directory is `/var/cache/graphit-broker/models`;
-services can use separate directories. Model defaults are `coderankembed` for embeddings and
+`<directory>/<model>/manifest.json`. `directory` is required and is owned by YAML; the example
+chooses an environment reference with a portable fallback. Services can use separate directories
+and variable names. Model defaults are `coderankembed` for embeddings and
 `bge-reranker-base` for rerank, with `device: cpu` and `device_id: 0`.
 
 ONNX upstreams reject HTTP-only nonzero/nonempty options: `url`, `api_key`, `api_key_header`,

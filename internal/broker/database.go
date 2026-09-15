@@ -102,6 +102,16 @@ func secureSQLiteParent(dsn string) error {
 		return nil
 	}
 	dir := filepath.Dir(path)
+	info, err := os.Stat(dir)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("SQLite parent is not a directory: %s", dir)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect SQLite directory: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create SQLite directory: %w", err)
 	}

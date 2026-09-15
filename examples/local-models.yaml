@@ -1,6 +1,6 @@
 database:
   driver: sqlite
-  dsn: /var/lib/graphit-broker/local-models.db
+  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m
@@ -21,7 +21,7 @@ services:
     upstream:
       protocol: onnx
       model: coderankembed
-      directory: /var/cache/graphit-broker/models
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
       device_id: 0
     cache:
@@ -36,7 +36,7 @@ services:
     upstream:
       protocol: onnx
       model: bge-reranker-base
-      directory: /var/cache/graphit-broker/models
+      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
       device: cpu
       device_id: 0
     cache:

@@ -1,8 +1,8 @@
 database:
-  # sqlite (default), postgres, or mysql. The DSN and driver are deployment-owned.
-  # ENV is opt-in: replace literals with explicit references as shown in docs/configuration.md.
+  # sqlite (default), postgres, or mysql. This config chooses the environment variable name;
+  # an empty BROKER_DATABASE_DSN uses the YAML-owned fallback after portable ~ expansion.
   driver: "sqlite"
-  dsn: "/var/lib/graphit-broker/broker.db"
+  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m

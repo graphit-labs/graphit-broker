@@ -1,11 +1,11 @@
 ---
 name: graphit-task
-description: 'Deterministic project work, including analysis-only tasks: exhaustive specifications, durable results, dependencies, claims, progress, handoff, completion, and prior-task search.'
+description: 'Deterministic project work, including feature planning, backlog, milestones, and analysis-only tasks: exhaustive specifications, durable results, dependencies, claims, progress, handoff, completion, and prior-task search.'
 ---
 
 # Graphit Task
 
-Graphit Task is the only task-control source of truth. Always use it instead of the host agent's native task/TODO/planning mechanism, even when that mechanism is available. The shared LanceDB tables own task state; do not create Markdown task logs or TODO/backlog files.
+Graphit Task is the only task-control source of truth. Planning may use other tools, including the host agent's native planning mechanism. Always record and maintain the resulting tasks through Graphit Task tools. The shared LanceDB tables own official task state; external plans, native TODOs and Markdown files cannot replace the Graphit backlog or lifecycle records.
 Investigation, diagnosis, comparison, evaluation, architecture review, impact analysis, research, and any other analysis-only work are project work even when they produce no code or file change. Create, claim, checkpoint, and complete a Graphit task for them exactly as for implementation work. An analysis-only task is not complete until its full analytical result is durably recorded in Task for later analysis and system learning.
 
 ## Enter work
@@ -17,6 +17,20 @@ Create missing work with `graphit_task_create`, a stable `idempotency_key`, a co
 Cleanup, validation, review, documentation, commit preparation, release checks, and similar delivery-support or finalization work are subtasks of the relevant delivery task, not unrelated top-level tasks. Use a check for a pass/fail condition; use a subtask when the validation or finalization itself is a work unit that must be owned, resumed, or audited.
 When discovery changes a claimed task's scope or reveals implementation-relevant detail missing from its description, use `graphit_task_revise` with the current task revision and a reason. Keep the description current with every relevant detail the model has discovered before delegation, handoff, or implementation begins; progress entries do not excuse leaving the executable specification incomplete. Supersede an obsolete check through `graphit_task_check_supersede`, optionally creating its replacement; never falsify evidence or delete history to force completion.
 For two or more independent mutations, prefer `graphit_task_batch`; it runs in input order and reports every item. Inspect all results and never use batching to bypass claims, checks, flags, dependencies, or removal confirmation.
+
+## Plan features and future work
+
+Whenever the user plans features or an entire system, offer Graphit Task to register and maintain the agreed backlog during the conversation. At the end, if desired work remains outside this session and registration is undecided, explicitly ask whether to register those defined items in the backlog. Prior authorization to register is sufficient: proceed incrementally without asking again. Respect a refusal for those items. Planning or registering future work does not authorize implementing it.
+
+Use Task tools for every record, regardless of where planning happened. Incorporate externally defined requirements, decisions, specifications, tests, subtasks, interdependencies and milestones into self-contained Graphit tasks; a link to an external plan alone is insufficient. Reconcile subsequent planning changes through the same Task workflow and verify the saved records. Keep the current planning/refinement task separate from future delivery tasks so planning can finish without marking implementation complete. Once registration is authorized, create or revise tasks as definitions settle; preserve every user requirement, correction, decision, rationale and unresolved question. Do not invent missing decisions. Map each requirement to its task IDs and acceptance/test checks in the planning specification; retain this coverage map across splits and scope changes.
+
+Represent a whole system with delivery tasks (for example, type `epic` or `feature`), `parent_id` for decomposition, and `depends_on` for prerequisites and cross-feature interdependencies. Create referenced tasks first and use returned IDs. A milestone is a task (for example, type `milestone`) with observable exit criteria and validation checks, depending on its required deliveries or grouping them as subtasks; it is not a separate scheduling primitive. Define integration contracts and success/failure/boundary tests at each milestone. Check the combined hierarchy and dependency graph: no descendant may depend on an ancestor whose completion waits for that descendant. Priority is not execution order.
+
+Every executable task must let another agent implement correctly and completely without this conversation: include the agreed behavior, scope, interfaces, inputs/outputs, constraints, known code context, prerequisites and deliverables, acceptance criteria, concrete tests and expected results. Reference exact supporting task IDs and sources. Unknowns stay explicit; material gaps require refinement before implementation. A planned test remains pending until actually run; defining a feature or milestone never proves it complete.
+
+Revision and comments require a live claim; only ready tasks can be claimed and an agent can own only one at a time. Release the planning claim before claiming a ready backlog item, revise with its current revision, then release it back to open and resume planning. Never remove real dependencies or change agent identity to bypass these gates. For a blocked item, preserve the complete change package and affected IDs in the claimed planning/refinement task. Link that refinement as a prerequisite of the open item when needed, without a cycle. Complete refinement only when its change package is verified; after prerequisites finish, the implementing agent must read that package and reconcile the target specification/checks before coding. Report pending reconciliation explicitly, never claim the blocked snapshot was updated.
+
+Before ending planning, read back tasks and relations with `graphit_task_get`/`graphit_task_list` and verify requirement coverage, milestone exits, integration tests, sequencing, open questions and a self-contained handoff. Report recorded IDs, milestones, dependencies and any unresolved refinement. Leave future delivery tasks open and unclaimed. When resuming one, read its prerequisite records and the linked planning requirements before implementation.
 
 ## Specify work
 

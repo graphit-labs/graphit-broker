@@ -13,6 +13,10 @@ import (
 )
 
 func TestLoadConfigDatabaseEnvironmentRequiresYAMLReference(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("BROKER_DATABASE_DRIVER", "postgres")
 	t.Setenv("BROKER_DATABASE_DSN", "postgres://env.example/broker?sslmode=require")
 	t.Setenv("CUSTOM_DATABASE_DRIVER", "mysql")
@@ -21,7 +25,7 @@ func TestLoadConfigDatabaseEnvironmentRequiresYAMLReference(t *testing.T) {
 		name, input, driver, dsn string
 	}{
 		{"literal", "database:\n  driver: sqlite\n  dsn: /tmp/from-yaml.db\n", "sqlite", "/tmp/from-yaml.db"},
-		{"defaults", "{}", "sqlite", "/var/lib/graphit-broker/broker.db"},
+		{"configured fallback", "database:\n  dsn: ${IGNORED_DATABASE_DSN:-~/.graphit/broker/broker.db}\n", "sqlite", filepath.Join(home, ".graphit", "broker", "broker.db")},
 		{"explicit environment", "database:\n  driver: ${BROKER_DATABASE_DRIVER}\n  dsn: ${BROKER_DATABASE_DSN}\n", "postgres", "postgres://env.example/broker?sslmode=require"},
 		{"custom environment names", "database:\n  driver: ${CUSTOM_DATABASE_DRIVER}\n  dsn: ${CUSTOM_DATABASE_DSN}\n", "mysql", "broker@tcp(custom.example:3306)/broker"},
 	} {
@@ -56,6 +60,97 @@ func TestDecodeConfigRequiredDatabaseEnvironment(t *testing.T) {
 			}
 		} else if err != nil || cfg.Database.DSN != value {
 			t.Fatalf("explicit DSN = %q, error = %v", cfg.Database.DSN, err)
+		}
+	}
+}
+
+func TestConfigChoosesDatabaseEnvironmentNameAndFallback(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, variable, value, want string
+	}{
+		{"fallback", "FIRST_SQLITE_PATH", "", filepath.Join(home, ".graphit", "broker", "broker.db")},
+		{"first variable", "FIRST_SQLITE_PATH", filepath.Join(t.TempDir(), "first.db"), ""},
+		{"second variable", "ANOTHER_SQLITE_PATH", filepath.Join(t.TempDir(), "second.db"), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.want == "" {
+				test.want = test.value
+			}
+			input := fmt.Sprintf("database:\n  driver: sqlite\n  dsn: ${%s:-~/.graphit/broker/broker.db}\n", test.variable)
+			cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
+				if name != test.variable {
+					t.Fatalf("unexpected environment lookup %q", name)
+				}
+				return test.value
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Database.DSN != test.want {
+				t.Fatalf("SQLite DSN=%q, want %q", cfg.Database.DSN, test.want)
+			}
+		})
+	}
+}
+
+func TestConfigRequiresDatabaseDSNWithoutConfiguredFallback(t *testing.T) {
+	for _, input := range []string{"{}", "database: {driver: sqlite, dsn: ${EMPTY}}\n"} {
+		if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil || err.Error() != "database.dsn is required" {
+			t.Fatalf("input=%q error=%v", input, err)
+		}
+	}
+}
+
+func TestConfigChoosesModelDirectoryEnvironmentNameAndFallback(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, variable, value, want string
+	}{
+		{"fallback", "FIRST_MODELS_DIRECTORY", "", filepath.Join(home, ".graphit", "broker", "models")},
+		{"first variable", "FIRST_MODELS_DIRECTORY", filepath.Join(t.TempDir(), "first-models"), ""},
+		{"second variable", "ANOTHER_MODELS_DIRECTORY", filepath.Join(t.TempDir(), "second-models"), ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.want == "" {
+				test.want = test.value
+			}
+			input := fmt.Sprintf(`
+database: {dsn: ':memory:'}
+services:
+  embeddings:
+    enabled: true
+    upstream:
+      protocol: onnx
+      directory: ${%s:-~/.graphit/broker/models}
+`, test.variable)
+			cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
+				if name != test.variable {
+					t.Fatalf("unexpected environment lookup %q", name)
+				}
+				return test.value
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Services.Embeddings.Upstream.Directory; got != test.want {
+				t.Fatalf("models directory=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestConfigRequiresONNXDirectoryWithoutConfiguredFallback(t *testing.T) {
+	for _, service := range []string{"embeddings", "rerank"} {
+		input := fmt.Sprintf("database: {dsn: ':memory:'}\nservices: {%s: {enabled: true, upstream: {protocol: onnx}}}\n", service)
+		if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "directory is required") {
+			t.Fatalf("service=%s error=%v", service, err)
 		}
 	}
 }

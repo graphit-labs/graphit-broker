@@ -2,28 +2,39 @@
 
 ## Container
 
-The Dockerfile produces one non-root image with CA certificates, a health check, ONNX Runtime, and
-CUDA libraries. Model weights are not included. The example Compose service uses a read-only root
+Each tagged release publishes a Linux amd64 image to
+`ghcr.io/graphit-labs/graphit-broker`. For `v0.1.1`, the available tags are `0.1.1`, `0.1`, `0`, and
+`latest`; image tags never include the Git tag's `v` prefix. The release workflow builds the image
+from the same self-contained Linux binary it publishes as a release artifact. The runtime image
+does not download a binary or contain a Go toolchain.
+
+The image runs as `graphit` (UID/GID 10001), includes CA certificates, CUDA libraries, and a
+readiness health check, but no model weights. The example Compose service uses a read-only root
 filesystem, drops all capabilities, enables `no-new-privileges`, and mounts configuration,
-database state, and downloaded model files in separate named volumes.
+database state, downloaded model files, and the embedded runtime beneath one persistent Graphit
+broker directory.
 
 ```bash
 cp .env.example .env
-docker compose -f docker-compose.yml up --build -d
-```
-
-Docker seeds the empty `broker-config` volume from `/etc/graphit-broker/config.yaml` in the image.
-The mounted YAML, after environment expansion, is always authoritative. It is never stored in SQL;
-edit or replace the deployment file/secrets and restart to apply changes. To initialize the volume
-from a customized file:
-
-```bash
 cp config.example.yaml config.yaml
-# Edit config.yaml, then:
-docker compose create broker
-docker compose cp config.yaml broker:/etc/graphit-broker/config.yaml
-docker compose up -d
+# Fill .env and edit config.yaml before continuing.
+docker compose -f docker-compose.yml pull
+docker compose -f docker-compose.yml create broker
+docker compose -f docker-compose.yml cp config.yaml broker:/home/graphit/.graphit/broker/config.yaml
+docker compose -f docker-compose.yml up -d
 ```
+
+Set `GRAPHIT_BROKER_IMAGE` to pin another published tag. For a local image, run
+`make build VERSION=dev && docker build -t graphit-broker:local .`, then set
+`GRAPHIT_BROKER_IMAGE=graphit-broker:local` before starting Compose.
+The mounted YAML chooses the SQLite DSN, whether it references an environment variable, and that
+variable's name. `config.example.yaml` selects `BROKER_DATABASE_DSN` with a portable
+`~/.graphit/broker/broker.db` fallback; this name is not built into the executable or image.
+
+The image intentionally contains no operational YAML. The entrypoint requires
+`/home/graphit/.graphit/broker/config.yaml` to exist as a regular file readable by UID 10001 and
+refuses to start otherwise. The mounted YAML, after environment expansion, is always authoritative.
+It is never stored in SQL; edit or replace the deployment file/secrets and restart to apply changes.
 
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
 correctly. Set `server.public_url` to the externally visible HTTPS origin; that exact value becomes
@@ -43,7 +54,8 @@ challenge. Use load-balancer/WAF controls when a cluster-wide abuse envelope is 
 
 ## Database selection
 
-SQLite needs the named `broker-state` volume and exactly one writable broker. PostgreSQL or MySQL
+SQLite uses `broker/broker.db` in the named `broker-global` volume and needs exactly one writable
+broker. PostgreSQL or MySQL
 should use a secret-injected DSN and database network policy; several stateless broker replicas may
 share the remote database. See [database backends](database.md).
 
@@ -93,7 +105,7 @@ At startup, each enabled `upstream.protocol: onnx` service resolves its `upstrea
 `upstream.directory`; an HTTP or disabled service does not touch the catalog.
 `on_demand` manifests download missing verified artifacts before the listener starts. `setup`
 manifests use `--setup-models`, while `never` manifests require a fully populated bundle and perform
-no network access. Cached bundles survive restarts in `broker-models`. See the
+no network access. Cached bundles survive restarts under `broker/models` in `broker-global`. See the
 [local model catalog](models.md) for every manifest field and complete examples.
 
 One way to seed that named volume without another Compose file is to create the service, copy the
@@ -101,20 +113,20 @@ artifacts, and then start it:
 
 ```bash
 docker compose create broker
-docker compose cp ./models/custom-embedding broker:/var/cache/graphit-broker/models/custom-embedding
+docker compose cp ./models/custom-embedding broker:/home/graphit/.graphit/broker/models/custom-embedding
 docker compose up -d
 ```
 
 The copied directory must include `manifest.json` and every required artifact, and be readable by
 the image's non-root broker user. Run a controlled prefetch without another Compose file via
-`docker compose run --rm broker --config /etc/graphit-broker/config.yaml --setup-models`.
+`docker compose run --rm broker --setup-models`.
 
 Default Compose and local ONNX inference run on CPU. On an NVIDIA host with the Container Toolkit
 installed, set `upstream.device: auto` explicitly for each local service that should try CUDA,
 then expose GPUs through the same Compose file. `auto` falls back to CPU using the same image:
 
 ```bash
-GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up --build -d
+GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up -d
 ```
 
 Omit `device` or set `device: cpu` to use CPU; set `device: cuda` to require CUDA. The resolved
@@ -131,9 +143,14 @@ For native installation, see [running the native binary](binary.md). CPU and mac
 require CUDA or cuDNN; native CUDA selection does.
 
 The image's self-contained broker extracts its embedded GPU-capable ONNX payload into
-`/var/lib/graphit-broker/.graphit`, which is already covered by the persistent `broker-state`
-volume. Native Linux and Windows releases embed the same ONNX shared/CUDA provider libraries but
-load them only when CUDA is selected. macOS embeds CoreML in its main ONNX dylib.
+`/home/graphit/.graphit`, with its `broker` subdirectory persisted by the `broker-global` volume at
+`/home/graphit/.graphit/broker`. That same directory is the image's working directory.
+`GRAPHIT_GLOBAL_DIR` may select another path, but it must be readable, writable, and traversable by
+UID 10001; the entrypoint refuses to start otherwise. `GRAPHIT_BROKER_CONFIG` selects the YAML path,
+and `GRAPHIT_BROKER_HEALTHCHECK_URL` can override the default readiness probe at
+`http://127.0.0.1:8080/readyz`. Native Linux and Windows releases embed the same ONNX shared/CUDA
+provider libraries but load them only when CUDA is selected. macOS embeds CoreML in its main ONNX
+dylib.
 
 ## OIDC
 

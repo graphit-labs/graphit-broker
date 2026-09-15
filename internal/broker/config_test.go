@@ -2,12 +2,28 @@ package broker
 
 import (
 	"encoding/json"
+	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+var topLevelDatabaseConfig = regexp.MustCompile(`(?m)^database:`)
+
+func decodeConfigForTest(r io.Reader, getenv func(string) string) (Config, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return Config{}, err
+	}
+	if !topLevelDatabaseConfig.Match(raw) {
+		raw = append([]byte("database: {dsn: ':memory:'}\n"), raw...)
+	}
+	return DecodeConfig(strings.NewReader(string(raw)), getenv)
+}
 
 func TestDecodeConfigExpandsRequiredEnvironmentAndDefaults(t *testing.T) {
 	input := `
@@ -23,7 +39,7 @@ services:
       url: http://127.0.0.1:9999/v1/embeddings
       model: internal-model
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(name string) string {
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(name string) string {
 		if name == "TOKEN_PEPPER" {
 			return testPasswordPepper
 		}
@@ -59,7 +75,7 @@ services:
 func TestLocalCaptchaSupportsTurnstileAndRecaptchaWithStrictConfiguration(t *testing.T) {
 	for _, provider := range []string{localCaptchaProviderTurnstile, localCaptchaProviderRecaptcha} {
 		t.Run(provider, func(t *testing.T) {
-			cfg, err := DecodeConfig(strings.NewReader(`
+			cfg, err := decodeConfigForTest(strings.NewReader(`
 server:
   public_url: https://broker.example.com
 authentication:
@@ -86,7 +102,7 @@ authentication:
 	}
 
 	localLoginEnabled := true
-	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
+	base := Config{Database: DatabaseConfig{DSN: ":memory:"}, Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
 		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{
 			Login:   LocalLoginConfig{Enabled: &localLoginEnabled},
 			Captcha: LocalCaptchaConfig{Enabled: true, Provider: localCaptchaProviderTurnstile, SiteKey: "site", SecretKey: "secret"}},
@@ -117,7 +133,7 @@ authentication:
 
 func TestServerPublicURLRequiresHTTPSOrLoopbackOrigin(t *testing.T) {
 	enabled := true
-	base := Config{Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
+	base := Config{Database: DatabaseConfig{DSN: ":memory:"}, Server: ServerConfig{PublicURL: "https://broker.example.com"}, Authentication: AuthenticationConfig{
 		TokenPepper: testPasswordPepper, Local: LocalAuthenticationConfig{Login: LocalLoginConfig{Enabled: &enabled}},
 	}}
 	base.defaults()
@@ -170,7 +186,7 @@ func TestLocalCaptchaTriggerMultiplierSupportsZeroAndFractions(t *testing.T) {
 		{name: "fraction starts early", configured: "      trigger_multiplier: 0.5\n", wantMultiplier: .5, maxConcurrent: 4, wantThreshold: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			cfg, err := DecodeConfig(strings.NewReader(`
+			cfg, err := decodeConfigForTest(strings.NewReader(`
 server:
   public_url: https://broker.example.com
 authentication:
@@ -196,7 +212,7 @@ authentication:
 }
 
 func TestAdministrationCookieSecureCanBeExplicitlyDisabled(t *testing.T) {
-	cfg, err := DecodeConfig(strings.NewReader(`
+	cfg, err := decodeConfigForTest(strings.NewReader(`
 server:
   public_url: https://broker.example.com
 authentication:
@@ -214,7 +230,7 @@ administration:
 }
 
 func TestLocalMFACanBeExplicitlyDisabledAndConfigured(t *testing.T) {
-	cfg, err := DecodeConfig(strings.NewReader(`
+	cfg, err := decodeConfigForTest(strings.NewReader(`
 authentication:
   local:
     mfa:
@@ -241,7 +257,7 @@ authentication:
       max_concurrent: 3
       saturation_multiplier: 5
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +288,7 @@ func TestDecodeConfigRejectsUnknownFieldsAndMissingEnvironment(t *testing.T) {
 		"environment": "authentication:\n  token_pepper: '${TOKEN_PEPPER:?required}'\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+			if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err == nil {
 				t.Fatal("expected error")
 			}
 		})
@@ -280,7 +296,7 @@ func TestDecodeConfigRejectsUnknownFieldsAndMissingEnvironment(t *testing.T) {
 }
 
 func TestConfigRejectsInsecureOIDCIssuer(t *testing.T) {
-	cfg := Config{Authentication: AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: "http://id.example", Audiences: []string{"broker"}, SubjectClaim: "sub", UsernameClaim: "sub"}}}}
+	cfg := Config{Database: DatabaseConfig{DSN: ":memory:"}, Authentication: AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: "http://id.example", Audiences: []string{"broker"}, SubjectClaim: "sub", UsernameClaim: "sub"}}}}
 	cfg.defaults()
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("Validate error = %v", err)
@@ -312,7 +328,7 @@ administration:
   enabled: true
   session_ttl: 1h
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +355,7 @@ authentication:
       audiences: [graphit-broker]
       username_claim: $.profile[
 `
-	_, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	_, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err == nil || !strings.Contains(err.Error(), "username_claim") || !strings.Contains(err.Error(), "invalid JSONPath") {
 		t.Fatalf("invalid claim JSONPath error=%v", err)
 	}
@@ -358,7 +374,7 @@ administration:
   enabled: true
   session_ttl: 1h
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +406,7 @@ func TestConfigRejectsLegacyAuthenticationFields(t *testing.T) {
 		"administration pepper": "authentication:\n  token_pepper: " + testPasswordPepper + "\nadministration:\n  token_pepper: " + testPasswordPepper + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+			if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err == nil {
 				t.Fatal("legacy authentication field was accepted")
 			}
 		})
@@ -401,7 +417,7 @@ func TestConfigRejectsAIRouteFields(t *testing.T) {
 	for _, service := range []string{"embeddings", "rerank"} {
 		t.Run(service, func(t *testing.T) {
 			input := "services:\n  " + service + ":\n    route: removed\n"
-			_, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+			_, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 			if err == nil || !strings.Contains(err.Error(), "field route not found") {
 				t.Fatalf("expected unknown route field, got %v", err)
 			}
@@ -426,7 +442,7 @@ func TestRepositoryConfigurationExamplesDecodeWithInjectedSecrets(t *testing.T) 
 				t.Fatal(err)
 			}
 			defer file.Close()
-			if _, err := DecodeConfig(file, func(name string) string { return secrets[name] }); err != nil {
+			if _, err := decodeConfigForTest(file, func(name string) string { return secrets[name] }); err != nil {
 				t.Fatalf("DecodeConfig: %v", err)
 			}
 		})
@@ -455,7 +471,7 @@ services:
         secret_access_key: archive-secret
         sts_role_arn: arn:aws:iam::123456789012:role/graphit-archive
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,47 +498,56 @@ services:
         secret_access_key: public-secret
         sts_role_arn: arn:aws:iam::123456789012:role/graphit
 `
-	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
+	if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err != nil {
 		t.Fatalf("DecodeConfig error=%v", err)
 	}
 	unsupported := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: removed\n", 1)
-	if _, err := DecodeConfig(strings.NewReader(unsupported), func(string) string { return "" }); err == nil {
+	if _, err := decodeConfigForTest(strings.NewReader(unsupported), func(string) string { return "" }); err == nil {
 		t.Fatal("removed storage field was accepted")
 	}
 	legacy := "authorization:\n  rules: []\n"
-	if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
+	if _, err := decodeConfigForTest(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
 		t.Fatal("legacy authorization configuration was accepted")
 	}
 }
 
 func TestConfigSupportsONNXAndHTTPUpstreams(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	input := `
+database:
+  dsn: ':memory:'
 services:
   embeddings:
     enabled: true
     upstream:
       protocol: ONNX
+      directory: ~/.graphit/broker/models
   rerank:
     enabled: true
     upstream:
       protocol: onnx
+      directory: ~/.graphit/broker/models
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
 	e, r := cfg.Services.Embeddings.Upstream, cfg.Services.Rerank.Upstream
-	if e.Protocol != "onnx" || e.Device != "cpu" || r.Device != "cpu" || e.Directory != defaultModelDirectory || r.Directory != defaultModelDirectory || e.Model != "coderankembed" || r.Model != "bge-reranker-base" || e.Timeout != 0 {
+	wantDirectory := filepath.Join(home, ".graphit", "broker", "models")
+	if e.Protocol != "onnx" || e.Device != "cpu" || r.Device != "cpu" || e.Directory != wantDirectory || r.Directory != wantDirectory || e.Model != "coderankembed" || r.Model != "bge-reranker-base" || e.Timeout != 0 {
 		t.Fatalf("ONNX defaults=%#v", cfg.Services)
 	}
-	auto, err := DecodeConfig(strings.NewReader("services: {embeddings: {upstream: {protocol: onnx, device: auto}}, rerank: {upstream: {protocol: onnx, device: auto}}}"), func(string) string { return "" })
+	auto, err := decodeConfigForTest(strings.NewReader("database: {dsn: ':memory:'}\nservices: {embeddings: {upstream: {protocol: onnx, directory: /models, device: auto}}, rerank: {upstream: {protocol: onnx, directory: /models, device: auto}}}"), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if auto.Services.Embeddings.Upstream.Device != "auto" || auto.Services.Rerank.Upstream.Device != "auto" {
 		t.Fatalf("explicit ONNX auto devices=%#v", auto.Services)
 	}
-	remote := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+	remote := Config{Database: DatabaseConfig{DSN: ":memory:"}, Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 		Enabled: true, Revision: "r", Dimensions: 3,
 		Upstream: UpstreamConfig{Protocol: "openai-embeddings-v1", URL: "http://127.0.0.1/embeddings", Model: "remote"},
 	}}}
@@ -537,7 +562,7 @@ services:
 
 func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *testing.T) {
 	for _, protocol := range embeddingUpstreamProtocols {
-		cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+		cfg := Config{Database: DatabaseConfig{DSN: ":memory:"}, Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 			Enabled: true, Revision: "r", Dimensions: 3,
 			Upstream: UpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
 		}}}
@@ -546,17 +571,17 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 			t.Errorf("protocol %q rejected: %v", protocol, err)
 		}
 	}
-	coreML := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+	coreML := Config{Database: DatabaseConfig{DSN: ":memory:"}, Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 		Enabled: true, Revision: "r", Dimensions: localEmbeddingDimensions,
-		Upstream: UpstreamConfig{Protocol: "onnx", Device: "coreml"},
+		Upstream: UpstreamConfig{Protocol: "onnx", Directory: "/models", Device: "coreml"},
 	}}}
 	coreML.defaults()
 	if err := coreML.Validate(); err != nil {
 		t.Fatalf("CoreML local device rejected: %v", err)
 	}
-	cfg := Config{Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
+	cfg := Config{Database: DatabaseConfig{DSN: ":memory:"}, Services: ServicesConfig{Embeddings: EmbeddingServiceConfig{
 		Enabled: true, Revision: "r", Dimensions: localEmbeddingDimensions,
-		Upstream: UpstreamConfig{Protocol: "onnx", Device: "metal"},
+		Upstream: UpstreamConfig{Protocol: "onnx", Directory: "/models", Device: "metal"},
 	}}}
 	cfg.defaults()
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "auto, cpu, cuda, or coreml") {
@@ -566,7 +591,7 @@ func TestConfigAcceptsEmbeddingProviderParityAndRejectsInvalidLocalDevice(t *tes
 
 func TestConfigAcceptsRerankProviderParity(t *testing.T) {
 	for _, protocol := range rerankUpstreamProtocols {
-		cfg := Config{Services: ServicesConfig{Rerank: RerankServiceConfig{
+		cfg := Config{Database: DatabaseConfig{DSN: ":memory:"}, Services: ServicesConfig{Rerank: RerankServiceConfig{
 			Enabled: true, Revision: "r",
 			Upstream: UpstreamConfig{Protocol: protocol, URL: "https://provider.example/v1", Model: "model"},
 		}}}
@@ -596,7 +621,7 @@ services:
       device: cuda
       device_id: 2
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,7 +651,7 @@ services:
 		"services: {embeddings: {local: {device: cpu}}}", "services: {rerank: {local: {}}}",
 		"services: {embeddings: {upstream: {model_path: /model.onnx}}}",
 	} {
-		if _, err := DecodeConfig(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
+		if _, err := decodeConfigForTest(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
 			t.Errorf("legacy accepted: %s", legacy)
 		}
 	}
@@ -651,7 +676,7 @@ func TestConfigRejectsIncompatibleUpstreamOptions(t *testing.T) {
 				input += "dimensions: 3, "
 			}
 			input += "upstream: {" + options + "}}}"
-			if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err == nil {
+			if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err == nil {
 				t.Errorf("invalid config accepted: %s", input)
 			}
 		}
@@ -661,7 +686,7 @@ func TestConfigRejectsIncompatibleUpstreamOptions(t *testing.T) {
 func TestConfigRejectsFlatLocalBlocks(t *testing.T) {
 	for _, field := range []string{"local_login", "local_rate_limit", "local_captcha", "local_mfa", "local_tokens"} {
 		t.Run(field, func(t *testing.T) {
-			_, err := DecodeConfig(strings.NewReader("authentication:\n  "+field+": {}\n"), func(string) string { return "" })
+			_, err := decodeConfigForTest(strings.NewReader("authentication:\n  "+field+": {}\n"), func(string) string { return "" })
 			if err == nil || !strings.Contains(err.Error(), "field "+field+" not found") {
 				t.Fatalf("flat field must be rejected: %v", err)
 			}
@@ -671,7 +696,7 @@ func TestConfigRejectsFlatLocalBlocks(t *testing.T) {
 
 func TestOIDCIssuerEnabledConfiguration(t *testing.T) {
 	for _, enabled := range []string{"", "      enabled: true\n", "      enabled: false\n"} {
-		cfg, err := DecodeConfig(strings.NewReader(`authentication:
+		cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
   oidc:
     - issuer: https://identity.example.com
       audiences: [graphit-broker]
@@ -692,10 +717,10 @@ func TestOIDCIssuerEnabledConfiguration(t *testing.T) {
       client_id: disabled-browser
       redirect_url: invalid-placeholder
 `
-	if _, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" }); err != nil {
+	if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err != nil {
 		t.Fatalf("disabled issuer should not need valid integration settings: %v", err)
 	}
-	if _, err := DecodeConfig(strings.NewReader(strings.Replace(input, "enabled: false", "enabled: true", 1)), func(string) string { return "" }); err == nil {
+	if _, err := decodeConfigForTest(strings.NewReader(strings.Replace(input, "enabled: false", "enabled: true", 1)), func(string) string { return "" }); err == nil {
 		t.Fatal("enabled invalid issuer was accepted")
 	}
 	input = `server:
@@ -713,7 +738,7 @@ authentication:
       client_id: active-browser
       redirect_url: https://broker.example.com/oauth/oidc/callback
 `
-	cfg, err := DecodeConfig(strings.NewReader(input), func(string) string { return "" })
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +766,7 @@ authentication:
 }
 
 func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
-	cfg, err := DecodeConfig(strings.NewReader(`authentication:
+	cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
   local:
     login:
       enabled: false

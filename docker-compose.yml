@@ -1,7 +1,6 @@
 services:
   broker:
-    build: .
-    image: graphit-broker:local
+    image: ${GRAPHIT_BROKER_IMAGE:-ghcr.io/graphit-labs/graphit-broker:latest}
     restart: unless-stopped
     env_file:
       - path: .env
@@ -11,12 +10,13 @@ services:
     # CPU by default. Use the NVIDIA runtime on GPU hosts as documented below.
     runtime: ${GRAPHIT_BROKER_CONTAINER_RUNTIME:-runc}
     environment:
+      GRAPHIT_GLOBAL_DIR: ${GRAPHIT_GLOBAL_DIR:-/home/graphit/.graphit}
+      GRAPHIT_BROKER_CONFIG: ${GRAPHIT_BROKER_CONFIG:-/home/graphit/.graphit/broker/config.yaml}
+      GRAPHIT_BROKER_HEALTHCHECK_URL: ${GRAPHIT_BROKER_HEALTHCHECK_URL:-http://127.0.0.1:8080/readyz}
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - broker-config:/etc/graphit-broker
-      - broker-state:/var/lib/graphit-broker
-      - broker-models:/var/cache/graphit-broker/models
+      - broker-global:/home/graphit/.graphit/broker
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -26,6 +26,4 @@ services:
       - ALL
 
 volumes:
-  broker-config:
-  broker-state:
-  broker-models:
+  broker-global:

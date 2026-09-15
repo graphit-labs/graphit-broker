@@ -21,8 +21,6 @@ const (
 	maxONNXRuntimeFileSize  = int64(2 << 30)
 )
 
-var brokerProcessStartDir, _ = os.Getwd()
-
 // These values are filled by release builds with -X. Keeping them in the
 // common file makes malformed tagged builds fail clearly instead of silently
 // behaving like development builds.
@@ -56,20 +54,6 @@ func PrepareEmbeddedONNXRuntime() error {
 	}
 	_, err = installONNXRuntimeBundle(graphitGlobalDir(), bundle)
 	return err
-}
-
-func graphitGlobalDir() string {
-	if override := strings.TrimSpace(os.Getenv("GRAPHIT_GLOBAL_DIR")); override != "" {
-		if filepath.IsAbs(override) {
-			return filepath.Clean(override)
-		}
-		return filepath.Join(brokerProcessStartDir, override)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".graphit")
 }
 
 func resolveONNXRuntimeLibraryPath() (string, error) {

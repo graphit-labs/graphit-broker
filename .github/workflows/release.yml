@@ -194,6 +194,7 @@ jobs:
             changes=$(git log --pretty=format:'- %s (%h)' | head -20)
           fi
           {
+            echo "version=${release_tag#v}"
             echo 'changes<<EOF'
             echo "$changes"
             echo 'EOF'
@@ -237,6 +238,15 @@ jobs:
             tar -xzf graphit-broker-linux-amd64.tar.gz
             ./graphit-broker-linux-amd64/graphit-broker --version
             ```
+
+            ## Container image
+
+            The same Linux amd64 binary is published to GitHub Container Registry with SemVer
+            aliases that omit the Git tag's `v` prefix:
+
+            ```bash
+            docker pull ghcr.io/graphit-labs/graphit-broker:${{ steps.changelog.outputs.version }}
+            ```
           files: |
             release-assets/graphit-broker-*.tar.gz
             release-assets/graphit-broker-*.sha256
@@ -244,3 +254,61 @@ jobs:
           fail_on_unmatched_files: true
           make_latest: true
           generate_release_notes: false
+
+  publish-container:
+    name: Publish container image
+    needs: [publish, build-linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download Linux release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: graphit-broker-linux-amd64
+          path: container-artifact
+      - name: Prepare container binary
+        run: |
+          tar -xzf container-artifact/graphit-broker-linux-amd64.tar.gz
+          cp graphit-broker-linux-amd64/graphit-broker ./graphit-broker
+          chmod 0755 graphit-broker
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate container metadata
+        id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+      - name: Build image for validation
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke-test image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.metadata.outputs.version }}
+        run: ./scripts/container-smoke.sh "$IMAGE"
+      - name: Publish validated tags
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository }}
+        run: docker push --all-tags "$IMAGE_NAME"

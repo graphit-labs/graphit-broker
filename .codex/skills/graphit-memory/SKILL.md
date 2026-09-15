@@ -1,6 +1,6 @@
 ---
 name: graphit-memory
-description: 'Durable memory: project and user preferences, corrections, decisions, constraints, and non-obvious knowledge; mandatory recall is performed by adapter hooks.'
+description: 'Durable memory: preferences, corrections, decisions, constraints, user-provided project facts, standing guidance, and agent-discovered structural or non-obvious system knowledge; mandatory recall is performed by adapter hooks.'
 ---
 
 # Graphit Memory
@@ -17,7 +17,13 @@ Use project scope by default. Use user scope only for preferences that genuinely
 
 ## Write and maintain
 
-Write with `graphit_memory_insert` when information should survive the session: a correction, durable preference, design choice with rationale, constraint, or non-obvious behavior. Skip transient task state already captured by Graphit Task and facts obvious from code.
+Treat a user statement as a memory-capture event when it provides project information the agent did not already know or standing guidance for how the agent should act. Do not require the user to ask for memory or repeat the statement. Presume it is durable when it describes the project, its lifecycle or environment, policies, or conventions, or when knowing it would change planning, implementation, review, compatibility, migration, safety, or risk decisions in later work. Preserve the user's rationale when it connects a project fact to an operating policy.
+
+Also treat an agent discovery as a memory-capture event when analysis, implementation, debugging, or review establishes relevant non-obvious knowledge that is structural, reusable across tasks, or costly to rediscover. Create or update Memory automatically; do not wait for a user request. Capture implicit invariants or contracts, sources of truth and generation flows, non-obvious dependencies or coupling, recurring root causes or failure modes, confirmed trade-offs, surprising tool/infrastructure/lifecycle behavior, and learned procedures. Ask whether another agent would plan or act better, or avoid material investigation, by knowing it.
+
+Write with `graphit_memory_insert` on that first occurrence. Use project scope for project facts and instructions; use user scope only for genuinely cross-project preferences. Classify lifecycle or environment state as a `fact` and standing project guidance as a `decision` or `convention`. Mark standing context needed in every session as mandatory and important but conditional context as important. If the statement is explicitly limited to the current task, keep it in Graphit Task instead. Also skip transient task state, questions or speculation, and facts obvious from authoritative code or documentation.
+
+The complete investigation remains in Graphit Task; Memory stores its durable reusable conclusion and never substitutes for Task. Do not capture trivial or obvious observations, transient progress, one-off results without future value, or unconfirmed hypotheses.
 
 Prefer `graphit_memory_update` when the subject already exists. On contradiction, update the current memory so its id/history survives. On duplication, first merge every distinct fact into the survivor, verify it, then call `graphit_memory_delete` on the redundant entry. Never delete unique knowledge. Perform this sanitation when discovered, not as a vague future task.
 

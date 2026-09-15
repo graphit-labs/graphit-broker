@@ -78,6 +78,21 @@ func TestControlStorePersistsOnlyDurableStateAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestControlStorePreservesExistingSQLiteParentPermissions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenControlStore(testDatabase(filepath.Join(dir, "broker.db")), testTokenPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if mode := fileMode(t, dir); mode != 0o770 {
+		t.Fatalf("existing SQLite directory mode=%o, want 770", mode)
+	}
+}
+
 func TestControlStoreFailsClosedAndPreservesStateAfterRejectedUpdates(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenControlStore(testDatabase(":memory:"), testTokenPepper)

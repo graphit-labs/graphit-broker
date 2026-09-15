@@ -245,25 +245,32 @@ func DecodeConfig(r io.Reader, getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
 	cfg.defaults()
+	if err := cfg.expandUserPaths(); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-var environmentReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:\?([^}]*))?\}`)
+var environmentReference = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:\?)([^}]*)|(:-)([^}]*))?\}`)
 
 func expandEnvironment(input string, getenv func(string) string) (string, error) {
 	var firstErr error
 	result := environmentReference.ReplaceAllStringFunc(input, func(match string) string {
 		parts := environmentReference.FindStringSubmatch(match)
 		value := getenv(parts[1])
-		if value == "" && parts[2] != "" && firstErr == nil {
-			message := parts[3]
-			if message == "" {
-				message = "required environment variable is empty"
+		if value == "" {
+			if parts[2] != "" && firstErr == nil {
+				message := parts[3]
+				if message == "" {
+					message = "required environment variable is empty"
+				}
+				firstErr = fmt.Errorf("environment variable %s: %s", parts[1], message)
+			} else if parts[4] != "" {
+				value = parts[5]
 			}
-			firstErr = fmt.Errorf("environment variable %s: %s", parts[1], message)
 		}
 		return value
 	})
@@ -277,9 +284,6 @@ func (c *Config) defaults() {
 	c.Database.Driver = strings.ToLower(strings.TrimSpace(c.Database.Driver))
 	if c.Database.Driver == "" {
 		c.Database.Driver = "sqlite"
-	}
-	if c.Database.DSN == "" && c.Database.Driver == "sqlite" {
-		c.Database.DSN = "/var/lib/graphit-broker/broker.db"
 	}
 	if c.Database.MaxOpenConns == 0 {
 		if c.Database.Driver == "sqlite" {
@@ -398,6 +402,44 @@ func (c *Config) defaults() {
 	}
 	c.Services.Embeddings.Cache.setDefaults()
 	c.Services.Rerank.Cache.setDefaults()
+}
+
+func (c *Config) expandUserPaths() error {
+	var err error
+	if c.Database.Driver == "sqlite" && strings.TrimSpace(c.Database.DSN) != "" {
+		c.Database.DSN, err = expandUserPath(c.Database.DSN)
+		if err != nil {
+			return fmt.Errorf("database.dsn: %w", err)
+		}
+	}
+	for _, upstream := range []*UpstreamConfig{
+		&c.Services.Embeddings.Upstream,
+		&c.Services.Rerank.Upstream,
+	} {
+		if upstream.isONNX() && strings.TrimSpace(upstream.Directory) != "" {
+			upstream.Directory, err = expandUserPath(upstream.Directory)
+			if err != nil {
+				return fmt.Errorf("expand ONNX model directory: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func expandUserPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	relative := strings.ReplaceAll(path[2:], `\`, "/")
+	return filepath.Join(home, filepath.FromSlash(relative)), nil
 }
 
 func (c *LocalTokenConfig) setDefaults() {
@@ -566,17 +608,12 @@ func (c LocalAuthenticationRateLimit) validate() error {
 func (c *EmbeddingServiceConfig) setDefaults() { c.Upstream.setDefaults("embedding") }
 func (c *RerankServiceConfig) setDefaults()    { c.Upstream.setDefaults("rerank") }
 
-const defaultModelDirectory = "/var/cache/graphit-broker/models"
-
 func (c UpstreamConfig) isONNX() bool { return c.Protocol == "onnx" }
 
 func (c *UpstreamConfig) setDefaults(task string) {
 	c.Protocol = strings.ToLower(strings.TrimSpace(c.Protocol))
 	if !c.isONNX() {
 		return
-	}
-	if strings.TrimSpace(c.Directory) == "" {
-		c.Directory = defaultModelDirectory
 	}
 	c.Model = strings.TrimSpace(c.Model)
 	if c.Model == "" {
@@ -775,6 +812,9 @@ var rerankUpstreamProtocols = []string{
 }
 
 func (c UpstreamConfig) validateONNX(name string) error {
+	if strings.TrimSpace(c.Directory) == "" {
+		return fmt.Errorf("%s.directory is required", name)
+	}
 	if !filepath.IsAbs(c.Directory) {
 		return fmt.Errorf("%s.directory must be an absolute path", name)
 	}

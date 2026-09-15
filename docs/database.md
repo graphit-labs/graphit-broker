@@ -33,17 +33,23 @@ revocation, and last-use timestamps for administration without exposing the secr
 ```yaml
 database:
   driver: sqlite
-  dsn: /var/lib/graphit-broker/broker.db
+  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m
 ```
 
-Environment values are used only through explicit YAML references, such as
-`driver: "${BROKER_DATABASE_DRIVER}"` and `dsn: "${BROKER_DATABASE_DSN:?set the database DSN}"`.
-Exporting these variables alone does not override literal fields or omitted-field defaults.
+Environment values are used only through explicit YAML references. The example config chooses
+`BROKER_DATABASE_DSN`, but the executable gives that name no special meaning. Another config can
+choose a different variable, a literal DSN, or no environment reference. `${NAME:-fallback}` uses
+the fallback when the selected variable is empty; `${NAME:?message}` makes it required.
 Driver values are `sqlite`, `postgres`, and `mysql`. The database selection and DSN are
 deployment-owned and cannot be changed through the UI.
+
+The example's YAML-owned fallback stores `broker.db` under `.graphit/broker` in the current user's
+home directory. A leading `~/` in a configured SQLite path is resolved with native path rules on
+Linux, macOS, and Windows. An omitted or empty `dsn` is invalid; there is no code-owned database
+path or database environment variable.
 
 The broker creates its current schema at startup and checks its schema version. Version 9 is
 upgraded transactionally to version 10 by adding the embedding cache table without changing
@@ -58,17 +64,18 @@ revision whenever the vector space changes.
 ```yaml
 database:
   driver: sqlite
-  dsn: /var/lib/graphit-broker/broker.db
+  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m
 ```
 
-SQLite is the Docker default and is appropriate for one broker process. Mount
-`/var/lib/graphit-broker` as a persistent volume. The broker creates the parent directory
-with mode `0700`, the database with mode `0600`, enables foreign keys, WAL, and a bounded busy
-timeout, and deliberately limits the pool to one connection. Do not share one SQLite file between
-replicas or place it on a filesystem that does not correctly implement locking.
+SQLite is the Docker default and is appropriate for one broker process. Compose persists the
+default file under `/home/graphit/.graphit/broker` in the `broker-global` volume. The broker creates
+the parent directory with mode `0700` when absent, preserves operator-managed permissions on an
+existing writable directory, creates the database with mode `0600`, enables foreign keys, WAL, and
+a bounded busy timeout, and deliberately limits the pool to one connection. Do not share one SQLite
+file between replicas or place it on a filesystem that does not correctly implement locking.
 
 ## PostgreSQL
 

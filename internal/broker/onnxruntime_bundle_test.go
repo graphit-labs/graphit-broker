@@ -122,6 +122,9 @@ func TestGraphitGlobalDirectoryAndExplicitONNXOverride(t *testing.T) {
 	if got := graphitGlobalDir(); got != absolute {
 		t.Fatalf("absolute global directory=%q, want %q", got, absolute)
 	}
+	if got, want := DefaultConfigPath(), filepath.Join(absolute, "broker", "config.yaml"); got != want {
+		t.Fatalf("default config path=%q, want %q", got, want)
+	}
 	t.Setenv("GRAPHIT_GLOBAL_DIR", "relative-global")
 	if got, want := graphitGlobalDir(), filepath.Join(brokerProcessStartDir, "relative-global"); got != want {
 		t.Fatalf("relative global directory=%q, want %q", got, want)

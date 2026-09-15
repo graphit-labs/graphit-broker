@@ -64,6 +64,24 @@ restart it explicitly after updating (for example `sudo systemctl restart graphi
 command does not restart processes or modify configuration or SQL state. Container installations
 must instead be updated by deploying a new image.
 
+## Default data layout
+
+The executable uses one per-user Graphit directory on every supported platform. It obtains the
+home directory from the operating system and joins path elements with native separators; `~` is
+only shorthand in this documentation and is not passed to the filesystem APIs.
+
+| Purpose | Path beneath the user home |
+|---|---|
+| Configuration | `.graphit/broker/config.yaml` |
+| SQLite database in the example config | `.graphit/broker/broker.db` |
+| Local models in the local-model example | `.graphit/broker/models` |
+| Embedded ONNX Runtime | `.graphit/broker/runtime/onnxruntime` |
+
+The configuration owns the database and model paths. It also decides whether to reference an
+environment variable and which name to use. The executable expands a configured leading `~/`
+portably; it has no built-in database or model path. `GRAPHIT_GLOBAL_DIR` remains the bootstrap
+location for the default config and embedded runtime, before YAML can be read.
+
 For manual installation or auditing the release assets, use the following procedure.
 
 Choose a release tag instead of `latest` for reproducible installation:
@@ -95,8 +113,7 @@ concurrent broker processes converge on the same immutable directory. Later star
 native library and do not read or decompress the embedded payload. The `broker` namespace keeps
 these files outside Graphit Code's independently managed `~/.graphit/runtime` directory.
 
-Set `GRAPHIT_GLOBAL_DIR` to move the entire Graphit global directory. An absolute value is used as
-given; a relative value is resolved from the broker's startup directory:
+For example, an operator can relocate the entire Graphit global directory:
 
 ```bash
 GRAPHIT_GLOBAL_DIR=/var/lib/graphit ./graphit-broker --version
@@ -107,12 +124,27 @@ operator-managed library and suppresses extraction of the embedded runtime.
 
 ## Install and configure
 
+Place the example at the default configuration path on Linux or macOS:
+
+```bash
+mkdir -p "$HOME/.graphit/broker"
+cp config.example.yaml "$HOME/.graphit/broker/config.yaml"
+```
+
+On Windows PowerShell:
+
+```powershell
+$brokerDir = Join-Path $HOME '.graphit\broker'
+New-Item -ItemType Directory -Force $brokerDir | Out-Null
+Copy-Item .\config.example.yaml (Join-Path $brokerDir 'config.yaml')
+```
+
 Configure `authentication.token_pepper` with at least 32 secret-manager bytes. On an empty SQL
 database, create the first local administrator interactively. The command requires a TTY, disables
 terminal echo, asks for confirmation, and accepts no username or password argument:
 
 ```bash
-graphit-broker --config /etc/graphit-broker/config.yaml --bootstrap-admin
+graphit-broker --bootstrap-admin
 ```
 
 Unattended provisioning must use the explicit stdin mode. Feed it from a secret manager or a
@@ -121,7 +153,7 @@ variable:
 
 ```bash
 cat /run/secrets/broker-password | \
-  graphit-broker --config /etc/graphit-broker/config.yaml --bootstrap-admin-stdin
+  graphit-broker --bootstrap-admin-stdin
 ```
 
 The command hashes with the configured pepper, persists only the Argon2id verifier, creates fixed
@@ -132,39 +164,39 @@ to the administration UI/API.
 This example creates a dedicated service identity and persistent directories:
 
 ```bash
-sudo useradd --system --home /var/lib/graphit-broker --shell /usr/sbin/nologin graphit-broker
+sudo useradd --system --create-home --home /home/graphit-broker --shell /usr/sbin/nologin graphit-broker
 sudo install -d -o graphit-broker -g graphit-broker -m 0700 \
-  /etc/graphit-broker /var/lib/graphit-broker /var/lib/graphit-broker/.graphit \
-  /var/cache/graphit-broker/models
+  /home/graphit-broker /home/graphit-broker/.graphit \
+  /home/graphit-broker/.graphit/broker /home/graphit-broker/.graphit/broker/models
 sudo install -d -o root -g root -m 0755 /opt/graphit-broker
 sudo cp -a graphit-broker-linux-amd64/. /opt/graphit-broker/
 sudo install -o graphit-broker -g graphit-broker -m 0600 \
-  graphit-broker-linux-amd64/config.example.yaml /etc/graphit-broker/config.yaml
+  graphit-broker-linux-amd64/config.example.yaml /home/graphit-broker/.graphit/broker/config.yaml
 ```
 
-Edit `/etc/graphit-broker/config.yaml`. Keep the SQLite DSN under
-`/var/lib/graphit-broker`, the model catalog under `/var/cache/graphit-broker/models`, and
-provider secrets in a root-readable environment file rather than command-line arguments.
+Edit `/home/graphit-broker/.graphit/broker/config.yaml`. The default SQLite database and model
+catalog remain below that broker directory. Keep provider secrets in a permission-restricted
+environment file rather than command-line arguments.
 
 Validate without starting or downloading local models:
 
 ```bash
 sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
-  --config /etc/graphit-broker/config.yaml --check-config
+  --config /home/graphit-broker/.graphit/broker/config.yaml --check-config
 ```
 
 Optionally acquire all selected `setup` and `on_demand` bundles without listening:
 
 ```bash
 sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
-  --config /etc/graphit-broker/config.yaml --setup-models
+  --config /home/graphit-broker/.graphit/broker/config.yaml --setup-models
 ```
 
 Run in the foreground:
 
 ```bash
 sudo -u graphit-broker /opt/graphit-broker/graphit-broker \
-  --config /etc/graphit-broker/config.yaml
+  --config /home/graphit-broker/.graphit/broker/config.yaml
 ```
 
 The broker does not listen until every enabled local backend has resolved, validated, inspected,
@@ -186,14 +218,14 @@ Wants=network-online.target
 Type=simple
 User=graphit-broker
 Group=graphit-broker
-EnvironmentFile=/etc/graphit-broker/broker.env
-Environment=GRAPHIT_GLOBAL_DIR=/var/lib/graphit-broker/.graphit
-ExecStart=/opt/graphit-broker/graphit-broker --config /etc/graphit-broker/config.yaml
+EnvironmentFile=/home/graphit-broker/.graphit/broker/broker.env
+Environment=GRAPHIT_GLOBAL_DIR=/home/graphit-broker/.graphit
+ExecStart=/opt/graphit-broker/graphit-broker
 Restart=on-failure
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/graphit-broker /var/cache/graphit-broker/models
+ReadWritePaths=/home/graphit-broker/.graphit/broker
 
 [Install]
 WantedBy=multi-user.target

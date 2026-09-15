@@ -23,7 +23,7 @@ import (
 var version = "dev"
 
 func main() {
-	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), "/etc/graphit-broker/config.yaml"), "configuration YAML file")
+	configPath := flag.String("config", firstNonEmpty(os.Getenv("GRAPHIT_BROKER_CONFIG"), broker.DefaultConfigPath()), "configuration YAML file")
 	check := flag.Bool("check-config", false, "validate configuration and exit")
 	setupModels := flag.Bool("setup-models", false, "download and verify selected local model artifacts, then exit")
 	healthcheck := flag.String("healthcheck", "", "GET a health endpoint and exit")
