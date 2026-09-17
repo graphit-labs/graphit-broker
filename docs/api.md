@@ -25,7 +25,7 @@ Example discovery:
     "type": "openid_connect",
     "issuer": "https://broker.example",
     "client_id": "graphit-cli",
-    "scopes": ["openid", "profile", "email", "graphit.use", "offline_access"],
+    "scopes": ["openid", "profile", "email", "offline_access"],
     "redirect_uri_path": "/oauth/callback"
   },
   "services": {
@@ -242,7 +242,8 @@ and callback path from Broker discovery, then uses only standard OIDC discovery 
 never receives upstream IdP configuration. ID and access tokens are signed with EdDSA. The ID token
 exposes a stable, pairwise-style `sub` derived from the underlying canonical identity. The access
 token is a JWT verifiable through discovery/JWKS; it uses `authentication.access_token_audience`,
-contains `graphit.use`, client and identity claims, and expires after ten minutes by default.
+carries the granted standard OIDC scopes plus client and identity claims, and expires after ten
+minutes by default.
 Requesting `offline_access` produces an opaque refresh token with rotation and family reuse
 detection. Token responses are `Cache-Control: no-store`; SQL stores no raw JWT or refresh token,
 only the access-token `jti`, domain-separated credential HMACs, and lifecycle metadata. Revocation

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "graphit-code-stdio-mcp": {
+      "args": [
+        "mcp",
+        "--stdio"
+      ],
+      "command": "graphit",
+      "env": {}
+    }
+  }
+}

@@ -15,7 +15,7 @@ authentication:
       display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
-      required_scopes: [graphit.use]
+      required_scopes: []
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback
@@ -107,6 +107,32 @@ claims. Refresh tokens remain opaque and rotate on every use. Broker-side revoca
 for Broker endpoints; offline JWKS validators accept an already issued access token until `exp`.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
+
+## External MCP clients
+
+The Broker is the authorization server for a hosted agent that talks to a Graphit MCP endpoint, not
+merely for Graphit Code's own login. Whatever authenticates the person upstream — a federated IdP or
+a Broker local user — is invisible to that agent: it only ever speaks OIDC with the Broker, and the
+token it receives is signed by the Broker's own key with the Broker's `iss`.
+
+An agent that has never been provisioned reaches a usable token on its own when
+`authentication.local.tokens.dynamic_registration` is enabled and `mcp_resources` names the Graphit
+deployment. It discovers the Broker from the MCP endpoint's `401`, reads
+`/.well-known/openid-configuration`, registers itself at `registration_endpoint` (RFC 7591), and
+runs Authorization Code with PKCE while passing the MCP endpoint's canonical URI as the RFC 8707
+`resource`. The Broker issues a **public** client only, so no secret is minted, stored, or returned;
+see [configuration](configuration.md) for both keys and their exact validation rules.
+
+Revocation reaches those clients differently from a pure offline validator. A Graphit daemon
+revalidates every inbound MCP access token against `/oauth/userinfo`, so a revoked token stops
+working on the next MCP request rather than at `exp`.
+
+The two token types revoke different amounts on purpose. Revoking a **refresh token** ends the
+whole authorization grant: that token, every access token minted from it, and any further
+renewal, which is what RFC 7009 section 2.1 asks of a server that can revoke access tokens. This
+is the call to make when someone's access has to stop. Revoking an **access token** ends only
+that token and leaves its refresh token usable, which the same section leaves as a MAY; use it to
+retire one leaked credential without forcing the client to authenticate again.
 
 ## Graphit relay and token exchange
 

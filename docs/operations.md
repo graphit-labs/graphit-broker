@@ -15,7 +15,7 @@ credentials, bodies, or upstream secrets.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| startup rejects schema | database belongs to another development build | version 9 upgrades to 10 automatically; for other versions restore a matching backup or recreate |
+| startup rejects schema | database belongs to another development build | recreate the development database; schema migrations and compatibility paths are intentionally unsupported |
 | startup cannot connect | driver/DSN/TLS/network/credentials | YAML `database.driver`/`database.dsn` and their explicit ENV references, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |

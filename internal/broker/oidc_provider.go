@@ -40,7 +40,10 @@ const (
 	oidcKeysPath            = "oauth/keys"
 )
 
-var brokerOIDCScopes = []string{zitoidc.ScopeOpenID, zitoidc.ScopeProfile, zitoidc.ScopeEmail, localAPIScope, offlineAccessScope}
+// brokerOIDCScopes is what this OpenID Provider offers, all of them standard OIDC scopes. The
+// broker requires no scope of its own anywhere: naming one would narrow which identity providers
+// can mint a token this deployment accepts, and a credential's reach comes from its audience.
+var brokerOIDCScopes = []string{zitoidc.ScopeOpenID, zitoidc.ScopeProfile, zitoidc.ScopeEmail, offlineAccessScope}
 
 type brokerOIDCProvider struct {
 	handler http.Handler
@@ -74,7 +77,7 @@ func newBrokerOIDCProvider(cfg Config, control *ControlStore) (*brokerOIDCProvid
 		SupportedScopes: append([]string(nil), brokerOIDCScopes...),
 	}
 	options := []op.Option{
-		op.WithCORSOptions(nil),
+		op.WithCORSOptions(brokerCORSOptions(cfg.Server.CORS)),
 		op.WithAccessTokenVerifierOpts(op.WithSupportedAccessTokenSigningAlgorithms(string(jose.EdDSA))),
 		op.WithCustomAuthEndpoint(op.NewEndpoint(oidcAuthorizationPath)),
 		op.WithCustomTokenEndpoint(op.NewEndpoint(oidcTokenPath)),
@@ -155,6 +158,7 @@ type brokerOIDCAuthRequest struct {
 	ID                  string               `json:"-"`
 	ClientID            string               `json:"client_id"`
 	Audience            string               `json:"audience"`
+	Resource            string               `json:"resource,omitempty"`
 	RedirectURI         string               `json:"redirect_uri"`
 	State               string               `json:"state"`
 	Scopes              []string             `json:"scopes"`
@@ -170,10 +174,12 @@ type brokerOIDCAuthRequest struct {
 	DoneValue           bool                 `json:"done"`
 }
 
-func (r *brokerOIDCAuthRequest) GetID() string                         { return r.ID }
-func (r *brokerOIDCAuthRequest) GetACR() string                        { return "" }
-func (r *brokerOIDCAuthRequest) GetAMR() []string                      { return append([]string(nil), r.AMR...) }
-func (r *brokerOIDCAuthRequest) GetAudience() []string                 { return []string{r.Audience} }
+func (r *brokerOIDCAuthRequest) GetID() string    { return r.ID }
+func (r *brokerOIDCAuthRequest) GetACR() string   { return "" }
+func (r *brokerOIDCAuthRequest) GetAMR() []string { return append([]string(nil), r.AMR...) }
+func (r *brokerOIDCAuthRequest) GetAudience() []string {
+	return audienceFor(r.Audience, r.Resource)
+}
 func (r *brokerOIDCAuthRequest) GetAuthTime() time.Time                { return r.AuthTime }
 func (r *brokerOIDCAuthRequest) GetClientID() string                   { return r.ClientID }
 func (r *brokerOIDCAuthRequest) GetNonce() string                      { return r.Nonce }
@@ -193,8 +199,10 @@ func (r *brokerOIDCAuthRequest) GetCodeChallenge() *zitoidc.CodeChallenge {
 
 type brokerOIDCRefreshRequest struct{ grant LocalTokenGrant }
 
-func (r *brokerOIDCRefreshRequest) GetAMR() []string       { return []string{r.grant.Principal.AuthMethod} }
-func (r *brokerOIDCRefreshRequest) GetAudience() []string  { return []string{r.grant.Audience} }
+func (r *brokerOIDCRefreshRequest) GetAMR() []string { return []string{r.grant.Principal.AuthMethod} }
+func (r *brokerOIDCRefreshRequest) GetAudience() []string {
+	return audienceFor(r.grant.Audience, r.grant.Resource)
+}
 func (r *brokerOIDCRefreshRequest) GetAuthTime() time.Time { return r.grant.AuthTime }
 func (r *brokerOIDCRefreshRequest) GetClientID() string    { return r.grant.ClientID }
 func (r *brokerOIDCRefreshRequest) GetScopes() []string {
@@ -225,8 +233,11 @@ func (s *brokerOIDCStorage) CreateAuthRequest(ctx context.Context, input *zitoid
 	if len(input.Prompt) == 1 && input.Prompt[0] == zitoidc.PromptNone {
 		return nil, zitoidc.ErrLoginRequired()
 	}
-	if !slices.Contains(input.Scopes, zitoidc.ScopeOpenID) || !slices.Contains(input.Scopes, localAPIScope) {
-		return nil, zitoidc.ErrInvalidScope().WithDescription("openid and graphit.use scopes are required")
+	// openid is the only scope this provider insists on, because OIDC Core requires it of
+	// any authentication request. A token's reach is decided by its audience rather than by
+	// a product-specific scope, so none is demanded here.
+	if !slices.Contains(input.Scopes, zitoidc.ScopeOpenID) {
+		return nil, zitoidc.ErrInvalidScope().WithDescription("the openid scope is required")
 	}
 	if strings.TrimSpace(input.Nonce) == "" || strings.TrimSpace(input.State) == "" || len(input.State) > 512 {
 		return nil, zitoidc.ErrInvalidRequest().WithDescription("nonce and state are required and state must not exceed 512 bytes")
@@ -235,7 +246,8 @@ func (s *brokerOIDCStorage) CreateAuthRequest(ctx context.Context, input *zitoid
 	if err != nil {
 		return nil, err
 	}
-	request := &brokerOIDCAuthRequest{ID: id, ClientID: input.ClientID, Audience: s.cfg.Authentication.Local.Tokens.Audience, RedirectURI: input.RedirectURI, State: input.State,
+	request := &brokerOIDCAuthRequest{ID: id, ClientID: input.ClientID, Audience: s.cfg.Authentication.Local.Tokens.Audience,
+		Resource: requestedResource(ctx), RedirectURI: input.RedirectURI, State: input.State,
 		Scopes: cleanStrings(input.Scopes), ResponseType: input.ResponseType, ResponseMode: input.ResponseMode, Nonce: input.Nonce,
 		CodeChallenge: input.CodeChallenge, CodeChallengeMethod: string(input.CodeChallengeMethod)}
 	payload, err := json.Marshal(request)
@@ -388,6 +400,8 @@ func (s *brokerOIDCStorage) saveTokenPair(ctx context.Context, grant LocalTokenG
 		grant.OIDCSubject = s.subject(principal)
 	}
 	grant.Audience = s.cfg.Authentication.Local.Tokens.Audience
+	// grant.Resource is whatever the authorization request validated; it is carried, never
+	// re-derived, so a refresh cannot widen the audience beyond what was originally granted.
 	accessID, err := randomURLToken(18)
 	if err != nil {
 		return "", "", time.Time{}, err
@@ -431,7 +445,8 @@ func (s *brokerOIDCStorage) grantFromRequest(ctx context.Context, request op.Tok
 			return LocalTokenGrant{}, ErrUnauthenticated
 		}
 		return LocalTokenGrant{Principal: value.Principal, Subject: value.Principal.Subject, LocalUserRevision: value.Principal.LocalUserRevision,
-			OIDCSubject: value.OIDCSubject, ClientID: value.ClientID, Scopes: cleanStrings(value.Scopes), AuthTime: value.AuthTime}, nil
+			OIDCSubject: value.OIDCSubject, ClientID: value.ClientID, Scopes: cleanStrings(value.Scopes), AuthTime: value.AuthTime,
+			Resource: value.Resource}, nil
 	case *brokerOIDCRefreshRequest:
 		return value.grant, nil
 	default:
@@ -464,7 +479,7 @@ func findOIDCConfig(configs []OIDCIssuerConfig, issuer string) (OIDCIssuerConfig
 }
 
 func (s *brokerOIDCStorage) TokenRequestByRefreshToken(ctx context.Context, raw string) (op.RefreshTokenRequest, error) {
-	grant, err := s.control.RefreshTokenGrant(ctx, raw, s.client.GetID())
+	grant, err := s.control.OIDCRefreshTokenGrant(ctx, raw)
 	if err != nil || grant.OIDCSubject == "" {
 		return nil, op.ErrInvalidRefreshToken
 	}
@@ -475,6 +490,17 @@ func (s *brokerOIDCStorage) TerminateSession(ctx context.Context, oidcSubject, c
 	return s.control.RevokeOIDCSession(ctx, oidcSubject, clientID, s.subject)
 }
 
+// RevokeToken ends what the revocation request named.
+//
+// The identifier arrives in one of three shapes, and they must be tried in this order. A raw
+// refresh token means the framework could not resolve it, so the store matches it by hash. A
+// family id is what GetRefreshTokenInfo hands back for a refresh token the framework did
+// resolve, and revoking it ends the whole grant. Anything left is an access token id.
+//
+// Family ids and access token ids are separate identifier spaces with no marker distinguishing
+// them, so the order of attempts is what tells them apart: only a family lookup can confirm a
+// family. Reversing these two would silently revoke nothing for every refresh token, because an
+// access-token lookup keyed by a family id never matches a row.
 func (s *brokerOIDCStorage) RevokeToken(ctx context.Context, tokenOrID, _ string, clientID string) *zitoidc.Error {
 	if strings.HasPrefix(tokenOrID, localRefreshTokenPrefix) {
 		if err := s.control.RevokeRawToken(ctx, tokenOrID); err != nil {
@@ -482,6 +508,14 @@ func (s *brokerOIDCStorage) RevokeToken(ctx context.Context, tokenOrID, _ string
 		}
 		return nil
 	}
+	switch revoked, err := s.control.RevokeOIDCTokenFamily(ctx, tokenOrID); {
+	case err != nil:
+		return zitoidc.ErrServerError().WithParent(err)
+	case revoked:
+		return nil
+	}
+	// An access token is revoked on its own. Ending its grant as well is only a MAY in
+	// RFC 7009 section 2.1, and the refresh token remains the caller's to revoke.
 	if err := s.control.RevokeOIDCAccessToken(ctx, tokenOrID, clientID); err != nil {
 		return zitoidc.ErrServerError().WithParent(err)
 	}
@@ -506,15 +540,37 @@ func (s *brokerOIDCStorage) KeySet(context.Context) ([]op.Key, error) {
 	return []op.Key{&brokerOIDCPublicKey{s.signingKey}}, nil
 }
 
-func (s *brokerOIDCStorage) GetClientByClientID(_ context.Context, clientID string) (op.Client, error) {
-	if subtle.ConstantTimeCompare([]byte(clientID), []byte(s.client.GetID())) != 1 {
+func (s *brokerOIDCStorage) GetClientByClientID(ctx context.Context, clientID string) (op.Client, error) {
+	if subtle.ConstantTimeCompare([]byte(clientID), []byte(s.client.GetID())) == 1 {
+		return s.client, nil
+	}
+	if !s.cfg.Authentication.Local.Tokens.DynamicRegistration {
 		return nil, sql.ErrNoRows
 	}
-	return s.client, nil
+	record, found, err := s.control.DynamicClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, sql.ErrNoRows
+	}
+	return &dynamicOIDCClient{brokerOIDCClient: *s.client, record: record}, nil
 }
 
-func (s *brokerOIDCStorage) AuthorizeClientIDSecret(_ context.Context, clientID, secret string) error {
-	if subtle.ConstantTimeCompare([]byte(clientID), []byte(s.client.GetID())) != 1 || secret != "" {
+func (s *brokerOIDCStorage) AuthorizeClientIDSecret(ctx context.Context, clientID, secret string) error {
+	// Registration never issues a secret, and the static client has none either, so a
+	// supplied secret is always wrong regardless of which client is being authenticated.
+	if secret != "" {
+		return ErrUnauthenticated
+	}
+	if subtle.ConstantTimeCompare([]byte(clientID), []byte(s.client.GetID())) == 1 {
+		return nil
+	}
+	if !s.cfg.Authentication.Local.Tokens.DynamicRegistration {
+		return ErrUnauthenticated
+	}
+	_, found, err := s.control.DynamicClient(ctx, clientID)
+	if err != nil || !found {
 		return ErrUnauthenticated
 	}
 	return nil
@@ -624,9 +680,18 @@ func (s *brokerOIDCStorage) ValidateJWTProfileScopes(context.Context, string, []
 }
 
 func (s *brokerOIDCStorage) AuthenticateAccessToken(ctx context.Context, raw string, verifier *op.AccessTokenVerifier) (Principal, error) {
+	// The audience admits a token to this API, so a client that reaches the Graphit MCP endpoint
+	// can also reach the calls Graphit relays here on its behalf. The grant lookup below refuses
+	// a revoked token, and RBAC decides what the principal may do.
 	claims, err := op.VerifyAccessToken[*zitoidc.AccessTokenClaims](ctx, raw, verifier)
-	if err != nil || claims.JWTID == "" || claims.Subject == "" || claims.ClientID != s.client.GetID() ||
-		!slices.Contains(claims.Audience, s.cfg.Authentication.Local.Tokens.Audience) || !slices.Contains([]string(claims.Scopes), localAPIScope) {
+	if err != nil || claims.JWTID == "" || claims.Subject == "" ||
+		!slices.Contains(claims.Audience, s.cfg.Authentication.Local.Tokens.Audience) {
+		return Principal{}, ErrUnauthenticated
+	}
+	// The client must be one this broker issued to. Pinning it to the configured CLI client
+	// would lock every dynamically registered agent out of the broker's own API, even though
+	// the broker itself minted its token.
+	if _, err := s.GetClientByClientID(ctx, claims.ClientID); err != nil {
 		return Principal{}, ErrUnauthenticated
 	}
 	grant, err := s.control.OIDCAccessTokenGrant(ctx, claims.JWTID)

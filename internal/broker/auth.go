@@ -104,7 +104,9 @@ func (a *authenticator) Authenticate(ctx context.Context, raw string) (Principal
 		if a.localTokens == nil {
 			return Principal{}, ErrUnauthenticated
 		}
-		principal, err := a.localTokens.AuthenticateLocalToken(ctx, raw, a.localAudience, []string{localAPIScope})
+		// No scope is demanded: an opaque credential is authorized by its domain-separated
+		// hash, stored audience, empty revocation stamp, the local user's revision, and RBAC.
+		principal, err := a.localTokens.AuthenticateLocalToken(ctx, raw, a.localAudience, nil)
 		if err != nil {
 			return Principal{}, err
 		}

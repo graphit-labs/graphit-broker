@@ -177,7 +177,10 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 	mux.HandleFunc("GET /favicon.svg", favicon)
 	mux.HandleFunc("GET /.well-known/graphit-broker", s.discovery)
 	if s.oidcProvider != nil {
-		mux.Handle("GET /.well-known/openid-configuration", s.oidcProvider.handler)
+		mux.HandleFunc("GET /.well-known/openid-configuration", s.oidcDiscovery)
+		if runtime.config.Authentication.Local.Tokens.DynamicRegistration {
+			mux.HandleFunc("POST "+oidcRegistrationPath, s.oidcRegister)
+		}
 		mux.HandleFunc("GET /oauth/authorize", s.oidcAuthorize)
 		mux.HandleFunc("POST /oauth/authorize", s.oidcAuthorize)
 		mux.Handle("GET /oauth/authorize/callback", s.oidcProvider.handler)
@@ -307,6 +310,8 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		"schemes":               []string{"anonymous", "bearer"},
 		"audiences":             cleanStrings(audiences),
 		"access_token_audience": state.config.Authentication.Local.Tokens.Audience,
+		// The Graphit daemon learns which resource it is by finding its own public URL here.
+		"mcp_resources": cleanStrings(state.config.Authentication.Local.Tokens.MCPResources),
 	}
 	methods := s.oauthLoginMethods()
 	if len(methods) > 0 {

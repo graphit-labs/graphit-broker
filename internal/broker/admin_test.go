@@ -72,7 +72,7 @@ func (a testAdminAuthenticator) Authenticate(ctx context.Context, raw string) (P
 			RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector, AuthMethod: "oidc"}, nil
 	}
 	if strings.HasPrefix(raw, localAccessTokenPrefix) && a.store != nil {
-		return a.store.AuthenticateLocalToken(ctx, raw, "graphit-broker", []string{localAPIScope})
+		return a.store.AuthenticateLocalToken(ctx, raw, "graphit-broker", []string{testFixtureScope})
 	}
 	return a.local.Authenticate(ctx, raw)
 }
@@ -524,7 +524,7 @@ func TestBrokerProviderAndLoginSnippetMatchesGraphitCLIContract(t *testing.T) {
 	state.config.Server.PublicURL = "https://broker.example.com"
 	state.config.Authentication.OIDC = []OIDCIssuerConfig{{
 		Issuer: "https://identity.example", Audiences: []string{"graphit-broker"},
-		RequiredScopes: []string{"graphit.use"}, UsernameClaim: "preferred_username",
+		RequiredScopes: []string{"example.scope"}, UsernameClaim: "preferred_username",
 		OrganizationClaim: "organization.id", TeamsClaim: "groups",
 	}}
 	state.config.Administration.CLI = GraphitCLIConfig{ProviderName: "company", ProfileName: "alice-company"}

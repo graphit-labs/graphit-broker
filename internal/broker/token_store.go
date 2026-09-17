@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	localAPIScope           = "graphit.use"
 	offlineAccessScope      = "offline_access"
 	localAccessTokenPrefix  = "gb_at_"
 	localRefreshTokenPrefix = "gb_rt_"
@@ -43,10 +42,13 @@ type LocalTokenGrant struct {
 	LocalUserRevision int64
 	ClientID          string
 	Audience          string
-	Scopes            []string
-	FamilyID          string
-	ExpiresAt         time.Time
-	RefreshExpiresAt  time.Time
+	// Resource is the RFC 8707 indicator this grant was issued for, empty when the client
+	// asked for none. It is persisted so a refreshed token keeps the same audience.
+	Resource         string
+	Scopes           []string
+	FamilyID         string
+	ExpiresAt        time.Time
+	RefreshExpiresAt time.Time
 }
 
 type DeviceAuthorization struct {
@@ -228,8 +230,8 @@ func (s *ControlStore) insertTokenRecord(ctx context.Context, tx *sql.Tx, tokenH
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO local_tokens(token_hash, token_id, token_kind, subject, oidc_subject, principal_json, client_id, audience, scopes_json, local_user_revision, family_id, auth_time, expires_at, revoked_at, consumed_at, last_used_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		tokenHash, id, kind, grant.Subject, grant.OIDCSubject, string(principalJSON), grant.ClientID, grant.Audience, string(scopes), grant.LocalUserRevision,
+	_, err = tx.ExecContext(ctx, s.bind(`INSERT INTO local_tokens(token_hash, token_id, token_kind, subject, oidc_subject, principal_json, client_id, audience, resource, scopes_json, local_user_revision, family_id, auth_time, expires_at, revoked_at, consumed_at, last_used_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		tokenHash, id, kind, grant.Subject, grant.OIDCSubject, string(principalJSON), grant.ClientID, grant.Audience, grant.Resource, string(scopes), grant.LocalUserRevision,
 		grant.FamilyID, formatOptionalTime(grant.AuthTime), expires.UTC().Format(time.RFC3339Nano), "", "", "", now.UTC().Format(time.RFC3339Nano))
 	return err
 }
@@ -263,8 +265,8 @@ func (s *ControlStore) SaveOIDCTokenPair(ctx context.Context, accessID, refreshR
 func (s *ControlStore) OIDCAccessTokenGrant(ctx context.Context, tokenID string) (LocalTokenGrant, error) {
 	var grant LocalTokenGrant
 	var principalJSON, scopesJSON, authTime, expires, revoked string
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, scopes_json, family_id, auth_time, expires_at, revoked_at FROM local_tokens WHERE token_id=? AND token_kind=?`), strings.TrimSpace(tokenID), localTokenKindAccess).
-		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked)
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, resource, scopes_json, family_id, auth_time, expires_at, revoked_at FROM local_tokens WHERE token_id=? AND token_kind=?`), strings.TrimSpace(tokenID), localTokenKindAccess).
+		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &grant.Resource, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked)
 	if err != nil || revoked != "" {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
@@ -281,15 +283,28 @@ func (s *ControlStore) OIDCAccessTokenGrant(ctx context.Context, tokenID string)
 }
 
 func (s *ControlStore) RefreshTokenGrant(ctx context.Context, raw, clientID string) (LocalTokenGrant, error) {
+	clientID = strings.TrimSpace(clientID)
+	return s.refreshTokenGrant(ctx, raw, &clientID)
+}
+
+// OIDCRefreshTokenGrant loads the grant before the OpenID Provider has authenticated the
+// client. The provider compares the authenticated client with grant.ClientID immediately
+// afterwards, so this lookup must not hard-code the static CLI client: dynamically registered
+// public clients use the same refresh flow.
+func (s *ControlStore) OIDCRefreshTokenGrant(ctx context.Context, raw string) (LocalTokenGrant, error) {
+	return s.refreshTokenGrant(ctx, raw, nil)
+}
+
+func (s *ControlStore) refreshTokenGrant(ctx context.Context, raw string, clientID *string) (LocalTokenGrant, error) {
 	if !strings.HasPrefix(raw, localRefreshTokenPrefix) {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
 	var grant LocalTokenGrant
 	var principalJSON, scopesJSON, authTime, expires, revoked, consumed string
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, scopes_json, family_id, auth_time, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`),
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, resource, scopes_json, family_id, auth_time, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`),
 		s.tokenHash(localRefreshTokenDomain, raw), localTokenKindRefresh).
-		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked, &consumed)
-	if err != nil || grant.ClientID != strings.TrimSpace(clientID) || revoked != "" {
+		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &grant.Resource, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked, &consumed)
+	if err != nil || (clientID != nil && grant.ClientID != *clientID) || revoked != "" {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
 	if consumed != "" {
@@ -414,8 +429,8 @@ func (s *ControlStore) ConsumeRefreshToken(ctx context.Context, raw, clientID st
 	hash := s.tokenHash(localRefreshTokenDomain, raw)
 	var grant LocalTokenGrant
 	var scopesJSON, principalJSON, authTime, expires, revoked, consumed string
-	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, scopes_json, family_id, auth_time, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`), hash, localTokenKindRefresh).
-		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked, &consumed)
+	err = tx.QueryRowContext(ctx, s.bind(`SELECT subject, oidc_subject, principal_json, local_user_revision, client_id, audience, resource, scopes_json, family_id, auth_time, expires_at, revoked_at, consumed_at FROM local_tokens WHERE token_hash=? AND token_kind=?`), hash, localTokenKindRefresh).
+		Scan(&grant.Subject, &grant.OIDCSubject, &principalJSON, &grant.LocalUserRevision, &grant.ClientID, &grant.Audience, &grant.Resource, &scopesJSON, &grant.FamilyID, &authTime, &expires, &revoked, &consumed)
 	if err != nil || grant.ClientID != strings.TrimSpace(clientID) || revoked != "" {
 		return LocalTokenGrant{}, ErrUnauthenticated
 	}
@@ -487,6 +502,31 @@ func (s *ControlStore) grantPrincipal(ctx context.Context, grant LocalTokenGrant
 		method = "service-credential"
 	}
 	return principalFromLocalUser(user, method), nil
+}
+
+// RevokeOIDCTokenFamily ends an entire authorization grant, reporting whether the identifier
+// named one.
+//
+// Revoking a refresh token has to reach the access tokens minted from the same grant, which is
+// what RFC 7009 section 2.1 asks of an authorization server that can revoke access tokens.
+// The caller cannot tell a family id from an access token id by looking at it, so the boolean
+// is how it decides whether to try the access-token path instead.
+func (s *ControlStore) RevokeOIDCTokenFamily(ctx context.Context, familyID string) (bool, error) {
+	family := strings.TrimSpace(familyID)
+	if family == "" {
+		return false, nil
+	}
+	var exists string
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT family_id FROM local_tokens WHERE family_id=? LIMIT 1`), family).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = s.db.ExecContext(ctx, s.bind(`UPDATE local_tokens SET revoked_at=? WHERE family_id=? AND revoked_at=?`),
+		time.Now().UTC().Format(time.RFC3339Nano), family, "")
+	return err == nil, err
 }
 
 func (s *ControlStore) RevokeRawToken(ctx context.Context, raw string) error {

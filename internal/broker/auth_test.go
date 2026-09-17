@@ -38,12 +38,12 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 	}))
 	defer server.Close()
 	issuer = server.URL
-	cfg := AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"graphit.use"}, SubjectClaim: "$.identity.id", UsernameClaim: "$.profile.username", OrganizationClaim: "$.organization.id", TeamsClaim: "$.groups[*]", RoleClaim: "$.realm_access.roles[*]"}}}
+	cfg := AuthenticationConfig{TokenPepper: testPasswordPepper, OIDC: []OIDCIssuerConfig{{Issuer: issuer, Audiences: []string{"graphit-broker"}, RequiredScopes: []string{"example.scope"}, SubjectClaim: "$.identity.id", UsernameClaim: "$.profile.username", OrganizationClaim: "$.organization.id", TeamsClaim: "$.groups[*]", RoleClaim: "$.realm_access.roles[*]"}}}
 	authenticator, err := newAuthenticator(context.Background(), cfg, nil, true, server.Client())
 	if err != nil {
 		t.Fatalf("newAuthenticator: %v", err)
 	}
-	base := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "stable-subject"}, "aud": []string{"other", "graphit-broker"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "scope": "openid graphit.use", "profile": map[string]any{"username": "alice"}, "organization": map[string]any{"id": "acme"}, "groups": []string{"platform", "security"}, "realm_access": map[string]any{"roles": []string{"auditor"}}}
+	base := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "stable-subject"}, "aud": []string{"other", "graphit-broker"}, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "scope": "openid example.scope", "profile": map[string]any{"username": "alice"}, "organization": map[string]any{"id": "acme"}, "groups": []string{"platform", "security"}, "realm_access": map[string]any{"roles": []string{"auditor"}}}
 	token := signJWT(t, key, base)
 	principal, err := authenticator.Authenticate(context.Background(), token)
 	if err != nil {
@@ -92,13 +92,13 @@ func TestAuthenticatorValidatesOIDCSignatureAudienceExpiryScopesAndClaims(t *tes
 
 func TestTokenScopesAndClaimSelectorsSupportCommonIdPShapes(t *testing.T) {
 	claims := map[string]any{
-		"scp":                              "graphit.use profile",
+		"scp":                              "example.scope profile",
 		"organization":                     map[string]any{"id": "acme"},
 		"https://claims.example.com/teams": []any{"platform"},
 		"realm_access":                     map[string]any{"roles": []any{"user", "auditor"}},
 		"accounts":                         []any{map[string]any{"primary": true, "name": "alice"}, map[string]any{"primary": false, "name": "bob"}},
 	}
-	if scopes := tokenScopes(claims); !containsString(scopes, "graphit.use") {
+	if scopes := tokenScopes(claims); !containsString(scopes, "example.scope") {
 		t.Fatalf("scopes=%v", scopes)
 	}
 	if value, ok := claimValue(claims, "organization.id"); !ok || value != "acme" {

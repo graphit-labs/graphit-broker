@@ -18,6 +18,25 @@ func testDatabase(path string) DatabaseConfig {
 	return DatabaseConfig{Driver: "sqlite", DSN: path, MaxOpenConns: 1, MaxIdleConns: 1, ConnMaxLifetime: time.Minute}
 }
 
+func TestControlStoreRejectsOlderSchemaDuringDevelopment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broker.db")
+	store, err := OpenControlStore(testDatabase(path), testTokenPepper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE schema_meta SET version=10 WHERE id=1`); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := OpenControlStore(testDatabase(path), testTokenPepper); err == nil || !strings.Contains(err.Error(), "unsupported database schema version 10: recreate the database") {
+		t.Fatalf("OpenControlStore error=%v; want schema recreation instruction", err)
+	}
+}
+
 func TestControlStorePersistsOnlyDurableStateAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state", "broker.db")

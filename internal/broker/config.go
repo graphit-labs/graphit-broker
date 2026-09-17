@@ -36,12 +36,24 @@ type DatabaseConfig struct {
 
 type ServerConfig struct {
 	Address         string        `yaml:"address"`
+	CORS            CORSConfig    `yaml:"cors" json:"cors"`
 	PublicURL       string        `yaml:"public_url"`
 	ReadTimeout     time.Duration `yaml:"read_timeout"`
 	WriteTimeout    time.Duration `yaml:"write_timeout"`
 	IdleTimeout     time.Duration `yaml:"idle_timeout"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	MaxRequestBytes int64         `yaml:"max_request_bytes"`
+}
+
+// CORSConfig declares which browser origins may call this broker.
+//
+// Empty means no CORS headers at all: a deployment becomes reachable from a browser only
+// when its operator says so. Credentials are
+// not exposed as a setting because OAuth here authenticates with the Authorization header
+// rather than cookies, which also makes the invalid wildcard-plus-credentials pair
+// unrepresentable.
+type CORSConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins" json:"allowed_origins,omitempty"`
 }
 
 type AuthenticationConfig struct {
@@ -91,6 +103,17 @@ type LocalTokenConfig struct {
 	DeviceTTL          time.Duration `yaml:"device_code_ttl" json:"device_code_ttl"`
 	DevicePollInterval time.Duration `yaml:"device_poll_interval" json:"device_poll_interval"`
 	ServiceMaxTTL      time.Duration `yaml:"service_credential_max_ttl" json:"service_credential_max_ttl"`
+	// MCPResources lists the canonical URIs of Graphit MCP endpoints this deployment serves.
+	// It is the single source for both jobs: validating an RFC 8707 resource indicator on an
+	// authorization request, and telling each Graphit daemon which resource it is through
+	// broker discovery. Empty means no resource indicator is accepted at all, so a deployment
+	// that never configures one cannot have tokens minted for an attacker-supplied audience.
+	MCPResources []string `yaml:"mcp_resources" json:"mcp_resources"`
+	// DynamicRegistration opens RFC 7591 registration so an MCP client the operator never
+	// provisioned can obtain its own public client_id. It is off unless the deployment says
+	// otherwise: turning it on means anyone who can reach the broker can create a client,
+	// which is the intended trade for letting hosted agents connect without manual setup.
+	DynamicRegistration bool `yaml:"dynamic_registration" json:"dynamic_registration"`
 }
 
 type LocalAuthenticationRateLimit struct {
@@ -443,6 +466,7 @@ func expandUserPath(path string) (string, error) {
 }
 
 func (c *LocalTokenConfig) setDefaults() {
+	c.MCPResources = cleanStrings(c.MCPResources)
 	if strings.TrimSpace(c.Audience) == "" {
 		c.Audience = "graphit-broker"
 	}
@@ -522,6 +546,12 @@ func (c LocalTokenConfig) validate() error {
 	}
 	if c.ServiceMaxTTL < time.Hour || c.ServiceMaxTTL > 5*365*24*time.Hour {
 		return errors.New("authentication.local.tokens.service_credential_max_ttl must be between 1h and 43800h")
+	}
+	for _, resource := range c.MCPResources {
+		parsed, err := url.Parse(resource)
+		if err != nil || !parsed.IsAbs() || parsed.Fragment != "" {
+			return fmt.Errorf("authentication.local.tokens.mcp_resources entry %q must be an absolute URI without a fragment", resource)
+		}
 	}
 	return nil
 }

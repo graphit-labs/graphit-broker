@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -231,38 +230,5 @@ func TestPersistentEmbeddingCacheSalvagesSuccessfulInputsAfterBatchFailure(t *te
 	_, cached, err := NewAIService(cfg, store).Embed(ctx, Principal{}, []string{"good-a", "good-c"})
 	if err != nil || !cached || requests != 4 {
 		t.Fatalf("individual successes not saved: cached=%v requests=%d err=%v", cached, requests, err)
-	}
-}
-
-func TestEmbeddingCacheUpgradesSchemaNineWithoutLosingData(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "broker.db")
-	store, err := OpenControlStore(testDatabase(path), testTokenPepper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`DROP TABLE embedding_cache; CREATE TABLE preserved_test (value TEXT NOT NULL); INSERT INTO preserved_test(value) VALUES('kept'); UPDATE schema_meta SET version=9 WHERE id=1`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = OpenControlStore(testDatabase(path), testTokenPepper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var version int
-	var value string
-	if err := store.db.QueryRow(`SELECT version FROM schema_meta WHERE id=1`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.db.QueryRow(`SELECT value FROM preserved_test`).Scan(&value); err != nil {
-		t.Fatal(err)
-	}
-	if version != schemaVersion || value != "kept" {
-		t.Fatalf("migration: version=%d value=%q", version, value)
-	}
-	if err := store.db.QueryRow(`SELECT provider FROM embedding_cache LIMIT 1`).Scan(&value); err != sql.ErrNoRows {
-		t.Fatalf("cache table missing: %v", err)
 	}
 }

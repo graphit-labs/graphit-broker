@@ -773,14 +773,9 @@ func (s *Server) adminServiceCredentials(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid_credential", "client_id must be a safe name", requestID(r.Context()))
 		return
 	}
+	// Scopes are recorded as requested, never required: a service credential is authorized by
+	// its audience and by RBAC.
 	request.Scopes = cleanStrings(request.Scopes)
-	if len(request.Scopes) == 0 {
-		request.Scopes = []string{localAPIScope}
-	}
-	if len(request.Scopes) != 1 || request.Scopes[0] != localAPIScope {
-		writeError(w, http.StatusBadRequest, "invalid_credential", "service credentials require the graphit.use scope", requestID(r.Context()))
-		return
-	}
 	if request.ExpiresIn == 0 {
 		request.ExpiresIn = int64(min(90*24*time.Hour, s.runtime().config.Authentication.Local.Tokens.ServiceMaxTTL) / time.Second)
 	}

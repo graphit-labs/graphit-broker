@@ -51,10 +51,9 @@ home directory. A leading `~/` in a configured SQLite path is resolved with nati
 Linux, macOS, and Windows. An omitted or empty `dsn` is invalid; there is no code-owned database
 path or database environment variable.
 
-The broker creates its current schema at startup and checks its schema version. Version 9 is
-upgraded transactionally to version 10 by adding the embedding cache table without changing
-existing rows. Other incompatible versions are rejected and require a separate upgrade or
-database recreation. The embedding table has a unique composite primary-key index on
+The broker creates its current schema at startup and requires an exact schema-version match.
+This development version has no database migration or compatibility path; recreate the database
+after a schema change. The embedding table has a unique composite primary-key index on
 `(compatibility_hash, input_hash)`, so lookups do not scan the growing table. Embeddings have
 no automatic expiration; include the table in backup/storage planning and change the embedding
 revision whenever the vector space changes.

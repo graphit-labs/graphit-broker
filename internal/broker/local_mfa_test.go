@@ -143,7 +143,7 @@ func TestLocalMFARejectsTOTPReplayConsumesRecoveryAndResetInvalidatesTokens(t *t
 
 	user, _ := store.LocalUserByUsername(ctx, "alice")
 	grant := LocalTokenGrant{Subject: user.Subject, LocalUserRevision: user.Revision, ClientID: "graphit-cli", Audience: "graphit-broker",
-		Scopes: []string{localAPIScope}, FamilyID: "family", ExpiresAt: now.Add(time.Hour)}
+		Scopes: []string{testFixtureScope}, FamilyID: "family", ExpiresAt: now.Add(time.Hour)}
 	if err := store.SaveTokenPair(ctx, localAccessTokenPrefix+"before-reset", "before-reset", "", "", grant); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestLocalMFARejectsTOTPReplayConsumesRecoveryAndResetInvalidatesTokens(t *t
 	if user.MFAEnabled || user.Revision == grant.LocalUserRevision {
 		t.Fatalf("MFA reset user=%#v", user)
 	}
-	if _, err := store.AuthenticateLocalToken(ctx, localAccessTokenPrefix+"before-reset", "graphit-broker", []string{localAPIScope}); err == nil {
+	if _, err := store.AuthenticateLocalToken(ctx, localAccessTokenPrefix+"before-reset", "graphit-broker", []string{testFixtureScope}); err == nil {
 		t.Fatal("token survived MFA reset")
 	}
 	principal, _ = passwords.Authenticate(ctx, "alice", "permanent-password")
@@ -214,7 +214,7 @@ func TestAdministrativePasswordChangeFlagInvalidatesArtifactsAndCannotBeClearedB
 	}
 	user, _ := store.LocalUserByUsername(ctx, "alice")
 	grant := LocalTokenGrant{Subject: user.Subject, LocalUserRevision: user.Revision, ClientID: "graphit-cli", Audience: "graphit-broker",
-		Scopes: []string{localAPIScope}, FamilyID: "family", ExpiresAt: time.Now().Add(time.Hour)}
+		Scopes: []string{testFixtureScope}, FamilyID: "family", ExpiresAt: time.Now().Add(time.Hour)}
 	if err := store.SaveTokenPair(ctx, localAccessTokenPrefix+"before-force", "before-force", "", "", grant); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestAdministrativePasswordChangeFlagInvalidatesArtifactsAndCannotBeClearedB
 	if !user.PasswordChangeRequired || user.Revision == grant.LocalUserRevision {
 		t.Fatalf("forced password state=%#v", user)
 	}
-	if _, err := store.AuthenticateLocalToken(ctx, localAccessTokenPrefix+"before-force", "graphit-broker", []string{localAPIScope}); err == nil {
+	if _, err := store.AuthenticateLocalToken(ctx, localAccessTokenPrefix+"before-force", "graphit-broker", []string{testFixtureScope}); err == nil {
 		t.Fatal("token survived forced password change")
 	}
 	user.PasswordChangeRequired = false

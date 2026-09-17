@@ -50,7 +50,7 @@ authentication:
       display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
-      required_scopes: [graphit.use]
+      required_scopes: []
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback

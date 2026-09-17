@@ -9,6 +9,10 @@ database:
 
 server:
   address: ":8080"
+  # Browser origins allowed to call the OAuth/OIDC endpoints. Empty emits no CORS headers at all.
+  # Only a browser-based MCP client needs this; server-side agent runtimes are unaffected.
+  cors:
+    allowed_origins: []
   # HTTP is allowed only on localhost/loopback; also set administration.cookie_secure: false.
   public_url: "https://broker.example.com"
   read_timeout: 15s
@@ -69,6 +73,16 @@ authentication:
       device_code_ttl: 10m
       device_poll_interval: 5s
       service_credential_max_ttl: 8760h
+      # RFC 7591 client registration at POST /oauth/register, advertised as registration_endpoint.
+      # Off unless set: enabling it lets anyone who can reach the broker create a client, which is
+      # the deliberate trade for letting a hosted MCP agent connect without manual provisioning.
+      # Only public clients are ever created; confidential metadata is rejected.
+      dynamic_registration: false
+      # Canonical URIs of the Graphit MCP endpoints this deployment serves. Validates the RFC 8707
+      # resource indicator and is published in /.well-known/graphit-broker so each Graphit daemon
+      # learns which resource it is. Each grant accepts one listed absolute URI without a fragment;
+      # a token request may omit it or repeat that exact grant value. Empty accepts no indicator.
+      mcp_resources: []
   oidc:
     # Defaults to true; false disables this upstream issuer for bearer and browser login.
     # Required environment references are still checked even when disabled.
@@ -77,7 +91,10 @@ authentication:
       display_name: "Corporate SSO"
       issuer: "https://identity.example.com"
       audiences: ["graphit-broker"]
-      required_scopes: ["graphit.use"]
+      # Optional and empty by default. The broker asks this issuer for no scope of its own; list
+      # one here only if your own authorization policy wants it, using a scope your IdP already
+      # mints. A token's reach is decided by its audience.
+      required_scopes: []
       # This issuer validates consumer bearers and supplies the optional upstream browser method
       # used by both Broker-managed Graphit Code login and administration login.
       client_id: "graphit-broker"

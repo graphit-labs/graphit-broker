@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	zitoidc "github.com/zitadel/oidc/v3/pkg/oidc"
 )
 
 const deviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
@@ -287,20 +289,10 @@ func (s *Server) redirectOAuthFailure(w http.ResponseWriter, r *http.Request, fl
 	return true
 }
 
+// requestedLocalScopes reads the device flow's scope parameter. Nothing is required: the token
+// it issues is authorized by its audience and by RBAC.
 func requestedLocalScopes(raw string) ([]string, error) {
-	values := cleanStrings(strings.Fields(raw))
-	if len(values) == 0 {
-		values = []string{localAPIScope}
-	}
-	if !containsString(values, localAPIScope) {
-		return nil, errors.New("scope graphit.use is required")
-	}
-	for _, value := range values {
-		if value != localAPIScope {
-			return nil, errors.New("unsupported scope " + value)
-		}
-	}
-	return values, nil
+	return cleanStrings(strings.Fields(raw)), nil
 }
 
 func (s *Server) oauthDeviceAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +453,46 @@ func (s *Server) oauthTokenGateway(w http.ResponseWriter, r *http.Request) {
 		s.oauthDeviceToken(w, r)
 		return
 	}
+	resources := r.PostForm["resource"]
+	if len(resources) > 0 {
+		granted, found := s.tokenRequestGrantedResource(r)
+		if found {
+			if err := validateTokenRequestResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resources, granted); err != nil {
+				writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource was not granted")
+				return
+			}
+		} else if _, err := validateRequestedResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resources); err != nil {
+			writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource is not served by this broker")
+			return
+		}
+	}
 	s.oidcProvider.handler.ServeHTTP(w, r)
+}
+
+// tokenRequestGrantedResource resolves the resource bound to an authorization code or refresh
+// token without consuming it. An invalid grant remains the provider's responsibility, avoiding
+// a different error or an existence oracle at this gateway.
+func (s *Server) tokenRequestGrantedResource(r *http.Request) (string, bool) {
+	switch r.PostForm.Get("grant_type") {
+	case string(zitoidc.GrantTypeCode):
+		request, err := s.oidcProvider.storage.AuthRequestByCode(r.Context(), r.PostForm.Get("code"))
+		if err != nil {
+			return "", false
+		}
+		value, ok := request.(*brokerOIDCAuthRequest)
+		if !ok {
+			return "", false
+		}
+		return value.Resource, true
+	case string(zitoidc.GrantTypeRefreshToken):
+		grant, err := s.control.OIDCRefreshTokenGrant(r.Context(), r.PostForm.Get("refresh_token"))
+		if err != nil {
+			return "", false
+		}
+		return grant.Resource, true
+	default:
+		return "", false
+	}
 }
 
 func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +505,16 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	if parsed, err := url.Parse(redirectURI); err == nil && parsed.Port() == "0" {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
+	}
+	// RFC 8707: the library does not parse `resource`, so it is validated here against the
+	// operator's list and threaded to storage through the request context.
+	resources, err := validateRequestedResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resourceValues(r))
+	if err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource is not served by this broker")
+		return
+	}
+	if len(resources) > 0 {
+		r = r.WithContext(withRequestedResource(r.Context(), resources))
 	}
 	s.oidcProvider.handler.ServeHTTP(w, r)
 }

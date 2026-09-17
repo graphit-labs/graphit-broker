@@ -57,6 +57,21 @@ See [database backends](database.md).
 | `shutdown_timeout` | `15s` |
 | `max_request_bytes` | 4 MiB |
 
+`server.cors.allowed_origins` declares which browser origins may call the OAuth/OIDC endpoints:
+
+```yaml
+server:
+  cors:
+    allowed_origins: ["https://claude.ai"]
+```
+
+Empty is the default and emits no CORS headers at all, which is what the broker did before this
+setting existed. Only a browser-based MCP client needs it; an agent whose runtime connects
+server-side is unaffected. Credentials are deliberately not configurable, because OAuth here
+authenticates with the `Authorization` header rather than cookies — which also makes the invalid
+wildcard-with-credentials combination impossible to express. `WWW-Authenticate` is exposed so a
+browser client can read the challenge on a failed request.
+
 `public_url` is required when local or upstream browser authentication is enabled. It is the
 OpenID Provider issuer and must be an origin without a path, query, or fragment. HTTPS is required
 except for HTTP on `localhost` or a loopback IP such as `127.0.0.1` or `::1`. Private-network and
@@ -184,14 +199,53 @@ authentication:
       device_code_ttl: 10m
       device_poll_interval: 5s
       service_credential_max_ttl: 8760h
+      dynamic_registration: false
+      mcp_resources: []
 ```
+
+`mcp_resources` lists the canonical URIs of the Graphit MCP endpoints this deployment serves. It is
+the single source for two jobs. It validates an RFC 8707 `resource` indicator on an authorization
+request: an indicator outside the list, a relative URI, one carrying a fragment, or more than one in
+the same request is rejected with `invalid_target` and no authorization code is issued. It is also
+published in `/.well-known/graphit-broker`, which is how each Graphit daemon learns which resource it
+is and therefore what to advertise as its OAuth protected resource metadata. Empty means no indicator
+is accepted at all, so a deployment that never declares a resource cannot have tokens minted for an
+audience it never authorized. Configuration loading trims and deduplicates the list, and rejects an
+entry that is not an absolute URI or contains a fragment.
+
+When a request carries an accepted indicator, the issued token's `aud` holds both the Broker audience
+and that resource, and a refresh preserves the pair. Keeping the Broker audience is what lets the
+same token continue to work against the Broker's own `/v1/*` API, which the Graphit daemon relays to
+on the caller's behalf. The authorization-code and refresh-token requests may omit `resource`, in
+which case the original grant is preserved. If either request repeats it, the value must exactly
+match the single resource authorized earlier and must still be configured; another value or more
+than one value returns `invalid_target` without consuming the code or refresh token. The Broker
+deliberately allows one resource per grant even though RFC 8707 permits several, avoiding a bearer
+token that either resource could replay against the other.
+
+`dynamic_registration` opens RFC 7591 client registration at `POST /oauth/register` and advertises
+it as `registration_endpoint` in `/.well-known/openid-configuration`. It is `false` unless the
+deployment sets it, because enabling it lets anyone who can reach the Broker create a client. That is
+the deliberate trade for letting a hosted MCP agent connect without an operator provisioning it by
+hand: the agent discovers the Broker from the Graphit MCP endpoint, registers itself, and runs
+Authorization Code with PKCE.
+
+Registration only ever produces a **public** client, and the stored record has no secret column for
+one to live in. A request is rejected with `invalid_client_metadata` when it asks for a confidential
+`token_endpoint_auth_method`, a grant outside `authorization_code` and `refresh_token`, a response
+type other than `code`, a scope the Broker does not support, or a redirect URI that is neither HTTPS
+on a non-loopback host nor HTTP on loopback. Redirects carrying a fragment or embedded credentials
+are refused as well. An HTTPS callback registers a web client; a loopback callback registers a native
+one, which is what lets a desktop client vary its port. Registered clients get exactly the
+capabilities of the configured CLI client and never more.
 
 Desktop authorization is a standard public/native OIDC client and accepts only a loopback redirect
 with a nonzero dynamic port and the configured exact path. PKCE method `S256`, `state`, `nonce`,
-`openid`, and `graphit.use` are mandatory. ID and access tokens use EdDSA and the public JWKS. Access
-tokens are short-lived JWTs whose `aud` is `authentication.local.tokens.audience` and whose signed
-claims include `sub`, `client_id`, `scope`, `preferred_username`, and any non-empty optional identity
-attributes;
+and `openid` are mandatory; `openid` because OIDC Core requires it, and no product-specific scope
+beyond it, since a token's reach is decided by its audience. ID and access tokens use EdDSA and the public JWKS. Access
+tokens are short-lived JWTs whose `aud` always contains `authentication.local.tokens.audience` and,
+when requested, the validated MCP resource. Their signed claims include `sub`, `client_id`, `scope`,
+`preferred_username`, and any non-empty optional identity attributes;
 refresh tokens are issued only when `offline_access` is requested, rotate on every use, retain one
 absolute lifetime, and revoke their family when reuse is detected. Service credential expiration
 is mandatory and may not exceed `service_credential_max_ttl`.
@@ -216,7 +270,7 @@ The following requirements apply to enabled entries:
 | `display_name` | browser login | Login-button label, with at most 80 printable characters |
 | `issuer` | yes | Exact HTTPS issuer used for discovery and signature validation |
 | `audiences` | yes | At least one accepted broker audience |
-| `required_scopes` | no | Every listed scope must be present |
+| `required_scopes` | no | Every listed scope must be present in a token from this external issuer. Operator-defined and unrelated to the broker's own OpenID Provider, which requires no scope beyond `openid` |
 | `client_id` | browser login | Confidential client ID used by the authorization-code flow |
 | `client_secret` | no | Confidential client secret, normally injected from a secret manager |
 | `redirect_url` | browser login | Exact `/oauth/oidc/callback` URL; HTTP is allowed only on loopback |
@@ -279,7 +333,7 @@ authentication:
       display_name: Corporate SSO
       issuer: https://identity.example.com
       audiences: [graphit-broker]
-      required_scopes: [graphit.use]
+      required_scopes: []
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback

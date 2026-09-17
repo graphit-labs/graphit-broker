@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	digest := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 	redirectURI := "http://127.0.0.1:49152/oauth/callback"
-	code := authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "graphit.use offline_access")
+	code := authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "offline_access")
 
 	wrong := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
@@ -83,7 +84,7 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	}
 	_ = replay.Body.Close()
 
-	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "graphit.use offline_access")
+	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "offline_access")
 	wrongRedirect := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
 		"redirect_uri": {"http://127.0.0.1:49153/oauth/callback"}, "code_verifier": {verifier},
@@ -93,7 +94,7 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	}
 	_ = wrongRedirect.Body.Close()
 
-	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "graphit.use offline_access")
+	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "offline_access")
 	tokenResponse := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier},
@@ -168,7 +169,7 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	_ = reused.Body.Close()
 	assertBearerStatus(t, httpServer.URL+"/admin/api/v1/session", rotated.AccessToken, http.StatusUnauthorized)
 
-	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, localAPIScope)
+	code = authorizeLocalCLI(t, httpServer.URL, redirectURI, challenge, "profile")
 	revocableResponse := oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {"graphit-cli"}, "code": {code},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier},
@@ -229,7 +230,7 @@ func TestBrokerOIDCPageOffersConfiguredMethodsAndCompletesUpstreamOIDC(t *testin
 	redirectURI := "http://127.0.0.1:49152/oauth/callback"
 	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"},
-		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid profile email graphit.use offline_access"}}
+		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid profile email offline_access"}}
 
 	client := noRedirectClient()
 	start, err := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
@@ -420,7 +421,7 @@ func TestBrokerOIDCPageLetsUserChooseAmongMultipleProviders(t *testing.T) {
 	query := url.Values{
 		"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {"http://127.0.0.1:49152/oauth/callback"},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(digest[:])}, "code_challenge_method": {"S256"},
-		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid graphit.use"},
+		"state": {"graphit-state"}, "nonce": {"graphit-nonce"}, "scope": {"openid profile"},
 	}
 	client := noRedirectClient()
 	start, err := client.Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
@@ -470,10 +471,21 @@ func verifyBrokerAccessToken(t *testing.T, ctx context.Context, provider *coreoi
 	if err := verified.Claims(&claims); err != nil {
 		t.Fatalf("decode verified Broker access token claims: %v", err)
 	}
+	// The scope claim must be present and name openid, which OIDC Core requires. It is not
+	// checked for any product-specific scope: this provider offers only standard OIDC scopes,
+	// and a token's reach is decided by its audience.
 	scope, scopeOK := claims["scope"].(string)
 	if verified.Issuer == "" || verified.Subject == "" || verified.Expiry.Before(time.Now()) || claims["iat"] == nil || claims["jti"] == "" ||
-		claims["client_id"] != "graphit-cli" || claims["preferred_username"] != username || !scopeOK || !strings.Contains(scope, localAPIScope) {
+		claims["client_id"] != "graphit-cli" || claims["preferred_username"] != username || !scopeOK ||
+		!slices.Contains(strings.Fields(scope), "openid") {
 		t.Fatalf("incomplete Broker access token claims=%#v", claims)
+	}
+	// Every granted scope must be one this provider advertises, all of which are standard OIDC
+	// scopes. This is what keeps a product-specific scope from creeping back into issued tokens.
+	for _, granted := range strings.Fields(scope) {
+		if !slices.Contains(brokerOIDCScopes, granted) {
+			t.Fatalf("token carries scope %q, which this provider does not offer: %#v", granted, claims)
+		}
 	}
 	if organization == "" {
 		if _, exists := claims["organization"]; exists {
@@ -503,7 +515,7 @@ func verifyBrokerAccessToken(t *testing.T, ctx context.Context, provider *coreoi
 func signedBrokerAccessToken(t *testing.T, service *Server, issuer, audience string, expiry time.Time) string {
 	t.Helper()
 	claims := zitoidc.NewAccessTokenClaims(issuer, "gb_sub_test", []string{audience}, expiry, "test-jti", "graphit-cli", 0)
-	claims.Scopes = zitoidc.SpaceDelimitedArray{localAPIScope}
+	claims.Scopes = zitoidc.SpaceDelimitedArray{testFixtureScope}
 	signer, err := op.SignerFromKey(service.oidcProvider.storage.signingKey)
 	if err != nil {
 		t.Fatal(err)
@@ -578,7 +590,7 @@ func TestDeviceAuthorizationRequiresApprovalAndIsOneTime(t *testing.T) {
 	defer service.Close()
 	defer httpServer.Close()
 
-	response := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {localAPIScope}})
+	response := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {testFixtureScope}})
 	var device struct {
 		DeviceCode string `json:"device_code"`
 		UserCode   string `json:"user_code"`
@@ -645,7 +657,7 @@ func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 	redirectURI := "http://127.0.0.1:49152/oauth/callback"
 	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"mfa-state"}, "nonce": {"mfa-nonce"}, "scope": {"openid profile " + localAPIScope}}
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"mfa-state"}, "nonce": {"mfa-nonce"}, "scope": {"openid profile " + testFixtureScope}}
 	client := noRedirectClient()
 	loginURL := startOIDCLogin(t, client, httpServer.URL, query)
 	started := oauthFormWithClient(t, client, loginURL, url.Values{"username": {"consumer"}, "password": {"consumer-secret"}})
@@ -681,7 +693,7 @@ func TestOAuthAndDeviceDoNotCompleteBeforeRequiredMFA(t *testing.T) {
 		t.Fatalf("recovery code missing after enrollment: %s", confirmedBody)
 	}
 
-	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {localAPIScope}})
+	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {testFixtureScope}})
 	var device struct {
 		DeviceCode string `json:"device_code"`
 		UserCode   string `json:"user_code"`
@@ -724,7 +736,7 @@ func TestOAuthLocalLoginRendersAndAcceptsBothAdaptiveCaptchaProviders(t *testing
 			challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 			redirectURI := "http://127.0.0.1:49152/oauth/callback"
 			query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-				"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"captcha-state"}, "nonce": {"captcha-nonce"}, "scope": {"openid " + localAPIScope}}
+				"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"captcha-state"}, "nonce": {"captcha-nonce"}, "scope": {"openid " + testFixtureScope}}
 			client := noRedirectClient()
 			loginURL := startOIDCLogin(t, client, httpServer.URL, query)
 
@@ -773,7 +785,7 @@ func TestDeviceLocalLoginUsesDeviceCaptchaAction(t *testing.T) {
 	state.localPasswords.captcha = &stubLocalCaptchaVerifier{provider: localCaptchaProviderTurnstile, valid: "valid-proof"}
 	state.localPasswords.captchaThreshold = 1
 
-	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {localAPIScope}})
+	deviceResponse := oauthForm(t, httpServer.URL+"/oauth/device/authorize", url.Values{"client_id": {"graphit-cli"}, "scope": {testFixtureScope}})
 	var device struct {
 		UserCode string `json:"user_code"`
 	}
@@ -805,6 +817,16 @@ func TestServiceCredentialIsShownOnceRevocableAndRevisionBound(t *testing.T) {
 		t.Fatalf("service identity create status=%d", created.StatusCode)
 	}
 	_ = created.Body.Close()
+	// No scope is required of a service credential. The broker records what was asked for and
+	// authorizes the credential by its audience and by RBAC, so an arbitrary scope list is
+	// accepted rather than being forced to name a product-specific value.
+	arbitraryScope := bearerRequest(t, http.MethodPost, httpServer.URL+"/admin/api/v1/local-users/buildbot/credentials", "root-token", `{"scopes":["example.scope"]}`)
+	arbitraryScopeBody, _ := io.ReadAll(arbitraryScope.Body)
+	_ = arbitraryScope.Body.Close()
+	if arbitraryScope.StatusCode != http.StatusCreated {
+		t.Fatalf("service credential with an arbitrary scope was refused: status=%d body=%s", arbitraryScope.StatusCode, arbitraryScopeBody)
+	}
+
 	credential := bearerRequest(t, http.MethodPost, httpServer.URL+"/admin/api/v1/local-users/buildbot/credentials", "root-token", `{}`)
 	var issued struct {
 		ID    string `json:"id"`
@@ -875,7 +897,7 @@ func TestLocalAuthorizationRejectsNonLoopbackOrInvalidPort(t *testing.T) {
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
 	for _, redirectURI := range []string{"http://127.0.0.1:0/oauth/callback", "http://127.0.0.1:49152/other", "https://example.com/oauth/callback"} {
 		query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
-			"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "nonce": {"client-nonce"}, "scope": {"openid " + localAPIScope}}
+			"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "nonce": {"client-nonce"}, "scope": {"openid " + testFixtureScope}}
 		response, err := noRedirectClient().Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
 		if err != nil {
 			t.Fatal(err)
@@ -909,24 +931,24 @@ func TestLocalAccessTokenEnforcesAudienceScopeExpiryAndUserRevision(t *testing.T
 	}
 	user, _ := store.LocalUserByUsername(context.Background(), "alice")
 	grant := LocalTokenGrant{Subject: user.Subject, LocalUserRevision: user.Revision, ClientID: "graphit-cli", Audience: "graphit-broker",
-		Scopes: []string{localAPIScope}, FamilyID: "family-a", ExpiresAt: time.Now().Add(time.Minute)}
+		Scopes: []string{testFixtureScope}, FamilyID: "family-a", ExpiresAt: time.Now().Add(time.Minute)}
 	if err := store.SaveTokenPair(context.Background(), localAccessTokenPrefix+"valid", "token-a", "", "", grant); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "wrong-audience", []string{localAPIScope}); err == nil {
+	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "wrong-audience", []string{testFixtureScope}); err == nil {
 		t.Fatal("local access token accepted for the wrong audience")
 	}
 	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "graphit-broker", []string{"missing.scope"}); err == nil {
 		t.Fatal("local access token accepted without a required scope")
 	}
-	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "graphit-broker", []string{localAPIScope}); err != nil {
+	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "graphit-broker", []string{testFixtureScope}); err != nil {
 		t.Fatalf("valid local access token failed: %v", err)
 	}
 	user.Name = "Updated"
 	if err := store.UpdateLocalUser(context.Background(), "alice", user); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "graphit-broker", []string{localAPIScope}); err == nil {
+	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"valid", "graphit-broker", []string{testFixtureScope}); err == nil {
 		t.Fatal("local access token survived an identity revision change")
 	}
 	expired := grant
@@ -935,18 +957,25 @@ func TestLocalAccessTokenEnforcesAudienceScopeExpiryAndUserRevision(t *testing.T
 	if err := store.SaveTokenPair(context.Background(), localAccessTokenPrefix+"expired", "token-expired", "", "", expired); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"expired", "graphit-broker", []string{localAPIScope}); err == nil {
+	if _, err := store.AuthenticateLocalToken(context.Background(), localAccessTokenPrefix+"expired", "graphit-broker", []string{testFixtureScope}); err == nil {
 		t.Fatal("expired local access token authenticated")
 	}
 }
 
 func authorizeLocalCLI(t *testing.T, baseURL, redirectURI, challenge, scope string) string {
+	return authorizeLocalClient(t, baseURL, "graphit-cli", redirectURI, challenge, scope, "")
+}
+
+func authorizeLocalClient(t *testing.T, baseURL, clientID, redirectURI, challenge, scope, resource string) string {
 	t.Helper()
 	if !strings.Contains(scope, "openid") {
 		scope = "openid profile email " + scope
 	}
-	query := url.Values{"response_type": {"code"}, "client_id": {"graphit-cli"}, "redirect_uri": {redirectURI},
+	query := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirectURI},
 		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "state": {"client-state"}, "nonce": {"client-nonce"}, "scope": {scope}}
+	if resource != "" {
+		query.Set("resource", resource)
+	}
 	client := noRedirectClient()
 	start, err := client.Get(baseURL + "/oauth/authorize?" + query.Encode())
 	if err != nil || start.StatusCode != http.StatusFound {

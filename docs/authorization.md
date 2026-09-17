@@ -10,7 +10,7 @@ Hub resolution, S3 credential issuance, embedding, or rerank request.
 The broker derives the principal from exactly one source:
 
 - no `Authorization` header: anonymous principal;
-- a local access or service token: its domain-separated HMAC, audience, `graphit.use` scope,
+- a local access or service token: its domain-separated HMAC, audience,
   expiry/revocation state, and owning SQL identity revision are validated before current
   subject/username/organization/teams are loaded;
 - an OIDC bearer: signature, issuer, audience, expiry, required scopes, and configured exact-key or
