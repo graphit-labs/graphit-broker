@@ -1,4 +1,27 @@
-# Graphit Broker
+<p align="center">
+  <img src="docs/assets/logo.svg" width="72" height="72" alt="Graphit Labs">
+</p>
+
+<h1 align="center">Graphit Broker</h1>
+
+<p align="center"><strong>The identity, authorization, AI, and storage gateway for Graphit.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/graphit-labs/graphit-broker/releases/latest"><img src="https://img.shields.io/github/v/release/graphit-labs/graphit-broker?style=flat-square&color=b9fb63&labelColor=101311" alt="Latest release"></a>
+  <a href="https://github.com/graphit-labs/graphit-broker/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/graphit-labs/graphit-broker/release.yml?style=flat-square&labelColor=101311" alt="Build status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/graphit-labs/graphit-broker?style=flat-square&labelColor=101311" alt="MIT license"></a>
+  <a href="https://github.com/sponsors/lainosantos"><img src="https://img.shields.io/badge/Sponsor-Graphit-db61a2?style=flat-square&logo=github-sponsors&labelColor=101311" alt="Sponsor Graphit"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start-with-docker">Quick start</a> ·
+  <a href="docs/binary.md">Install</a> ·
+  <a href="docs/configuration.md">Configure</a> ·
+  <a href="docs/api.md">HTTP API</a> ·
+  <a href="docs/security.md">Security</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="https://github.com/graphit-labs/graphit-code">Graphit Code</a>
+</p>
 
 Graphit Broker is the server-side identity, authorization, AI, and storage gateway for
 Graphit. It validates end-user OIDC tokens, short-lived local access tokens, or revocable service
