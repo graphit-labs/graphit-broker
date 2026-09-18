@@ -156,6 +156,16 @@ The access key, secret, and session token are temporary and must be treated as s
 route credentials and the generated policy are never returned. `scope` and `project_id` let the
 client reject a response that does not match its request.
 
+A route configured with the `filesystem` driver answers this same contract, with `endpoint`
+pointing at the broker itself. The broker then mints the credentials and serves the objects from a
+local volume at `<endpoint>/<bucket>/<key>` in path style with Signature Version 4: `GET`, `HEAD`,
+`PUT`, `COPY`, and `DELETE` on an object, `ListObjectsV2`, batch delete, and multipart upload,
+with ranged reads and the `If-Match`/`If-None-Match` conditional writes. Versioning, bucket
+management, cross-bucket copy, and `UploadPartCopy` return `NotImplemented`. A request is authorized against the prefixes its own session carries, so
+a project session reaching outside its prefixes gets `AccessDenied` exactly as the STS policy
+would refuse it. The session carries that authorization itself, signed and never stored, so it
+expires rather than being revoked — the same bound an STS session has. See [configuration](configuration.md#the-filesystem-driver).
+
 ## Administration API
 
 Administration accepts a secure session cookie created by OIDC or by validating an existing

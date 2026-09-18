@@ -809,3 +809,62 @@ func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
 		t.Fatal("redaction mutated runtime secrets")
 	}
 }
+
+func TestConfigAcceptsFilesystemStorageRouteAndRejectsSTSSettingsOnIt(t *testing.T) {
+	directory := t.TempDir()
+	input := `
+server:
+  public_url: https://broker.example.com
+authentication:
+  token_pepper: a-token-pepper-of-sufficient-length-for-the-broker
+services:
+  s3:
+    enabled: true
+    default_route: local
+    routes:
+      local:
+        driver: filesystem
+        bucket: graphit-artifacts
+        base_prefix: graphit
+        directory: ` + directory + `
+`
+	cfg, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("DecodeConfig error=%v", err)
+	}
+	route := cfg.Services.S3.Routes["local"]
+	// An unset endpoint is this broker's own origin, because it serves the bucket itself.
+	if route.Endpoint != "https://broker.example.com" || route.SessionDuration != time.Hour ||
+		route.MaxObjectBytes != defaultFilesystemMaxObjectBytes || route.Region != "us-east-1" {
+		t.Fatalf("route defaults=%#v", route)
+	}
+	if route.STSDuration != 0 || route.STSSessionName != "" {
+		t.Fatalf("the filesystem route was given STS defaults: %#v", route)
+	}
+
+	for name, broken := range map[string]string{
+		"missing directory":   strings.Replace(input, "        directory: "+directory+"\n", "", 1),
+		"STS credentials":     input + "        access_key_id: key\n",
+		"STS duration":        input + "        sts_duration: 1h\n",
+		"reserved bucket":     strings.Replace(input, "bucket: graphit-artifacts", "bucket: admin", 1),
+		"unsafe bucket":       strings.Replace(input, "bucket: graphit-artifacts", "bucket: Graphit_Artifacts", 1),
+		"no public endpoint":  strings.Replace(input, "  public_url: https://broker.example.com\n", "", 1),
+		"short token pepper":  strings.Replace(input, "a-token-pepper-of-sufficient-length-for-the-broker", "short", 1),
+		"session too short":   input + "        session_duration: 1m\n",
+		"unknown object size": input + "        max_object_bytes: -1\n",
+	} {
+		if _, err := decodeConfigForTest(strings.NewReader(broken), func(string) string { return "" }); err == nil {
+			t.Fatalf("a filesystem route with %s was accepted", name)
+		}
+	}
+
+	duplicate := strings.Replace(input, "    default_route: local", "    default_route: local", 1) + `      second:
+        driver: filesystem
+        bucket: graphit-artifacts
+        base_prefix: other
+        directory: ` + directory + `
+`
+	if _, err := decodeConfigForTest(strings.NewReader(duplicate), func(string) string { return "" }); err == nil {
+		t.Fatal("two filesystem routes served the same bucket")
+	}
+}

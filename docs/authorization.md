@@ -102,6 +102,14 @@ LanceDB, and Ladybug directly. It never exposes the broker's permanent signing c
 call relays the latest authorization revision and mints a new session. Already issued credentials
 retain their bounded session policy until their short expiry or storage-side revocation.
 
+A route using the `filesystem` driver resolves grants identically and enforces the same table
+itself, because the broker is the storage. The session it mints carries the rendered prefixes, and
+every gateway request is checked against them: a read needs `read`, `write`, or `publish` on the
+key; a write needs `write` or `publish`; a delete needs `publish` or `delete`; and a listing is
+refused unless its requested prefix lies within a granted one, which is what the STS policy
+expresses as a condition on `s3:prefix`. There is no inline-policy size limit on that driver, and a
+session expires rather than being revocable, exactly as an STS session does.
+
 ### Internal and publication storage
 
 A team that reads and updates internal project data can receive:

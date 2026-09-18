@@ -19,6 +19,12 @@ STS. After authenticating Graphit, it selects the route from current grants for 
 bucket, region, endpoint, root prefix, and short-lived STS credentials. Graphit renews them before
 expiry and accesses S3 directly; anonymous callers never receive storage credentials.
 
+A deployment without an object store can instead give a route the `filesystem` driver: the broker
+keeps Hub objects on a mounted volume and serves them itself over an S3-compatible, Signature
+Version 4 endpoint that the AWS SDK and the query engine's `httpfs` extension read unchanged,
+still returning per-project credentials from the same endpoint. See
+[configuration](docs/configuration.md#the-filesystem-driver).
+
 For HTTP MCP, Graphit validates the end user's OIDC bearer and preserves it for every broker call.
 The default direct-relay mode uses one shared MCP/broker audience. If the IdP supports RFC 8693,
 Graphit may instead exchange the MCP token for a short-lived broker-audience token. The broker

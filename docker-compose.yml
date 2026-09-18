@@ -17,6 +17,9 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - broker-global:/home/graphit/.graphit/broker
+      # Hub objects for a storage route using the filesystem driver, at the directory
+      # config.example.yaml names. Unused by an STS-only deployment; back it up like a bucket.
+      - broker-hub:/var/lib/graphit/hub
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -27,3 +30,4 @@ services:
 
 volumes:
   broker-global:
+  broker-hub:

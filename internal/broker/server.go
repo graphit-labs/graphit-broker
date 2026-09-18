@@ -25,6 +25,7 @@ type runtimeState struct {
 	acl            *ACL
 	ai             *AIService
 	s3Credentials  S3CredentialService
+	storage        *storageGateway
 	browserOIDC    []browserOIDCProvider
 }
 
@@ -100,8 +101,14 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 		}
 	}
 	var s3Credentials S3CredentialService
+	var storage *storageGateway
 	if cfg.Services.S3.Enabled {
-		s3Credentials = NewAWSSTSCredentialService()
+		filesystem := NewFilesystemCredentialService(cfg.Authentication.TokenPepper)
+		s3Credentials = routedS3CredentialService{sts: NewAWSSTSCredentialService(), filesystem: filesystem}
+		storage, err = newStorageGateway(cfg, filesystem)
+		if err != nil {
+			return nil, err
+		}
 	}
 	browserProviders := make([]browserOIDCProvider, 0)
 	for _, loginConfig := range browserLoginOIDCConfigs(cfg.Authentication.OIDC) {
@@ -124,7 +131,7 @@ func buildRuntime(ctx context.Context, cfg Config, factory func(context.Context,
 	}
 	cfg.Services = ai.EffectiveServices()
 	return &runtimeState{config: cfg, authenticator: authenticator, localPasswords: localPasswords, localAuth: localAuth,
-		acl: NewACL(grants), ai: ai, s3Credentials: s3Credentials, browserOIDC: browserProviders}, nil
+		acl: NewACL(grants), ai: ai, s3Credentials: s3Credentials, storage: storage, browserOIDC: browserProviders}, nil
 }
 
 func browserLoginOIDCConfigs(configs []OIDCIssuerConfig) []OIDCIssuerConfig {
@@ -205,6 +212,9 @@ func newServerFromRuntime(runtime *runtimeState, control *ControlStore) (*Server
 	mux.Handle("POST /v1/rerank", s.resolvePrincipal(http.HandlerFunc(s.rerank)))
 	mux.Handle("POST /v1/s3/credentials", s.resolvePrincipal(http.HandlerFunc(s.s3CredentialGrant)))
 	mux.Handle("POST /v1/hub/access/resolve", s.resolvePrincipal(http.HandlerFunc(s.hubAccessResolve)))
+	if runtime.storage != nil {
+		runtime.storage.register(mux)
+	}
 	if runtime.config.Administration.Enabled {
 		mux.HandleFunc("GET /admin", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/", http.StatusPermanentRedirect)

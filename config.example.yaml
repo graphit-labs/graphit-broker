@@ -183,9 +183,13 @@ services:
 
   s3:
     enabled: true
+    # Each route picks a driver: "s3" reaches an external S3 service and mints credentials
+    # through STS, while "filesystem" keeps the objects on a volume this broker serves itself.
+    # Clients see the same contract either way.
     default_route: "primary"
     routes:
       primary:
+        driver: "s3"
         region: "us-east-1"
         endpoint: ""
         bucket: "graphit-artifacts"
@@ -199,6 +203,7 @@ services:
         sts_duration: 1h
       public:
         # Each named route owns its complete topology and direct signing credential.
+        driver: "s3"
         region: "us-east-1"
         endpoint: "https://minio.example.com"
         bucket: "graphit-public"
@@ -209,3 +214,16 @@ services:
         sts_endpoint: "https://minio.example.com"
         sts_session_name: "graphit-broker"
         sts_duration: 1h
+      # A deployment with no object store: the broker keeps Hub objects on a mounted volume and
+      # serves them at https://<public_url>/<bucket>/<key> with Signature Version 4, so the
+      # engine's httpfs extension and the AWS SDK reach them exactly as they reach a bucket.
+      # Select it by making it the default_route or by naming it in a resource grant.
+      local:
+        driver: "filesystem"
+        region: "us-east-1"
+        bucket: "graphit-local" # Also the URL path segment; must not shadow a broker route.
+        base_prefix: "graphit"
+        directory: "/var/lib/graphit/hub" # Mount a volume here and back it up.
+        endpoint: "" # Defaults to server.public_url, which is where clients reach the gateway.
+        session_duration: 1h
+        max_object_bytes: 5368709120

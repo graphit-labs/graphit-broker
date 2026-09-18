@@ -34,6 +34,20 @@ type S3CredentialService interface {
 	Issue(context.Context, S3RouteConfig, S3SessionGrant, Principal) (S3CredentialsResponse, error)
 }
 
+// routedS3CredentialService sends each request to the service that owns the route's driver, so
+// one deployment can keep some projects on an external bucket and others on a local volume.
+type routedS3CredentialService struct {
+	sts        S3CredentialService
+	filesystem S3CredentialService
+}
+
+func (s routedS3CredentialService) Issue(ctx context.Context, route S3RouteConfig, grant S3SessionGrant, principal Principal) (S3CredentialsResponse, error) {
+	if route.isFilesystem() {
+		return s.filesystem.Issue(ctx, route, grant, principal)
+	}
+	return s.sts.Issue(ctx, route, grant, principal)
+}
+
 type assumeRoleAPI interface {
 	AssumeRole(context.Context, *sts.AssumeRoleInput, ...func(*sts.Options)) (*sts.AssumeRoleOutput, error)
 }

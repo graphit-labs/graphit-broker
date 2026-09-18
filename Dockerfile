@@ -7,7 +7,9 @@ RUN apt-get update \
     && useradd --uid 10001 --gid graphit --home-dir /home/graphit --create-home --shell /usr/sbin/nologin graphit \
     && install -d -o graphit -g graphit -m 0700 \
         /home/graphit/.graphit \
-        /home/graphit/.graphit/broker
+        /home/graphit/.graphit/broker \
+        /var/lib/graphit \
+        /var/lib/graphit/hub
 
 COPY --chown=graphit:graphit --chmod=0755 graphit-broker /usr/local/bin/graphit-broker
 COPY --chown=graphit:graphit --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -19,7 +21,9 @@ ENV GRAPHIT_GLOBAL_DIR=/home/graphit/.graphit \
 WORKDIR /home/graphit/.graphit/broker
 USER graphit:graphit
 EXPOSE 8080
-VOLUME ["/home/graphit/.graphit/broker"]
+# The second volume holds Hub objects when a storage route uses the filesystem driver. It stays
+# empty otherwise, and its ownership is what lets a named volume be writable by graphit.
+VOLUME ["/home/graphit/.graphit/broker", "/var/lib/graphit/hub"]
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD /usr/local/bin/graphit-broker --healthcheck "$GRAPHIT_BROKER_HEALTHCHECK_URL"
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

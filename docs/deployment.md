@@ -152,6 +152,15 @@ and `GRAPHIT_BROKER_HEALTHCHECK_URL` can override the default readiness probe at
 provider libraries but load them only when CUDA is selected. macOS embeds CoreML in its main ONNX
 dylib.
 
+A storage route using the `filesystem` driver keeps Hub objects on a second volume, mounted by
+Compose at `/var/lib/graphit/hub`, which is the directory `config.example.yaml` names. It holds
+project artifacts rather than broker state, so size it like a bucket and back it up on its own
+schedule. The directory is owned by UID 10001 in the image, which is what makes a fresh named
+volume writable; another path must be writable by that UID too. Conditional writes are serialized
+inside one broker process, so exactly one broker may own that volume: a deployment that needs more
+than one replica uses the `s3` driver against a real object store. See
+[configuration](configuration.md#the-filesystem-driver).
+
 ## OIDC
 
 The Broker has two distinct OIDC roles that share one deployment configuration:
@@ -205,6 +214,7 @@ independent SQL transactions and apply on the next consumer operation.
 
 Use a Deployment with a Secret-backed environment, read-only ConfigMap mount, non-root security
 context, readiness/liveness HTTP probes, NetworkPolicies, and PostgreSQL/MySQL for multiple
-replicas. SQLite should instead use one replica and a ReadWriteOnce persistent volume. Protect
+replicas. SQLite, and a storage route using the `filesystem` driver, should instead use one replica
+and a ReadWriteOnce persistent volume. Protect
 `/admin/` at the same TLS boundary as the consumer API; do not rely on an ingress login page as a
 replacement for the broker's own OIDC/RBAC.

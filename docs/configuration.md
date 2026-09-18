@@ -539,7 +539,14 @@ Repeated failed probes use delays of 2, 4, 8, and at most 10 minutes. The accele
 again only after the complete probe inference succeeds. All explicit modes (`cpu`, `cuda`, and
 `coreml`) remain strict at runtime and never switch providers automatically.
 
-## S3 STS credentials
+## Storage credentials
+
+Each storage route selects a `driver`. `s3` (the default) reaches an external S3 service and mints
+credentials for it through STS. `filesystem` keeps the objects on a volume this broker serves
+itself. Both answer the same `POST /v1/s3/credentials` contract, so a client never learns which one
+a project uses.
+
+### The `s3` driver
 
 ```yaml
 services:
@@ -548,6 +555,7 @@ services:
     default_route: primary
     routes:
       primary:
+        driver: s3
         region: us-east-1
         endpoint: ""
         bucket: graphit-artifacts
@@ -602,5 +610,102 @@ authorization](authorization.md#how-s3-grants-become-an-sts-policy) for the exac
 Grant route names are validated when a grant is created or updated. Removing a route that an
 existing grant uses makes that grant unusable until corrected; plan route changes together with
 grant changes.
+
+### The `filesystem` driver
+
+```yaml
+server:
+  public_url: https://broker.example.com
+authentication:
+  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?required}"
+services:
+  s3:
+    enabled: true
+    default_route: local
+    routes:
+      local:
+        driver: filesystem
+        region: us-east-1
+        bucket: graphit-local
+        base_prefix: graphit
+        directory: /var/lib/graphit/hub
+        endpoint: ""
+        session_duration: 1h
+        max_object_bytes: 5368709120
+```
+
+The broker stores the objects under `directory` and serves them from its own address at
+`https://<endpoint>/<bucket>/<key>` in path style with Signature Version 4. Graphit clients need
+no new code: the AWS SDK reaches it with the returned credentials, and the query engine reads
+`s3://` URIs through its `httpfs` extension against the same endpoint, including ranged reads of
+a large artifact. Objects live under `directory/data`, their ETags and content types under
+`directory/meta`, and uploads are staged in `directory/tmp` before an atomic rename, so a
+listing only ever reports complete objects.
+
+`directory` is required and is created at startup with owner-only permissions; mount a volume
+there and back it up like a bucket. `bucket` becomes the first path segment of every object URL,
+so it must be a valid S3 bucket name and must not shadow a broker path such as `admin`, `v1`,
+`oauth`, or `.well-known`; two filesystem routes cannot share one bucket. `endpoint` defaults to
+`server.public_url` and is what clients are told to call, so a deployment behind another host name
+sets it explicitly. `session_duration` defaults to one hour with the same 15 minute to 12 hour
+bounds as `sts_duration`. `max_object_bytes` caps a single upload and defaults to 5 GiB.
+`access_key_id`, `secret_access_key`, and the `sts_*` settings have no meaning for this driver and
+are rejected on it, as `directory`, `session_duration`, and `max_object_bytes` are rejected on an
+`s3` route.
+
+Credentials for this driver are minted by the broker itself. They are self-contained: the session
+token carries the authorization snapshot and is authenticated with a key derived from
+`authentication.token_pepper`, which is therefore required, and the secret key is derived from
+that token. Nothing about a session is stored, so a restart or a second broker process holding the
+same pepper keeps verifying it, and a session simply expires like an STS one. Rotating the pepper
+invalidates every live storage session, along with browser sessions and local tokens.
+
+The gateway serves the operations Graphit's storage clients issue: `GET`, `HEAD`, `PUT`, `COPY`,
+and `DELETE` on an object, `ListObjectsV2`, batch delete, and multipart upload
+(`CreateMultipartUpload`, `UploadPart`, `ListParts`, `CompleteMultipartUpload`,
+`AbortMultipartUpload`). Ranged reads, `If-Match`, and `If-None-Match` work, which is what makes
+the Hub's compare-and-swap writes safe, and multipart is what lets LanceDB write a dataset here:
+it starts one for every data file past 5 MiB. A part is verified against the ETag this gateway
+issued for it, so a completion quoting a wrong or missing part fails rather than assembling a
+corrupt object.
+
+Completing an upload releases its parts at once: they are removed as soon as the assembled object
+is committed, so the volume holds both copies only for the length of that assembly. A completion
+that is refused — a conditional write that lost its race, say — keeps the parts instead, because
+the client retries the completion rather than re-sending gigabytes.
+
+An upload nobody completes or aborts holds its parts on the volume, so it is discarded once a day
+passes with nothing written to it. That collection runs when the broker starts and whenever an
+upload begins, not on a timer: an upload's directory is touched by every part it receives, so one
+still being written is never old enough to collect, and a broker restarted mid-upload leaves it
+resumable while sweeping what is genuinely abandoned. Half-written staging files, which no client
+can resume, are removed outright at startup. Real S3 keeps an incomplete multipart upload until a
+bucket lifecycle rule removes it; this driver needs no such rule.
+
+Versioning, bucket management, cross-bucket copy, and `UploadPartCopy` are not served, and no
+Graphit client asks for them. Driving every LanceDB operation this project performs — append,
+upsert, merge, delete, snapshot, index build, search, compaction, time travel, restore, version
+pruning, drop, and shallow clone — against this gateway issues only `GetObject` (whole and
+ranged), `HeadObject`, `PutObject`, `ListObjectsV2` (with and without a delimiter), batch delete,
+and the four multipart calls. The query engine reads `s3://` through its `httpfs` extension and
+issues only `HEAD` and ranged `GET`.
+
+The gateway is the broker's own code rather than an embedded object store, which is why it serves
+only that. A read is a signature verification and a file read, so a full-object download runs at
+disk and page-cache speed, and ranged reads are served concurrently with per-request overhead in
+the tens of microseconds. A write costs an `fsync` before the atomic rename, which is what makes a
+committed object durable, so writing many small objects is bound by that rather than by the
+gateway, and a multipart upload pays it once per part plus one pass to assemble them. A listing
+reads one metadata sidecar per reported key and walks only the directories the prefix can contain,
+so it scales with the page rather than the bucket. `httpfs` sends a `HEAD` before each read unless
+its remote cache is enabled, so a deployment reached over a network wants that cache on.
+`go test ./internal/broker -bench BenchmarkStorage` measures all of it on the deployment's own
+hardware. A deployment whose Hub traffic outgrows one machine wants a real object store behind the
+`s3` driver, not a larger volume.
+
+Conditional writes are serialized inside one process and land through an atomic rename, so
+exactly one broker process may own a directory: do not point two brokers or two replicas at the
+same volume, and prefer the `s3` driver with a real object store when a deployment needs more than
+one broker.
 
 See the complete [config.example.yaml](../config.example.yaml).

@@ -226,7 +226,11 @@ type S3ServiceConfig struct {
 	Routes       map[string]S3RouteConfig `yaml:"routes"`
 }
 
+// S3RouteConfig is one complete storage topology. Its driver decides where the bytes live and
+// who mints the temporary credentials: an external S3 service reached through STS, or this
+// broker's own filesystem gateway. Both drivers answer the same client contract.
 type S3RouteConfig struct {
+	Driver          string        `yaml:"driver"`
 	Region          string        `yaml:"region"`
 	Endpoint        string        `yaml:"endpoint"`
 	Bucket          string        `yaml:"bucket"`
@@ -237,6 +241,26 @@ type S3RouteConfig struct {
 	STSRoleARN      string        `yaml:"sts_role_arn"`
 	STSSessionName  string        `yaml:"sts_session_name"`
 	STSDuration     time.Duration `yaml:"sts_duration"`
+	// Directory, SessionDuration, and MaxObjectBytes configure the filesystem driver only.
+	Directory       string        `yaml:"directory"`
+	SessionDuration time.Duration `yaml:"session_duration"`
+	MaxObjectBytes  int64         `yaml:"max_object_bytes"`
+}
+
+const (
+	storageDriverS3         = "s3"
+	storageDriverFilesystem = "filesystem"
+)
+
+func (r S3RouteConfig) isFilesystem() bool { return r.Driver == storageDriverFilesystem }
+
+// CredentialLifetime is how long one minted storage session stays valid, whichever driver
+// mints it.
+func (r S3RouteConfig) CredentialLifetime() time.Duration {
+	if r.isFilesystem() {
+		return r.SessionDuration
+	}
+	return r.STSDuration
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -409,17 +433,32 @@ func (c *Config) defaults() {
 		}
 	}
 	for name, route := range c.Services.S3.Routes {
+		route.Driver = strings.ToLower(strings.TrimSpace(route.Driver))
+		if route.Driver == "" {
+			route.Driver = storageDriverS3
+		}
 		if route.Region == "" {
 			route.Region = "us-east-1"
 		}
-		c.Services.S3.Routes[name] = route
-	}
-	for name, route := range c.Services.S3.Routes {
-		if route.STSSessionName == "" {
-			route.STSSessionName = "graphit-broker"
-		}
-		if route.STSDuration == 0 {
-			route.STSDuration = time.Hour
+		if route.isFilesystem() {
+			// The filesystem gateway is served by this broker, so its own public origin is
+			// the storage endpoint unless the deployment fronts it with another name.
+			if strings.TrimSpace(route.Endpoint) == "" {
+				route.Endpoint = strings.TrimRight(strings.TrimSpace(c.Server.PublicURL), "/")
+			}
+			if route.SessionDuration == 0 {
+				route.SessionDuration = time.Hour
+			}
+			if route.MaxObjectBytes == 0 {
+				route.MaxObjectBytes = defaultFilesystemMaxObjectBytes
+			}
+		} else {
+			if route.STSSessionName == "" {
+				route.STSSessionName = "graphit-broker"
+			}
+			if route.STSDuration == 0 {
+				route.STSDuration = time.Hour
+			}
 		}
 		c.Services.S3.Routes[name] = route
 	}
@@ -445,6 +484,17 @@ func (c *Config) expandUserPaths() error {
 				return fmt.Errorf("expand ONNX model directory: %w", err)
 			}
 		}
+	}
+	for name, route := range c.Services.S3.Routes {
+		if !route.isFilesystem() || strings.TrimSpace(route.Directory) == "" {
+			continue
+		}
+		route.Directory, err = expandUserPath(route.Directory)
+		if err != nil {
+			return fmt.Errorf("expand services.s3.routes.%s.directory: %w", name, err)
+		}
+		route.Directory = absolutePathFromStart(route.Directory)
+		c.Services.S3.Routes[name] = route
 	}
 	return nil
 }
@@ -790,12 +840,16 @@ func (c Config) Validate() error {
 		if _, ok := c.Services.S3.Routes[c.Services.S3.DefaultRoute]; !ok {
 			return errors.New("services.s3.default_route must name a configured route")
 		}
+		filesystemBuckets := map[string]string{}
 		for name, route := range c.Services.S3.Routes {
 			if !safeSegment(name) {
 				return fmt.Errorf("services.s3.routes contains unsafe route name %q", name)
 			}
-			if route.Bucket == "" || strings.Trim(route.BasePrefix, "/") == "" || route.AccessKeyID == "" || route.SecretAccessKey == "" || route.STSRoleARN == "" {
-				return fmt.Errorf("services.s3.routes.%s needs bucket, base_prefix, access_key_id, secret_access_key, and sts_role_arn", name)
+			if route.Driver != storageDriverS3 && route.Driver != storageDriverFilesystem {
+				return fmt.Errorf("services.s3.routes.%s.driver must be %q or %q", name, storageDriverS3, storageDriverFilesystem)
+			}
+			if route.Bucket == "" || strings.Trim(route.BasePrefix, "/") == "" {
+				return fmt.Errorf("services.s3.routes.%s needs bucket and base_prefix", name)
 			}
 			for _, segment := range strings.Split(strings.Trim(route.BasePrefix, "/"), "/") {
 				if !safeSegment(segment) {
@@ -806,6 +860,18 @@ func (c Config) Validate() error {
 				if err := validateHTTPSOrLoopbackURL(route.Endpoint, "S3 endpoint"); err != nil {
 					return fmt.Errorf("services.s3.routes.%s.endpoint: %w", name, err)
 				}
+			}
+			if route.isFilesystem() {
+				if err := c.validateFilesystemRoute(name, route, filesystemBuckets); err != nil {
+					return err
+				}
+				continue
+			}
+			if route.AccessKeyID == "" || route.SecretAccessKey == "" || route.STSRoleARN == "" {
+				return fmt.Errorf("services.s3.routes.%s needs access_key_id, secret_access_key, and sts_role_arn", name)
+			}
+			if route.Directory != "" || route.SessionDuration != 0 || route.MaxObjectBytes != 0 {
+				return fmt.Errorf("services.s3.routes.%s: directory, session_duration, and max_object_bytes belong to the %s driver", name, storageDriverFilesystem)
 			}
 			if route.STSEndpoint != "" {
 				if err := validateHTTPSOrLoopbackURL(route.STSEndpoint, "STS endpoint"); err != nil {
@@ -941,6 +1007,40 @@ func validateHTTPSURL(raw, name string) error {
 	u, _ := url.Parse(raw)
 	if u.Scheme != "https" {
 		return fmt.Errorf("%s must use HTTPS", name)
+	}
+	return nil
+}
+
+// validateFilesystemRoute checks what the filesystem gateway needs and rejects the STS-only
+// settings, so a route never looks configured for something it does not do.
+func (c Config) validateFilesystemRoute(name string, route S3RouteConfig, buckets map[string]string) error {
+	if len(c.Authentication.TokenPepper) < tokenPepperMinimumBytes {
+		return fmt.Errorf("services.s3.routes.%s uses the %s driver, so authentication.token_pepper must contain at least %d bytes", name, storageDriverFilesystem, tokenPepperMinimumBytes)
+	}
+	if strings.TrimSpace(route.Directory) == "" {
+		return fmt.Errorf("services.s3.routes.%s.directory is required by the %s driver", name, storageDriverFilesystem)
+	}
+	if route.AccessKeyID != "" || route.SecretAccessKey != "" || route.STSEndpoint != "" || route.STSRoleARN != "" || route.STSSessionName != "" || route.STSDuration != 0 {
+		return fmt.Errorf("services.s3.routes.%s: access_key_id, secret_access_key, and the sts_* settings belong to the %s driver", name, storageDriverS3)
+	}
+	if strings.TrimSpace(route.Endpoint) == "" {
+		return fmt.Errorf("services.s3.routes.%s.endpoint is required by the %s driver; set it or server.public_url", name, storageDriverFilesystem)
+	}
+	if err := validatePublicURL(route.Endpoint); err != nil {
+		return fmt.Errorf("services.s3.routes.%s.endpoint: %w", name, err)
+	}
+	if err := validateStorageBucketName(route.Bucket); err != nil {
+		return fmt.Errorf("services.s3.routes.%s.bucket: %w", name, err)
+	}
+	if other, taken := buckets[route.Bucket]; taken {
+		return fmt.Errorf("services.s3.routes.%s.bucket %q is already served by route %q", name, route.Bucket, other)
+	}
+	buckets[route.Bucket] = name
+	if route.SessionDuration < 15*time.Minute || route.SessionDuration > 12*time.Hour {
+		return fmt.Errorf("services.s3.routes.%s.session_duration must be between 15m and 12h", name)
+	}
+	if route.MaxObjectBytes <= 0 {
+		return fmt.Errorf("services.s3.routes.%s.max_object_bytes must be positive", name)
 	}
 	return nil
 }
