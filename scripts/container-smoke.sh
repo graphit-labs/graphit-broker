@@ -23,8 +23,9 @@ if docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$i
     exit 1
 fi
 test "$(docker image inspect --format '{{.Config.WorkingDir}}' "$image")" = '/home/graphit/.graphit/broker'
-test "$(docker image inspect --format '{{len .Config.Volumes}}' "$image")" = 1
+test "$(docker image inspect --format '{{len .Config.Volumes}}' "$image")" = 2
 docker image inspect --format '{{json .Config.Volumes}}' "$image" | grep -F '"/home/graphit/.graphit/broker"'
+docker image inspect --format '{{json .Config.Volumes}}' "$image" | grep -F '"/var/lib/graphit/hub"'
 docker image inspect --format '{{json .Config.Healthcheck.Test}}' "$image" | grep -F 'GRAPHIT_BROKER_HEALTHCHECK_URL'
 
 if missing_output=$(docker run --rm "$image" --version 2>&1); then
