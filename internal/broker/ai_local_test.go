@@ -197,7 +197,7 @@ func TestAutoDeviceReactivatesOnlyAfterCompleteInferenceSuccess(t *testing.T) {
 	if err := router.execute(run); err != nil {
 		t.Fatalf("initial CPU fallback failed: %v", err)
 	}
-	usingCPU, next := recoveryState(router)
+	_, next := recoveryState(router)
 	clock.now = next
 	postprocessErr := errors.New("invalid accelerated output")
 	if err := router.execute(func(session localONNXSession) error {
@@ -211,7 +211,7 @@ func TestAutoDeviceReactivatesOnlyAfterCompleteInferenceSuccess(t *testing.T) {
 	}); !errors.Is(err, postprocessErr) {
 		t.Fatalf("recovery result=%v, want post-processing error", err)
 	}
-	usingCPU, next = recoveryState(router)
+	usingCPU, next := recoveryState(router)
 	if !usingCPU || next.Sub(clock.now) != 2*time.Minute {
 		t.Fatalf("failed full inference reactivated GPU: usingCPU=%v delay=%s", usingCPU, next.Sub(clock.now))
 	}

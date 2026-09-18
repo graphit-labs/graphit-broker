@@ -78,7 +78,8 @@ func resolveModelSemantics(model *ResolvedModel) error {
 		return err
 	}
 	model.InputSemantic, model.InputNames, model.OutputName = inputMapping, inputNames, output.Name
-	if model.Manifest.Task == "embedding" {
+	switch model.Manifest.Task {
+	case "embedding":
 		rank := len(output.Dimensions)
 		pooling := model.Manifest.Inference.Pooling
 		if pooling == "none" && rank != 2 {
@@ -105,7 +106,7 @@ func resolveModelSemantics(model *ResolvedModel) error {
 		if model.Dimensions <= 0 {
 			return errors.New("embedding dimensions are dynamic and inference.dimensions was not provided")
 		}
-	} else if model.Manifest.Task == "rerank" {
+	case "rerank":
 		if len(output.Dimensions) != 1 && len(output.Dimensions) != 2 {
 			return fmt.Errorf("rerank output %q has rank %d; expected rank 1 or 2", output.Name, len(output.Dimensions))
 		}

@@ -1,0 +1,43 @@
+# Lint gate shared by developers (`make lint`) and CI (.github/workflows/ci.yml).
+# Every exclusion below is a documented false positive: findings that describe a
+# real defect are fixed in the code instead of being silenced here.
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck and unused.
+  default: standard
+
+  settings:
+    errcheck:
+      exclude-functions:
+        # `defer tx.Rollback()` guards the early returns between BeginTx and
+        # Commit. After a successful commit the rollback is expected to fail,
+        # so its error carries no information.
+        - (*database/sql.Tx).Rollback
+
+  exclusions:
+    presets:
+      # Deferred Close and Flush, os.Remove and the fmt print family, whose
+      # errors Go code conventionally leaves unchecked.
+      - std-error-handling
+
+    rules:
+      # onnxruntime_go releases its C handles through Destroy, the analogue of
+      # Close. The deferred release cannot change the result already computed,
+      # and the generic tensor types rule out a signature-based exclusion.
+      - linters: [errcheck]
+        text: 'Error return value of `.*\.Destroy` is not checked'
+
+      # Filled by `-ldflags -X` in scripts/build-embedded.sh and read by
+      # onnxruntime_bundle_embedded.go, which compiles only under the
+      # onnxruntime_embedded tag. That tag needs the generated payload archive,
+      # so linting a clean checkout never sees the reader.
+      - path: internal/broker/onnxruntime_bundle\.go
+        linters: [unused]
+        text: embeddedONNXRuntime
+
+      # The credential is cleared as soon as authentication returns. Dropping
+      # the assignment is precisely what must not happen.
+      - path: internal/broker/(admin|oauth)\.go
+        linters: [ineffassign]
+        text: ineffectual assignment to (password|captchaToken)

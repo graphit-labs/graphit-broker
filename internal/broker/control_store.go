@@ -349,9 +349,10 @@ func (s *ControlStore) Roles(ctx context.Context) ([]Role, error) {
 func (s *ControlStore) SetRole(ctx context.Context, role Role) error {
 	role.Name = strings.TrimSpace(role.Name)
 	role.Permissions = cleanStrings(role.Permissions)
-	if role.Name == adminRole {
+	switch role.Name {
+	case adminRole:
 		role.Permissions = append([]string(nil), systemActions...)
-	} else if role.Name == userRole {
+	case userRole:
 		role.Permissions = append([]string(nil), userActions...)
 	}
 	if !safeSegment(role.Name) || len(role.Permissions) == 0 {

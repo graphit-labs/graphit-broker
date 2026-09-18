@@ -146,7 +146,7 @@ func testONNXRuntimeBundle(t *testing.T) onnxRuntimeBundle {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gz.Header.ModTime = time.Unix(0, 0)
+	gz.ModTime = time.Unix(0, 0)
 	tw := tar.NewWriter(gz)
 	for _, file := range []struct{ name, body string }{{"runtime.bin", "runtime"}, {"provider.bin", "provider"}} {
 		if err := tw.WriteHeader(&tar.Header{Name: file.name, Mode: 0o500, Size: int64(len(file.body)), ModTime: time.Unix(0, 0)}); err != nil {

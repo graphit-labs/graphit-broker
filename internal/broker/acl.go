@@ -251,49 +251,6 @@ func matchingS3Operations(rule ACLRuleConfig) []string {
 	return operations
 }
 
-func renderSessionPrefixes(rule ACLRuleConfig, principal Principal) ([]string, error) {
-	projects := rule.Projects
-	if len(projects) == 0 {
-		projects = []string{"*"}
-	}
-	prefixes := rule.S3Prefixes
-	if len(prefixes) == 0 {
-		for _, project := range projects {
-			if project == "*" || project == "global" {
-				return []string{"v2"}, nil
-			}
-		}
-		result := make([]string, 0, len(projects))
-		for _, project := range projects {
-			result = append(result, "v2/projects/"+project)
-		}
-		return result, nil
-	}
-	set := map[string]struct{}{}
-	for _, template := range prefixes {
-		for _, project := range projects {
-			if project == "*" {
-				project = "GRAPHIT_PROJECT_WILDCARD"
-			}
-			rendered, err := renderPrefix(template, principal, project)
-			if err != nil {
-				return nil, err
-			}
-			rendered = strings.ReplaceAll(rendered, "GRAPHIT_PROJECT_WILDCARD", "*")
-			set[rendered] = struct{}{}
-			if !strings.Contains(template, "{project}") {
-				break
-			}
-		}
-	}
-	result := make([]string, 0, len(set))
-	for prefix := range set {
-		result = append(result, prefix)
-	}
-	sort.Strings(result)
-	return result, nil
-}
-
 func matchesPrincipal(rule ACLRuleConfig, principal Principal) bool {
 	switch strings.ToLower(strings.TrimSpace(rule.Access)) {
 	case "global":

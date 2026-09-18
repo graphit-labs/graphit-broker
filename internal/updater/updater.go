@@ -201,7 +201,7 @@ func extract(archive io.Reader, entry string, target io.Writer) error {
 		if hdr.Name != entry {
 			continue
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg {
 			return errors.New("release executable is not a regular file")
 		}
 		if hdr.Size <= 0 || hdr.Size > 1<<30 {

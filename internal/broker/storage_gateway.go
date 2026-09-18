@@ -526,7 +526,7 @@ func (g *storageGateway) completeUpload(w http.ResponseWriter, r *http.Request, 
 	}
 	parts := make([]completedPart, 0, len(request.Parts))
 	for _, part := range request.Parts {
-		parts = append(parts, completedPart{Number: part.Number, ETag: part.ETag})
+		parts = append(parts, completedPart(part))
 	}
 	object, err := store.CompleteUpload(r.URL.Query().Get("uploadId"), key, parts,
 		putConditions{IfMatch: strings.TrimSpace(r.Header.Get("If-Match")),

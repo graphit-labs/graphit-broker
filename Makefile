@@ -1,9 +1,10 @@
-.PHONY: build install fmt vet test check docker-build docker-check release-linux release-darwin release-windows
+.PHONY: build install fmt vet lint golangci-lint-version test check docker-build docker-check release-linux release-darwin release-windows
 
 include native-deps.env
 
 VERSION ?= dev
 BUILD_DIR ?= .build
+GOLANGCI_LINT_VERSION ?= v2.12.2
 PREFIX ?= /usr/local/bin
 HOST_PLATFORM := $(shell go env GOOS)-$(shell go env GOARCH)
 HOST_BINARY := graphit-broker$(if $(filter windows-%,$(HOST_PLATFORM)),.exe,)
@@ -29,6 +30,18 @@ fmt:
 
 vet:
 	go vet ./...
+
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "  ! golangci-lint not found. Install it with:"; \
+		echo "      go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)"; \
+		exit 1; \
+	}
+	golangci-lint run ./...
+
+# Single source of truth for the pinned linter; CI installs what this prints.
+golangci-lint-version:
+	@echo "$(GOLANGCI_LINT_VERSION)"
 
 test:
 	go test ./...

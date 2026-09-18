@@ -216,7 +216,15 @@ docker rm -f graphit-broker-smoke
 make fmt
 make test
 make vet
+make lint
 make build
+```
+
+`make lint` runs the same golangci-lint gate as CI, configured by `.golangci.yml`. Install the
+pinned version once:
+
+```bash
+go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(make --no-print-directory golangci-lint-version)"
 ```
 
 The unit suite is hermetic. OIDC, AI upstreams, and storage are represented by in-process synthetic

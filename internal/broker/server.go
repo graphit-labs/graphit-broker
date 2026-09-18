@@ -358,8 +358,7 @@ func (s *Server) hubAccessResolve(w http.ResponseWriter, r *http.Request) {
 		for _, project := range projects {
 			project = strings.TrimSpace(project)
 			selector := hubProjectSelector{ID: project}
-			switch {
-			case project == "*":
+			if project == "*" {
 				selector = hubProjectSelector{All: true}
 			}
 			if _, ok := seen[selector]; !ok {
