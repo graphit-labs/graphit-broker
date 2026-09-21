@@ -90,8 +90,17 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("admin page security headers missing: %#v", page.Header)
 	}
 	pageBody, _ := io.ReadAll(page.Body)
-	if !bytes.Contains(pageBody, []byte("Choose an organization account")) || !bytes.Contains(pageBody, []byte(`id="oidc-provider-buttons" class="provider-list"`)) || !bytes.Contains(pageBody, []byte("Sign in locally")) || !bytes.Contains(pageBody, []byte("Projects you can access")) || !bytes.Contains(pageBody, []byte("Configure Graphit CLI")) || !bytes.Contains(pageBody, []byte("Complete broker configuration")) || !bytes.Contains(pageBody, []byte("Local users")) || !bytes.Contains(pageBody, []byte("Assign role to an identity")) {
-		t.Fatalf("administration UI is incomplete: %s", pageBody)
+	for _, hook := range []string{
+		`id="oidc-provider-buttons"`, `id="local-login"`,
+		`id="project-search"`, `id="project-detail"`, `id="provider-command"`, `id="copy-provider"`,
+		`id="grant-steps"`, `id="grant-review"`, `id="apply-rule"`,
+		`id="identity-profile"`, `id="service-credentials"`,
+		`id="role-permissions"`, `id="assignment-subject"`, `id="assign-role"`,
+		`id="config-yaml"`, `id="config-search"`,
+	} {
+		if !bytes.Contains(pageBody, []byte(hook)) {
+			t.Fatalf("administration journey hook missing: %s", hook)
+		}
 	}
 	if bytes.Contains(pageBody, []byte("sessionStorage")) || bytes.Contains(pageBody, []byte("Administrator bearer token")) {
 		t.Fatal("administration UI retained the obsolete static-token login")

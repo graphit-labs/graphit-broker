@@ -219,3 +219,49 @@ ETag returns `409 Conflict`.
 Protect the last administrator and retain encrypted SQL backups. If every administrator is lost,
 restore a compatible backup or recreate the development database and run the bootstrap command.
 The bootstrap command intentionally refuses to overwrite a non-empty local-user table.
+
+
+## Console navigation and visual identity
+
+The Broker shares Graphit Code and the public site's cobalt/navy identity. Its internal workspaces start with the operator's decision: find the resource, inspect its authoritative state, then enter a dedicated change flow. Navigation exposes only sections allowed by the current session. Read permission permits inspection; write permission exposes mutation actions. Backend authorization remains authoritative.
+
+### Find and connect a project
+
+Open **Projects**, search an exact project identifier or capability, then select a project to inspect its access dossier. The list reports only identifiers and capabilities returned by the Broker. It does not imply project health, activity or ownership. A project or role removed from a refreshed directory also clears its old inspector; a new sign-in clears prior selections. An all-projects grant is shown explicitly, even when no exact identifiers are listed. Copy the Broker-provided connection commands from the inspector; Graphit Hub resolves project metadata after login.
+
+### Compose resource access
+
+Open **Resource grants** to search the policy by audience, identifier or capability. Select a grant name for read-only inspection. With write permission, choose **Compose grant** or **Edit**:
+
+1. **Audience:** set the stable grant ID, display name and verified identity attribute. The ID is immutable when editing.
+2. **Resources:** choose capabilities and exact project ULIDs. A blank project list means all projects.
+3. **Storage:** review operation, route and prefix constraints when an S3 capability is present.
+4. **Review:** inspect the complete scope, then explicitly create or update the grant.
+
+The draft summary follows the selected audience and resources. No access simulation is implied. Rules are additive; unmatched requests are denied. Writes send the current policy ETag with `If-Match`. A revision conflict leaves the draft available for review; refresh the policy and reconcile before retrying. Deletion requires a separate confirmation describing its immediate effect.
+
+### Inspect and maintain identities
+
+**Local users** is a searchable directory with People, Services, Disabled and MFA-pending filters. **Open profile** shows stable identity, membership, authentication state and revision before exposing permitted actions. **Edit identity** opens a dedicated editor with Identity, Membership and Authentication sections. Subject and kind stay immutable; username may change. Human passwords require at least 15 characters. An empty password while editing retains the current password; services have no password or MFA fields.
+
+A service profile opens its credential inventory. Creation shows the token once; copy it before dismissing or closing the inventory. The secret is cleared from the displayed inventory on dismissal, identity change or change of service. Delayed credential responses cannot reopen a closed inventory or display a token under another service. Credential scopes are metadata, not resource authorization. Revocation, identity deletion and MFA reset retain explicit confirmation and backend last-administrator protections.
+
+### Define responsibility, then assign it
+
+**Roles** separates **Role definitions** from **Identity assignments**. Select a definition to inspect its permission bundle. Built-in roles are read only. The custom-role editor groups the Broker's allowed-action catalog by domain, provides action search, and shows the selected count. An existing role name is immutable in this editor; use **Define role** to create another definition.
+
+Assignments require an explicit role selection and canonical `issuer|subject`. **Assign this role** transfers the inspected role into the assignment form. Configured IdP role claims take precedence over database assignments. Resource grants remain independent from administration roles.
+
+### Read effective configuration
+
+**Configuration** provides a section index, text search, refresh and copy for the complete redacted YAML. It is read only. Search reports the count and first matching line; section buttons select the corresponding location. To change deployment configuration, edit `config.yml` or environment-provided secrets and restart the Broker.
+
+### Authenticate one step at a time
+
+The administration sign-in surface displays the current local-authentication step. Once password replacement, MFA or recovery is required, organization-method choices are hidden until the active challenge completes. OAuth and device authorization use a centered transaction surface with Identify → Verify → Connect context. Only the server-selected form is submitted; required password, MFA, recovery, CAPTCHA and device states are preserved. Recovery codes remain visible until the user explicitly continues. A fatal or expired request renders restart guidance without credential fields.
+
+OAuth forms preserve the original request URL and challenge fields. The authentication template needs no inline application JavaScript and retains its strict CSP; configured CAPTCHA scripts are the only permitted providers. A single upstream OIDC provider with local login disabled still redirects automatically.
+
+The console supports light/dark themes and mobile navigation with focus containment. Wide policy and credential tables scroll within their own surfaces; editors and inspectors stack on small screens. The standalone authentication template is light-only. System-font fallbacks require no external font request.
+
+The canonical [Graphit design system](https://github.com/graphit-labs/graphit-code/blob/main/docs/specs/design_system.md) documents shared principles, tokens, page patterns, responsive behavior and evolution checks. The implementation owners are `internal/broker/adminui/index.html` and `internal/broker/oauthui/index.html`; API/security contracts remain covered by `admin_test.go` and `oauth_test.go`. Use the reference revision corresponding to the implementation under review.

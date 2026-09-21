@@ -7,7 +7,8 @@
             "command": "'graphit' _session-hook --format post-tool-use",
             "type": "command"
           }
-        ]
+        ],
+        "matcher": "^(Edit|Write|MultiEdit|NotebookEdit|Bash|apply_patch)$"
       }
     ],
     "SessionEnd": [
