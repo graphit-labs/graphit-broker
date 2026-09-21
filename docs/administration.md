@@ -5,6 +5,27 @@ consumer: any configured OIDC issuer mapping or a SQL-backed local user. Adminis
 decision, not a separate identity provider. Deployment configuration remains read-only; local
 users, roles, assignments, and resource grants are mutable SQL state.
 
+## The governance workspace
+
+Start with the decision you need to make: **Local users** manages people and automation identities;
+**Roles** governs administrative actions; **Resource grants** controls access to project capabilities;
+**Projects** shows the current caller's authorized scope. Configuration is a read-only deployment view.
+
+![Local identities showing fictional people, a service identity, team membership and system roles](assets/broker-identities.jpg)
+
+*The Aster Delivery directory separates human accounts from release automation. Pending authentication
+steps are visible on these newly created demonstration accounts; this is not a production deployment.*
+
+![Resource policy showing audience, capability and project boundaries for three fictional grants](assets/broker-resource-grants.jpg)
+
+*Compare audience, capability and exact project scope before changing a grant. A team grant for
+embeddings and rerank does not grant administration permissions. Configured policy does not imply
+that its upstream service is enabled.*
+
+These are captures of the real administration UI with disposable SQLite data, generated credentials,
+loopback-only access and no external services. The example environment was removed after capture.
+See [screenshot maintenance](screenshots.md) when updating these images.
+
 ## Unified OIDC login
 
 Configure browser clients on one or more `authentication.oidc` entries. Each entry supplies issuer,

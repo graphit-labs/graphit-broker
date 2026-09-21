@@ -54,6 +54,17 @@ Graphit may instead exchange the MCP token for a short-lived broker-audience tok
 validates the final token independently in both modes; exchange failure never downgrades to relay
 or anonymous access.
 
+## The governance workspace
+
+![Graphit Broker resource grants for fictional Aster Delivery projects and teams](docs/assets/broker-resource-grants.jpg)
+
+Review who can use each capability and which projects a grant covers. Administration roles and
+resource authorization remain separate decisions. This screenshot uses fictional English data in
+an isolated Broker; no production identities, credentials or services are shown.
+
+See the [administration guide](docs/administration.md#the-governance-workspace) for identity and
+policy workflows, or explore [Code and Broker together](https://graphit-labs.github.io/graphit-code/#workspace-demo).
+
 ## Persistence and authorization
 
 `config.yaml`, after environment expansion, is the sole configuration authority. Changes are
