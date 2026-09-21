@@ -51,7 +51,7 @@ In a real write, replace the source phrase with the known task ID/decision locat
 
 This is an update, not an extra insert that leaves two contradictory “current” rules. The successful acknowledgement is durability evidence; no routine search, list or sync follows. Full discussion and tool evidence stay in Task. If maintained instruction documentation also contains the obsolete policy, reconcile it through the authorized Task/Knowledge workflow; changing Memory alone does not fix those documents.
 
-The update schema changes title/content only. It does not accept type, mandatory, important or ai_optimized. If confirmed recall needs now require every-session visibility, use graphit_memory_mark_mandatory separately with the same project/scope/id. Do not promote every correction by default or claim content editing changed its classification.
+The update schema changes title/content and optional structured references. When source records are known, explicitly send their typed IDs in references; prose alone does not establish a relation. Omission preserves the existing list; [] clears it. It does not accept type, mandatory, important or ai_optimized. If confirmed recall needs now require every-session visibility, use graphit_memory_mark_mandatory separately with the same project/scope/id. Do not promote every correction by default or claim content editing changed its classification.
 
 ## Case 2: unchanged repetition and new structural knowledge
 
