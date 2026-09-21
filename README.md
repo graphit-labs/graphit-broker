@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" width="72" height="72" alt="Graphit Labs">
+  <img src="docs/assets/logo.svg" width="72" height="72" alt="Graphit Broker">
 </p>
 
 <h1 align="center">Graphit Broker</h1>
