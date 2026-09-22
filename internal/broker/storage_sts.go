@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
@@ -54,17 +55,33 @@ type assumeRoleAPI interface {
 
 type AWSSTSCredentialService struct {
 	now       func() time.Time
-	newClient func(S3RouteConfig) assumeRoleAPI
+	newClient func(context.Context, S3RouteConfig) (assumeRoleAPI, error)
 }
 
 func NewAWSSTSCredentialService() *AWSSTSCredentialService {
 	return &AWSSTSCredentialService{now: time.Now, newClient: newSTSClient}
 }
 
-func newSTSClient(route S3RouteConfig) assumeRoleAPI {
-	config := aws.Config{
-		Region:      route.Region,
-		Credentials: credentials.NewStaticCredentialsProvider(route.AccessKeyID, route.SecretAccessKey, ""),
+type awsConfigLoader func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error)
+
+func loadSTSConfig(ctx context.Context, route S3RouteConfig, load awsConfigLoader) (aws.Config, error) {
+	if route.AccessKeyID != "" {
+		return aws.Config{
+			Region:      route.Region,
+			Credentials: credentials.NewStaticCredentialsProvider(route.AccessKeyID, route.SecretAccessKey, ""),
+		}, nil
+	}
+	config, err := load(ctx, awsconfig.WithRegion(route.Region))
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("load AWS configuration: %w", err)
+	}
+	return config, nil
+}
+
+func newSTSClient(ctx context.Context, route S3RouteConfig) (assumeRoleAPI, error) {
+	config, err := loadSTSConfig(ctx, route, awsconfig.LoadDefaultConfig)
+	if err != nil {
+		return nil, err
 	}
 	return sts.NewFromConfig(config, func(options *sts.Options) {
 		endpoint := strings.TrimSpace(route.STSEndpoint)
@@ -74,7 +91,7 @@ func newSTSClient(route S3RouteConfig) assumeRoleAPI {
 		if endpoint != "" {
 			options.BaseEndpoint = aws.String(endpoint)
 		}
-	})
+	}), nil
 }
 
 func (s *AWSSTSCredentialService) Issue(ctx context.Context, route S3RouteConfig, grant S3SessionGrant, principal Principal) (S3CredentialsResponse, error) {
@@ -86,7 +103,11 @@ func (s *AWSSTSCredentialService) Issue(ctx context.Context, route S3RouteConfig
 		return S3CredentialsResponse{}, err
 	}
 	duration := int32(route.STSDuration / time.Second)
-	output, err := s.newClient(route).AssumeRole(ctx, &sts.AssumeRoleInput{
+	client, err := s.newClient(ctx, route)
+	if err != nil {
+		return S3CredentialsResponse{}, fmt.Errorf("create STS client: %w", err)
+	}
+	output, err := client.AssumeRole(ctx, &sts.AssumeRoleInput{
 		RoleArn:         aws.String(route.STSRoleARN),
 		RoleSessionName: aws.String(roleSessionName(route.STSSessionName, principal)),
 		DurationSeconds: aws.Int32(duration),

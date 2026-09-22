@@ -494,20 +494,66 @@ services:
       oidc:
         bucket: private
         base_prefix: graphit
-        access_key_id: public-access
-        secret_access_key: public-secret
         sts_role_arn: arn:aws:iam::123456789012:role/graphit
 `
 	if _, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" }); err != nil {
 		t.Fatalf("DecodeConfig error=%v", err)
 	}
-	unsupported := strings.Replace(input, "        access_key_id: public-access\n", "        unsupported_storage_field: removed\n", 1)
+	unsupported := strings.Replace(input, "        base_prefix: graphit\n", "        unsupported_storage_field: removed\n", 1)
 	if _, err := decodeConfigForTest(strings.NewReader(unsupported), func(string) string { return "" }); err == nil {
 		t.Fatal("removed storage field was accepted")
 	}
 	legacy := "authorization:\n  rules: []\n"
 	if _, err := decodeConfigForTest(strings.NewReader(legacy), func(string) string { return "" }); err == nil {
 		t.Fatal("legacy authorization configuration was accepted")
+	}
+}
+
+func TestS3RouteCredentialsMustBeConfiguredAsAPair(t *testing.T) {
+	base := `
+services:
+  s3:
+    enabled: true
+    default_route: primary
+    routes:
+      primary:
+        bucket: private
+        base_prefix: graphit
+        sts_role_arn: arn:aws:iam::123456789012:role/graphit
+`
+	if _, err := decodeConfigForTest(strings.NewReader(base), func(string) string { return "" }); err != nil {
+		t.Fatalf("implicit AWS credentials rejected: %v", err)
+	}
+	if _, err := decodeConfigForTest(strings.NewReader(base+"        access_key_id: explicit-access\n        secret_access_key: explicit-secret\n"), func(string) string { return "" }); err != nil {
+		t.Fatalf("explicit AWS credentials rejected: %v", err)
+	}
+	for name, field := range map[string]string{
+		"access key only": "        access_key_id: explicit-access\n",
+		"secret only":     "        secret_access_key: explicit-secret\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeConfigForTest(strings.NewReader(base+field), func(string) string { return "" })
+			if err == nil || !strings.Contains(err.Error(), "must be configured together") {
+				t.Fatalf("partial credentials validation=%v", err)
+			}
+		})
+	}
+}
+
+func TestS3RouteRequiresSTSRoleARN(t *testing.T) {
+	input := `
+services:
+  s3:
+    enabled: true
+    default_route: primary
+    routes:
+      primary:
+        bucket: private
+        base_prefix: graphit
+`
+	_, err := decodeConfigForTest(strings.NewReader(input), func(string) string { return "" })
+	if err == nil || !strings.Contains(err.Error(), "needs sts_role_arn") {
+		t.Fatalf("missing role validation=%v", err)
 	}
 }
 

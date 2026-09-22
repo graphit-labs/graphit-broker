@@ -867,8 +867,11 @@ func (c Config) Validate() error {
 				}
 				continue
 			}
-			if route.AccessKeyID == "" || route.SecretAccessKey == "" || route.STSRoleARN == "" {
-				return fmt.Errorf("services.s3.routes.%s needs access_key_id, secret_access_key, and sts_role_arn", name)
+			if (route.AccessKeyID == "") != (route.SecretAccessKey == "") {
+				return fmt.Errorf("services.s3.routes.%s access_key_id and secret_access_key must be configured together", name)
+			}
+			if route.STSRoleARN == "" {
+				return fmt.Errorf("services.s3.routes.%s needs sts_role_arn", name)
 			}
 			if route.Directory != "" || route.SessionDuration != 0 || route.MaxObjectBytes != 0 {
 				return fmt.Errorf("services.s3.routes.%s: directory, session_duration, and max_object_bytes belong to the %s driver", name, storageDriverFilesystem)

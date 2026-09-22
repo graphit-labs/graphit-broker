@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
 )
@@ -25,7 +27,7 @@ func TestAWSSTSCredentialServiceIssuesCompleteTemporaryTopology(t *testing.T) {
 	var captured *sts.AssumeRoleInput
 	service := &AWSSTSCredentialService{
 		now: func() time.Time { return now },
-		newClient: func(route S3RouteConfig) assumeRoleAPI {
+		newClient: func(_ context.Context, route S3RouteConfig) (assumeRoleAPI, error) {
 			if route.AccessKeyID != "broker-access" || route.SecretAccessKey != "broker-secret" {
 				t.Fatalf("route credentials not supplied internally: %#v", route)
 			}
@@ -35,7 +37,7 @@ func TestAWSSTSCredentialServiceIssuesCompleteTemporaryTopology(t *testing.T) {
 					AccessKeyId: aws.String("temporary-access"), SecretAccessKey: aws.String("temporary-secret"),
 					SessionToken: aws.String("temporary-token"), Expiration: aws.Time(now.Add(time.Hour)),
 				}}, nil
-			})
+			}), nil
 		},
 	}
 	route := S3RouteConfig{Bucket: "artifacts", Region: "us-east-1", Endpoint: "https://s3.example", BasePrefix: "tenant/root", AccessKeyID: "broker-access", SecretAccessKey: "broker-secret", STSRoleARN: "arn:aws:iam::123456789012:role/graphit", STSSessionName: "graphit", STSDuration: time.Hour}
@@ -53,6 +55,101 @@ func TestAWSSTSCredentialServiceIssuesCompleteTemporaryTopology(t *testing.T) {
 	policy := aws.ToString(captured.Policy)
 	if strings.Contains(policy, "broker-secret") || !strings.Contains(policy, "arn:aws:s3:::artifacts/tenant/root/v2/projects/a") || !strings.Contains(policy, "s3:DeleteObject") {
 		t.Fatalf("policy=%s", policy)
+	}
+}
+
+func TestLoadSTSConfigUsesDefaultCredentialsUnlessStaticPairIsConfigured(t *testing.T) {
+	loaderCalls := 0
+	loader := func(_ context.Context, options ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		loaderCalls++
+		loaded := awsconfig.LoadOptions{}
+		for _, option := range options {
+			if err := option(&loaded); err != nil {
+				return aws.Config{}, err
+			}
+		}
+		if loaded.Region != "us-east-1" {
+			t.Fatalf("loaded region=%q", loaded.Region)
+		}
+		return aws.Config{Credentials: credentials.NewStaticCredentialsProvider("ambient-access", "ambient-secret", "ambient-token")}, nil
+	}
+
+	for name, test := range map[string]struct {
+		route      S3RouteConfig
+		wantAccess string
+		wantSecret string
+		wantToken  string
+	}{
+		"default chain": {
+			route:      S3RouteConfig{Region: "us-east-1"},
+			wantAccess: "ambient-access",
+			wantSecret: "ambient-secret",
+			wantToken:  "ambient-token",
+		},
+		"explicit static pair": {
+			route:      S3RouteConfig{Region: "us-east-1", AccessKeyID: "route-access", SecretAccessKey: "route-secret"},
+			wantAccess: "route-access",
+			wantSecret: "route-secret",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config, err := loadSTSConfig(context.Background(), test.route, loader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential, err := config.Credentials.Retrieve(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if credential.AccessKeyID != test.wantAccess || credential.SecretAccessKey != test.wantSecret || credential.SessionToken != test.wantToken {
+				t.Fatalf("credential=%#v", credential)
+			}
+		})
+	}
+	if loaderCalls != 1 {
+		t.Fatalf("default loader calls=%d", loaderCalls)
+	}
+}
+
+func TestLoadSTSConfigUsesAWSEnvironmentCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "environment-access")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "environment-secret")
+	t.Setenv("AWS_SESSION_TOKEN", "environment-token")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+	config, err := loadSTSConfig(context.Background(), S3RouteConfig{Region: "us-east-1"}, awsconfig.LoadDefaultConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := config.Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.AccessKeyID != "environment-access" || credential.SecretAccessKey != "environment-secret" || credential.SessionToken != "environment-token" {
+		t.Fatalf("credential=%#v", credential)
+	}
+}
+
+func TestLoadSTSConfigReportsDefaultConfigurationFailure(t *testing.T) {
+	_, err := loadSTSConfig(context.Background(), S3RouteConfig{Region: "us-east-1"}, func(context.Context, ...func(*awsconfig.LoadOptions) error) (aws.Config, error) {
+		return aws.Config{}, errors.New("configuration unavailable")
+	})
+	if err == nil || !strings.Contains(err.Error(), "load AWS configuration: configuration unavailable") {
+		t.Fatalf("loadSTSConfig error=%v", err)
+	}
+}
+
+func TestAWSSTSCredentialServiceReportsClientConfigurationFailure(t *testing.T) {
+	service := &AWSSTSCredentialService{
+		now: time.Now,
+		newClient: func(context.Context, S3RouteConfig) (assumeRoleAPI, error) {
+			return nil, errors.New("configuration unavailable")
+		},
+	}
+	route := S3RouteConfig{Bucket: "artifacts", Region: "us-east-1", BasePrefix: "graphit", STSRoleARN: "arn:aws:iam::123456789012:role/graphit", STSSessionName: "graphit", STSDuration: time.Hour}
+	grant := S3SessionGrant{Access: map[string][]string{"read": {"v2/projects/a"}}, Scope: S3SessionScope{Kind: "project", ProjectID: "a"}}
+	if _, err := service.Issue(context.Background(), route, grant, Principal{Subject: "alice"}); err == nil || !strings.Contains(err.Error(), "create STS client: configuration unavailable") {
+		t.Fatalf("Issue error=%v", err)
 	}
 }
 

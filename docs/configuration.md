@@ -560,9 +560,7 @@ services:
         endpoint: ""
         bucket: graphit-artifacts
         base_prefix: graphit
-        access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID:?required}"
-        secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY:?required}"
-        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-broker"
+        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-s3-access-role"
         sts_endpoint: ""
         sts_session_name: graphit-broker
         sts_duration: 1h
@@ -583,22 +581,44 @@ services:
 `base_prefix: graphit` puts broker-managed paths under `s3://artifacts/graphit/`. The Broker joins
 this base with the paths authorized by resource grants when building the STS session policy.
 
-Every enabled route requires region, bucket, a non-empty base prefix, access key, secret, and STS
-role ARN. `endpoint` may select an S3-compatible service. `sts_endpoint` selects its STS endpoint;
-when omitted for an S3-compatible route it defaults to `endpoint`, while an empty AWS route uses
-AWS STS. `sts_session_name` defaults to `graphit-broker`; `sts_duration` defaults to one hour and
-must be between 15 minutes and 12 hours. For AWS, the signing identity must be allowed to assume
-the configured role and the role's policy is the upper permission bound. MinIO self-assume accepts
-a placeholder AWS role ARN and intersects the built-in user's policy with the inline session policy.
+Every enabled route requires region, bucket, a non-empty base prefix, and `sts_role_arn`.
+`access_key_id` and `secret_access_key` are optional, but they must be set together when used. If
+both are omitted, the broker uses the AWS SDK default credential chain. This includes AWS
+environment variables such as
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, runtime role providers, shared configuration, and
+the SDK's other supported sources. If both fields are set, that static pair overrides the default
+chain for the route.
 
-An S3 route is a named storage and STS profile. Its permanent access key and secret remain private
-to the broker; the selected route's topology and newly minted temporary credentials are returned
-to an authenticated Graphit client. Route names have no built-in semantics. In particular, a
-route named `public` does not make its bucket, objects, credentials, or broker endpoint public.
-`PUBLIC_S3_ACCESS_KEY_ID` and `PUBLIC_S3_SECRET_ACCESS_KEY` above are merely environment-variable
-names referenced by the example route; both values remain private to the broker. Public read
-access must use an independently public bucket/CDN policy; the STS endpoint requires authentication.
-The route can be removed when the deployment needs only one storage destination.
+The resolved credential is the Broker's identity for calling `sts:AssumeRole`; it is not returned
+to clients. `sts_role_arn` names the target role whose S3 permissions form the upper bound. The
+Broker passes an inline policy for the requested project, so the issued session receives the
+intersection of the target role's permissions and that project policy.
+
+The source identity and target role must establish both sides of `AssumeRole`: the source identity
+must be authorized to call `sts:AssumeRole` for the configured target ARN, and the target role's
+trust policy must accept that source principal. Attach the bucket/object permissions to the target
+role rather than relying on permissions of the source identity. How the runtime obtains its source
+identity is deployment-specific and remains outside the Broker configuration contract.
+
+If the source credential is already a temporary role session, assuming the target is role chaining
+and AWS limits the new session to one hour; configure `sts_duration` accordingly.
+
+`endpoint` may select an S3-compatible service. `sts_endpoint` selects its STS endpoint; when
+omitted for an S3-compatible route it defaults to `endpoint`, while an empty AWS route uses AWS
+STS. `sts_session_name` defaults to `graphit-broker`; `sts_duration` defaults to one hour and
+must be between 15 minutes and 12 hours. MinIO self-assume accepts a placeholder AWS role ARN and
+intersects the built-in user's policy with the inline session policy.
+
+An S3 route is a named storage and STS profile. Any permanent access key and secret configured on
+the route remain private to the broker; credentials resolved by the default chain are likewise
+used only to sign the broker's STS request. The selected route's topology and newly minted
+temporary credentials are returned to an authenticated Graphit client. Route names have no
+built-in semantics. In particular, a route named `public` does not make its bucket, objects,
+credentials, or broker endpoint public. `PUBLIC_S3_ACCESS_KEY_ID` and
+`PUBLIC_S3_SECRET_ACCESS_KEY` above are merely environment-variable names referenced by the
+explicit S3-compatible example; both values remain private to the broker. Public read access must
+use an independently public bucket/CDN policy; the STS endpoint requires authentication. The
+route can be removed when the deployment needs only one storage destination.
 
 Clients submit only a `project`, `user`, or `hub` storage scope, plus the project ULID for project
 scope. Matching resource grants select `s3_route`; an omitted value uses `default_route`. All
