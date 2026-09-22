@@ -35,7 +35,7 @@ func benchmarkStorageClient(b *testing.B) (*s3.Client, S3RouteConfig) {
 	b.Cleanup(server.Close)
 	grant := S3SessionGrant{Revision: "1", Route: "local",
 		Access: map[string][]string{"publish": {"v2/projects/project-a"}},
-		Scope:  S3SessionScope{Kind: "project", ProjectID: "project-a"}}
+		Scope:  S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "hub"}}
 	issued, err := credentials.Issue(context.Background(), route, grant, Principal{Issuer: "https://id", Subject: "alice", Username: "alice"})
 	if err != nil {
 		b.Fatal(err)
@@ -184,7 +184,7 @@ func BenchmarkStorageGatewayHandlerGet(b *testing.B) {
 	}
 	grant := S3SessionGrant{Revision: "1", Route: "local",
 		Access: map[string][]string{"publish": {"v2/projects/project-a"}},
-		Scope:  S3SessionScope{Kind: "project", ProjectID: "project-a"}}
+		Scope:  S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "hub"}}
 	issued, err := credentials.Issue(context.Background(), route, grant, Principal{Issuer: "https://id", Subject: "alice", Username: "alice"})
 	if err != nil {
 		b.Fatal(err)

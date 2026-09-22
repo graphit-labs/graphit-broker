@@ -35,7 +35,7 @@ Example discovery:
       "authorization_revision": "7"
     },
     "s3_credentials": {
-      "protocol": "graphit-s3-credentials-v2",
+      "protocol": "graphit-s3-credentials-v3",
       "path": "/v1/s3/credentials",
       "authorization_revision": "7"
     },
@@ -118,22 +118,25 @@ original-index tie breaking. Headers include `X-Graphit-Rerank-Revision` and `X-
 
 ## Temporary S3 credentials
 
-`POST /v1/s3/credentials` requires an authenticated bearer and one framework-selected storage
-scope. Project data uses an immutable project ULID; user memory and shared Hub metadata have
-separate scopes:
+`POST /v1/s3/credentials` requires an authenticated bearer, one framework-selected storage
+scope, and the Graphit module that will use the objects. Project data uses an immutable project
+ULID; user memory and shared Hub metadata have separate scopes:
 
 ```json
-{"scope":"project","project_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+{"scope":"project","project_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","module":"task"}
 ```
 
-The other valid bodies are `{"scope":"user"}` and `{"scope":"hub"}`. Unknown fields,
-missing project IDs, project IDs on non-project scopes, and unsafe project IDs are rejected.
+Project scope accepts `task`, `memory`, `knowledge`, `ast`, or `hub`. The other valid scope/module
+pairs are `{"scope":"user","module":"memory"}` and `{"scope":"hub","module":"hub"}`.
+Unknown fields, missing or unknown modules, incompatible scope/module pairs, missing project IDs,
+project IDs on non-project scopes, and unsafe project IDs are rejected.
 
 The broker evaluates the current grants that apply to the verified caller and requested scope,
 selects one route for that scope, intersects any configured prefix templates with the fixed scope
 roots, builds an inline session policy, and calls STS. The request cannot choose a route, operation,
 prefix, policy, role, bucket, endpoint, or duration. A project ID identifies the resource being
-authorized; it never supplies authorization or an object prefix.
+authorized; the module narrows that resource to its fixed object roots. Neither field supplies
+authorization or an arbitrary object prefix.
 
 ```json
 {
@@ -147,14 +150,15 @@ authorized; it never supplies authorization or an object prefix.
   "prefixes": ["graphit"],
   "authorization_revision": "7",
   "scope": "project",
-  "project_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+  "project_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "module": "task"
 }
 ```
 
 Every successful call mints a new session. The response is marked `Cache-Control: no-store`.
 The access key, secret, and session token are temporary and must be treated as secrets. Permanent
-route credentials and the generated policy are never returned. `scope` and `project_id` let the
-client reject a response that does not match its request.
+route credentials and the generated policy are never returned. `scope`, `project_id`, and `module`
+let the client reject a response that does not match its request.
 
 A route configured with the `filesystem` driver answers this same contract, with `endpoint`
 pointing at the broker itself. The broker then mints the credentials and serves the objects from a

@@ -34,6 +34,11 @@ type S3SessionGrant struct {
 type S3SessionScope struct {
 	Kind      string
 	ProjectID string
+	Module    string
+}
+
+var s3StorageModules = map[string]struct{}{
+	"task": {}, "memory": {}, "knowledge": {}, "ast": {}, "hub": {},
 }
 
 func NewACL(grants ResourceGrantReader) *ACL { return &ACL{grants: grants} }
@@ -159,7 +164,15 @@ func s3SessionScopeRoots(principal Principal, scope S3SessionScope) ([]string, e
 	}
 	switch scope.Kind {
 	case "project":
-		return []string{"v2/projects/" + scope.ProjectID}, nil
+		root := "v2/projects/" + scope.ProjectID
+		switch scope.Module {
+		case "task":
+			return []string{root + "/tasks"}, nil
+		case "memory", "knowledge", "ast":
+			return []string{root + "/" + scope.Module}, nil
+		case "hub":
+			return []string{root + "/project.json", root + "/registry", root + "/artifacts", root + "/events"}, nil
+		}
 	case "user":
 		if !safeSegment(principal.Username) {
 			return nil, errors.New("invalid user storage scope")
@@ -172,14 +185,27 @@ func s3SessionScopeRoots(principal Principal, scope S3SessionScope) ([]string, e
 }
 
 func validateS3SessionScope(scope S3SessionScope) error {
+	if _, ok := s3StorageModules[scope.Module]; !ok {
+		return errors.New("invalid S3 storage module")
+	}
 	switch scope.Kind {
 	case "project":
 		if !safeSegment(scope.ProjectID) {
 			return errors.New("invalid project storage scope")
 		}
-	case "user", "hub":
+	case "user":
 		if scope.ProjectID != "" {
 			return fmt.Errorf("%s storage scope cannot select a project", scope.Kind)
+		}
+		if scope.Module != "memory" {
+			return errors.New("user storage scope requires the memory module")
+		}
+	case "hub":
+		if scope.ProjectID != "" {
+			return fmt.Errorf("%s storage scope cannot select a project", scope.Kind)
+		}
+		if scope.Module != "hub" {
+			return errors.New("hub storage scope requires the hub module")
 		}
 	default:
 		return errors.New("invalid S3 storage scope")

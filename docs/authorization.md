@@ -61,20 +61,25 @@ request is rejected instead of guessing.
 ## How S3 grants become an STS policy
 
 `POST /v1/s3/credentials` requires an authenticated bearer and accepts exactly one framework-selected
-scope: `project` with an immutable project ULID, `user`, or `hub`. Identity comes only from the
-verified principal and authorization comes only from the current SQL grant snapshot. A client
-cannot submit an operation, prefix, route, role, bucket, endpoint, duration, or policy; the project
-ID only selects the resource whose grants must be evaluated.
+scope plus one required module. `project` uses an immutable project ULID and accepts `task`,
+`memory`, `knowledge`, `ast`, or `hub`; `user` accepts only `memory`; and the global `hub` scope
+accepts only `hub`. Identity comes only from the verified principal and authorization comes only
+from the current SQL grant snapshot. A client cannot submit an operation, prefix, route, role,
+bucket, endpoint, duration, or policy; the project ID selects the resource whose grants must be
+evaluated and the module narrows it to fixed object roots.
 
 For each matching rule, the broker includes an authorization operation when `capabilities` contains
 `s3` or `s3:<operation>` and `s3_operations` is empty, contains `*`, or contains that operation.
 Projects select whether a rule contributes to the requested scope. An omitted project list means
-every project. The broker fixes the maximum logical roots to `v2/projects/<project>` for project
-scope, `v2/users/<verified-username>/memory` for user scope, and `v2/registry` plus
-`v2/global/rules` for Hub scope. Explicit prefix templates are rendered and intersected with those
-roots, so even a template such as `v2` cannot enlarge the credential. User and Hub scopes require
-an omitted, `*`, or `global` project selector; Hub scope additionally requires an effective `hub`
-capability, which may come from a separate matching rule.
+every project. Project-module roots are `v2/projects/<project>/tasks`, `/memory`, `/knowledge`, and
+`/ast`; project-scoped Hub access is restricted to `project.json` and the `registry`, `artifacts`,
+and `events` subtrees. User memory remains under `v2/users/<verified-username>/memory`; global Hub
+access remains under `v2/registry` and `v2/global/rules`. Explicit prefix templates are rendered
+and intersected with the selected module roots, so even a template such as `v2` cannot enlarge the
+credential. A narrower project template must include the module namespace, for example
+`v2/projects/{project}/tasks/internal`. User and Hub scopes require an omitted, `*`, or `global`
+project selector; Hub scope additionally requires an effective `hub` capability, which may come
+from a separate matching rule.
 
 All matching S3 rules for the requested scope are additive and must select one route. An explicit `s3_route` selects it;
 an empty value uses `default_route`. If the same principal matches rules for different routes, the
@@ -124,7 +129,7 @@ A team that reads and updates internal project data can receive:
   "projects": ["01ARZ3NDEKTSV4RRFFQ69G5FAV"],
   "s3_operations": ["read", "write", "delete"],
   "s3_route": "primary",
-  "s3_prefixes": ["v2/projects/{project}/internal"]
+  "s3_prefixes": ["v2/projects/{project}/tasks/internal"]
 }
 ```
 

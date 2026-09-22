@@ -34,7 +34,7 @@ func TestMinIOSTSIntegration(t *testing.T) {
 		t.Fatal("MinIO bucket, access key, and secret key are required")
 	}
 	ctx := context.Background()
-	grant := S3SessionGrant{Revision: "1", Route: "primary", Access: map[string][]string{"publish": {"v2/projects/project-a"}}, Scope: S3SessionScope{Kind: "project", ProjectID: "project-a"}}
+	grant := S3SessionGrant{Revision: "1", Route: "primary", Access: map[string][]string{"publish": {"v2/projects/project-a/ast"}}, Scope: S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "ast"}}
 	temporary, err := NewAWSSTSCredentialService().Issue(ctx, route, grant, Principal{Issuer: "test", Subject: "alice"})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestMinIOSTSIntegration(t *testing.T) {
 		options.BaseEndpoint = aws.String(endpoint)
 		options.UsePathStyle = true
 	})
-	key := "graphit/v2/projects/project-a/integration/object"
+	key := "graphit/v2/projects/project-a/ast/integration/object"
 	if _, err := client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(route.Bucket), Key: aws.String(key), Body: bytes.NewReader([]byte("payload"))}); err != nil {
 		t.Fatalf("PUT: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestMinIOSTSIntegration(t *testing.T) {
 	if string(rangeBody) != "ayl" {
 		t.Fatalf("RANGE GET body=%q", rangeBody)
 	}
-	listed, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(route.Bucket), Prefix: aws.String("graphit/v2/projects/project-a/")})
+	listed, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(route.Bucket), Prefix: aws.String("graphit/v2/projects/project-a/ast/")})
 	if err != nil || len(listed.Contents) != 1 {
 		t.Fatalf("LIST contents=%d err=%v", len(listed.Contents), err)
 	}
@@ -90,7 +90,7 @@ func TestMinIOSTSIntegration(t *testing.T) {
 	if _, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(route.Bucket), Prefix: aws.String("graphit/v2/projects/project-b/")}); err == nil {
 		t.Fatal("LIST outside the granted prefix succeeded")
 	}
-	multipartKey := "graphit/v2/projects/project-a/integration/multipart"
+	multipartKey := "graphit/v2/projects/project-a/ast/integration/multipart"
 	created, err := client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{Bucket: aws.String(route.Bucket), Key: aws.String(multipartKey)})
 	if err != nil {
 		t.Fatalf("CREATE MULTIPART: %v", err)

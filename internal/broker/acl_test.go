@@ -52,19 +52,19 @@ func TestACLIsDenyByDefaultAndReadsCurrentGrants(t *testing.T) {
 func TestResolveS3SessionDerivesAllEffectiveOperationsAndCurrentRevision(t *testing.T) {
 	reader := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 9, Rules: []ACLRuleConfig{
 		{ID: "read", Name: "read", Access: "team", Principal: "dev", Capabilities: []string{"s3:read"}, Projects: []string{"a", "b"}},
-		{ID: "write", Name: "write", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"a"}, S3Operations: []string{"write"}, S3Prefixes: []string{"v2/projects/{project}/working"}},
+		{ID: "write", Name: "write", Access: "user", Principal: "alice", Capabilities: []string{"s3"}, Projects: []string{"a"}, S3Operations: []string{"write"}, S3Prefixes: []string{"v2/projects/{project}/tasks/working"}},
 	}}}
 	acl := NewACL(reader)
-	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, S3SessionScope{Kind: "project", ProjectID: "a"}, "primary")
+	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, S3SessionScope{Kind: "project", ProjectID: "a", Module: "task"}, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant.Revision != "9" || grant.Route != "primary" || len(grant.Access["read"]) != 1 || grant.Access["read"][0] != "v2/projects/a" || len(grant.Access["write"]) != 1 {
+	if grant.Revision != "9" || grant.Route != "primary" || len(grant.Access["read"]) != 1 || grant.Access["read"][0] != "v2/projects/a/tasks" || len(grant.Access["write"]) != 1 || grant.Access["write"][0] != "v2/projects/a/tasks/working" {
 		t.Fatalf("grant=%#v", grant)
 	}
 	reader.document.Revision = 10
 	reader.document.Rules = reader.document.Rules[1:]
-	grant, err = acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, S3SessionScope{Kind: "project", ProjectID: "a"}, "primary")
+	grant, err = acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Teams: []string{"dev"}, Subject: "subject"}, S3SessionScope{Kind: "project", ProjectID: "a", Module: "task"}, "primary")
 	if err != nil || grant.Revision != "10" || len(grant.Access["read"]) != 0 {
 		t.Fatalf("renewed grant=%#v err=%v", grant, err)
 	}
@@ -72,17 +72,17 @@ func TestResolveS3SessionDerivesAllEffectiveOperationsAndCurrentRevision(t *test
 
 func TestResolveS3SessionRejectsAnonymousNoGrantAndMultipleRoutes(t *testing.T) {
 	acl := testACL(ACLRuleConfig{ID: "all", Name: "all", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"*"}})
-	if _, err := acl.ResolveS3Session(context.Background(), AnonymousPrincipal(), S3SessionScope{Kind: "project", ProjectID: "a"}, "primary"); !errors.Is(err, ErrForbidden) {
+	if _, err := acl.ResolveS3Session(context.Background(), AnonymousPrincipal(), S3SessionScope{Kind: "project", ProjectID: "a", Module: "task"}, "primary"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("anonymous error=%v", err)
 	}
-	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "nobody", Subject: "s"}, S3SessionScope{Kind: "project", ProjectID: "a"}, "primary"); err != nil {
+	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "nobody", Subject: "s"}, S3SessionScope{Kind: "project", ProjectID: "a", Module: "task"}, "primary"); err != nil {
 		t.Fatalf("authenticated wildcard grant error=%v", err)
 	}
 	acl = testACL(
 		ACLRuleConfig{ID: "one", Name: "one", Access: "authenticated", Capabilities: []string{"s3:read"}, Projects: []string{"a"}, S3Route: "one"},
 		ACLRuleConfig{ID: "two", Name: "two", Access: "authenticated", Capabilities: []string{"s3:write"}, Projects: []string{"a"}, S3Route: "two"},
 	)
-	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, S3SessionScope{Kind: "project", ProjectID: "a"}, "primary"); err == nil || !strings.Contains(err.Error(), "multiple storage routes") {
+	if _, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, S3SessionScope{Kind: "project", ProjectID: "a", Module: "task"}, "primary"); err == nil || !strings.Contains(err.Error(), "multiple storage routes") {
 		t.Fatalf("multiple route error=%v", err)
 	}
 }
@@ -92,30 +92,30 @@ func TestResolveS3SessionIsolatesProjectUserAndHubScopes(t *testing.T) {
 	principal := Principal{Username: "alice", Subject: "s"}
 	tests := []struct {
 		scope S3SessionScope
-		root  string
+		roots []string
 	}{
-		{S3SessionScope{Kind: "project", ProjectID: "project-a"}, "v2/projects/project-a"},
-		{S3SessionScope{Kind: "user"}, "v2/users/alice/memory"},
-		{S3SessionScope{Kind: "hub"}, "v2/registry"},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "task"}, []string{"v2/projects/project-a/tasks"}},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "memory"}, []string{"v2/projects/project-a/memory"}},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "knowledge"}, []string{"v2/projects/project-a/knowledge"}},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "ast"}, []string{"v2/projects/project-a/ast"}},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "hub"}, []string{"v2/projects/project-a/artifacts", "v2/projects/project-a/events", "v2/projects/project-a/project.json", "v2/projects/project-a/registry"}},
+		{S3SessionScope{Kind: "user", Module: "memory"}, []string{"v2/users/alice/memory"}},
+		{S3SessionScope{Kind: "hub", Module: "hub"}, []string{"v2/global/rules", "v2/registry"}},
 	}
 	for _, test := range tests {
 		grant, err := acl.ResolveS3Session(context.Background(), principal, test.scope, "primary")
-		found := false
-		for _, prefix := range grant.Access["read"] {
-			found = found || prefix == test.root
-		}
-		if err != nil || !found {
+		if err != nil || strings.Join(grant.Access["read"], ",") != strings.Join(test.roots, ",") {
 			t.Fatalf("scope=%#v grant=%#v err=%v", test.scope, grant, err)
 		}
 	}
-	if _, err := acl.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "project", ProjectID: "project-b"}, "primary"); err != nil {
+	if _, err := acl.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "project", ProjectID: "project-b", Module: "task"}, "primary"); err != nil {
 		t.Fatalf("wildcard project scope: %v", err)
 	}
 	limited := testACL(ACLRuleConfig{ID: "a", Name: "a", Access: "authenticated", Capabilities: []string{"s3"}, Projects: []string{"project-a"}})
-	if _, err := limited.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "project", ProjectID: "project-b"}, "primary"); !errors.Is(err, ErrForbidden) {
+	if _, err := limited.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "project", ProjectID: "project-b", Module: "task"}, "primary"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("other project error=%v", err)
 	}
-	if _, err := limited.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "user"}, "primary"); !errors.Is(err, ErrForbidden) {
+	if _, err := limited.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "user", Module: "memory"}, "primary"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("project grant opened user scope: %v", err)
 	}
 }
@@ -125,11 +125,30 @@ func TestResolveS3SessionComposesIndependentHubAndS3Rules(t *testing.T) {
 		ACLRuleConfig{ID: "hub", Name: "hub", Access: "authenticated", Capabilities: []string{"hub"}, Projects: []string{"global"}},
 		ACLRuleConfig{ID: "s3", Name: "s3", Access: "authenticated", Capabilities: []string{"s3:read"}, Projects: []string{"*"}},
 	)
-	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, S3SessionScope{Kind: "hub"}, "primary")
+	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, S3SessionScope{Kind: "hub", Module: "hub"}, "primary")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := grant.Access["read"]; len(got) != 2 || got[0] != "v2/global/rules" || got[1] != "v2/registry" {
 		t.Fatalf("hub prefixes=%#v", got)
+	}
+}
+
+func TestValidateS3SessionScopeRequiresKnownCompatibleModule(t *testing.T) {
+	tests := []struct {
+		name  string
+		scope S3SessionScope
+	}{
+		{"missing", S3SessionScope{Kind: "project", ProjectID: "project-a"}},
+		{"unknown", S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "other"}},
+		{"user task", S3SessionScope{Kind: "user", Module: "task"}},
+		{"hub ast", S3SessionScope{Kind: "hub", Module: "ast"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateS3SessionScope(test.scope); err == nil {
+				t.Fatalf("scope %#v was accepted", test.scope)
+			}
+		})
 	}
 }

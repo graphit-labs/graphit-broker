@@ -20,9 +20,9 @@ import (
 // secret key is derived from the token. Nothing about a session is stored, so any broker
 // process holding the same pepper verifies it, and a session simply expires like an STS one.
 const (
-	filesystemSessionDomain   = "graphit-broker/filesystem-storage-session/v1"
+	filesystemSessionDomain   = "graphit-broker/filesystem-storage-session/v2"
 	filesystemSecretDomain    = "graphit-broker/filesystem-storage-secret/v1"
-	filesystemSessionVersion  = 1
+	filesystemSessionVersion  = 2
 	filesystemAccessKeyPrefix = "GRAPHIT"
 )
 
@@ -41,6 +41,7 @@ type filesystemStorageSession struct {
 	Subject     string              `json:"sub"`
 	Scope       string              `json:"scp"`
 	ProjectID   string              `json:"prj,omitempty"`
+	Module      string              `json:"mod"`
 	Revision    string              `json:"rev"`
 	IssuedAt    int64               `json:"iat"`
 	ExpiresAt   int64               `json:"exp"`
@@ -80,7 +81,7 @@ func (s *FilesystemCredentialService) Issue(_ context.Context, route S3RouteConf
 	expires := now.Add(route.SessionDuration)
 	session := filesystemStorageSession{Version: filesystemSessionVersion, AccessKeyID: accessKeyID,
 		Bucket: route.Bucket, Region: route.Region, Subject: principal.CanonicalSubject(),
-		Scope: grant.Scope.Kind, ProjectID: grant.Scope.ProjectID, Revision: grant.Revision,
+		Scope: grant.Scope.Kind, ProjectID: grant.Scope.ProjectID, Module: grant.Scope.Module, Revision: grant.Revision,
 		IssuedAt: now.Unix(), ExpiresAt: expires.Unix(), Access: access}
 	token, signature, err := s.encodeSession(session)
 	if err != nil {
@@ -98,6 +99,7 @@ func (s *FilesystemCredentialService) Issue(_ context.Context, route S3RouteConf
 		AuthorizationRevision: grant.Revision,
 		Scope:                 grant.Scope.Kind,
 		ProjectID:             grant.Scope.ProjectID,
+		Module:                grant.Scope.Module,
 	}, nil
 }
 

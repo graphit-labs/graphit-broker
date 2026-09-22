@@ -62,10 +62,17 @@ func newFilesystemStorageHandler(t *testing.T, route S3RouteConfig) (http.Handle
 func issueTestCredentials(t *testing.T, credentials *FilesystemCredentialService, route S3RouteConfig, access map[string][]string, project string) S3CredentialsResponse {
 	t.Helper()
 	grant := S3SessionGrant{Revision: "7", Route: "local", Access: access,
-		Scope: S3SessionScope{Kind: "project", ProjectID: project}}
+		Scope: S3SessionScope{Kind: "project", ProjectID: project, Module: "hub"}}
 	response, err := credentials.Issue(context.Background(), route, grant, Principal{Issuer: "https://id", Subject: "alice", Username: "alice"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if response.Module != "hub" {
+		t.Fatalf("credential module=%q", response.Module)
+	}
+	session, _, err := credentials.Authenticate(response.SessionToken, response.AccessKeyID, credentials.now())
+	if err != nil || session.Module != "hub" {
+		t.Fatalf("session module=%q err=%v", session.Module, err)
 	}
 	return response
 }
@@ -638,7 +645,7 @@ func TestBrokerIssuedCredentialsOpenItsOwnFilesystemStorage(t *testing.T) {
 	defer server.Close()
 
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/s3/credentials",
-		strings.NewReader(`{"scope":"project","project_id":"project-a"}`))
+		strings.NewReader(`{"scope":"project","project_id":"project-a","module":"knowledge"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +664,7 @@ func TestBrokerIssuedCredentialsOpenItsOwnFilesystemStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if issued.Endpoint != route.Endpoint || issued.Bucket != route.Bucket || issued.Scope != "project" ||
-		issued.ProjectID != "project-a" || issued.AuthorizationRevision != "1" || issued.SessionToken == "" {
+		issued.ProjectID != "project-a" || issued.Module != "knowledge" || issued.AuthorizationRevision != "1" || issued.SessionToken == "" {
 		t.Fatalf("credentials=%#v", issued)
 	}
 	if !issued.ExpiresAt.After(time.Now()) {
@@ -665,7 +672,7 @@ func TestBrokerIssuedCredentialsOpenItsOwnFilesystemStorage(t *testing.T) {
 	}
 
 	client := newTestS3Client(t, server.URL, issued)
-	key := "graphit/v2/projects/project-a/wiki/page.md"
+	key := "graphit/v2/projects/project-a/knowledge/wiki/page.md"
 	if _, err := client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: &route.Bucket,
 		Key: aws.String(key), Body: bytes.NewReader([]byte("# page"))}); err != nil {
 		t.Fatal(err)
@@ -678,6 +685,10 @@ func TestBrokerIssuedCredentialsOpenItsOwnFilesystemStorage(t *testing.T) {
 	_ = stored.Body.Close()
 	if string(body) != "# page" {
 		t.Fatalf("body=%q", body)
+	}
+	if _, err := client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: &route.Bucket,
+		Key: aws.String("graphit/v2/projects/project-a/tasks/task.lance"), Body: bytes.NewReader([]byte("x"))}); !isAccessDenied(err) {
+		t.Fatalf("a knowledge credential wrote a task object: %v", err)
 	}
 	// The grant covers project-a only, whichever broker route the client asks through.
 	if _, err := client.PutObject(context.Background(), &s3.PutObjectInput{Bucket: &route.Bucket,
