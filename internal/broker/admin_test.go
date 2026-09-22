@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -97,6 +98,8 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		`id="identity-profile"`, `id="service-credentials"`,
 		`id="role-permissions"`, `id="assignment-subject"`, `id="assign-role"`,
 		`id="config-yaml"`, `id="config-search"`,
+		`new URLSearchParams(fragment)`, `Organization sign-in could not be verified. Please try again.`,
+		`history.replaceState(null, "", location.pathname + location.search)`, `start(loginFailure)`,
 	} {
 		if !bytes.Contains(pageBody, []byte(hook)) {
 			t.Fatalf("administration journey hook missing: %s", hook)
@@ -161,14 +164,46 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	if sessionBody.Subject != "root-subject" || sessionBody.CSRFToken == "" {
 		t.Fatalf("session=%#v", sessionBody)
 	}
-	failedLogin, _ := client.Get(httpServer.URL + "/admin/auth/login")
+	failureClient := noRedirectClient()
+	failedLogin, _ := failureClient.Get(httpServer.URL + "/admin/auth/login")
 	_ = failedLogin.Body.Close()
 	provider.exchangeErr = errors.New("synthetic token endpoint failure")
-	failedCallback, err := client.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
-	if err != nil || failedCallback.StatusCode != http.StatusUnauthorized {
+	var oidcFailureLog bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&oidcFailureLog, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	failedCallback, err := failureClient.Get(httpServer.URL + "/oauth/oidc/callback?state=" + url.QueryEscape(provider.state) + "&code=valid-code")
+	slog.SetDefault(previousLogger)
+	if err != nil || failedCallback.StatusCode != http.StatusSeeOther {
 		t.Fatalf("failed exchange callback status=%s err=%v", statusText(failedCallback), err)
 	}
+	failureLocation, err := url.Parse(failedCallback.Header.Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	failureFragment, err := url.ParseQuery(failureLocation.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failureRequestID := failureFragment.Get("request_id")
+	failureBytes, err := io.ReadAll(failedCallback.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = failedCallback.Body.Close()
+	if failureLocation.Path != "/admin/" || failureFragment.Get("login_error") != "invalid_identity" || failureRequestID == "" {
+		t.Fatalf("failed exchange redirect=%q fragment=%#v", failureLocation, failureFragment)
+	}
+	if strings.HasPrefix(failedCallback.Header.Get("Content-Type"), "application/json") || bytes.Contains(failureBytes, []byte(provider.exchangeErr.Error())) || strings.Contains(failureLocation.String(), provider.exchangeErr.Error()) {
+		t.Fatalf("public failure leaked internal cause or returned JSON: location=%q content-type=%q body=%s", failureLocation, failedCallback.Header.Get("Content-Type"), failureBytes)
+	}
+	var failureLog map[string]any
+	if err := json.NewDecoder(&oidcFailureLog).Decode(&failureLog); err != nil {
+		t.Fatal(err)
+	}
+	if failureLog["msg"] != "OIDC identity exchange failed" || failureLog["request_id"] != failureRequestID || failureLog["error"] != provider.exchangeErr.Error() {
+		t.Fatalf("failure log=%#v redirect=%#v", failureLog, failureLocation)
+	}
 	provider.exchangeErr = nil
 
 	withoutCSRF, _ := http.NewRequest(http.MethodPost, httpServer.URL+"/admin/api/v1/grants", strings.NewReader(`{"id":"public","name":"public","access":"global","capabilities":["hub"]}`))
@@ -196,6 +231,39 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 		t.Fatalf("deleted session status=%d", response.StatusCode)
 	}
 	_ = response.Body.Close()
+}
+
+func TestAdminLoginFailureRedirectIsPurposeBoundAndFragmentOnly(t *testing.T) {
+	server := &Server{}
+	for _, code := range []string{"invalid_identity", "oidc_error", "invalid_state", "admin_forbidden"} {
+		t.Run(code, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/oauth/oidc/callback", nil)
+			response := httptest.NewRecorder()
+			if !server.redirectAdminLoginFailure(response, request, OIDCFlow{Purpose: oidcPurposeAdmin}, code, "request-reference") {
+				t.Fatal("administration failure was not handled")
+			}
+			location, err := url.Parse(response.Header().Get("Location"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fragment, err := url.ParseQuery(location.Fragment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusSeeOther || location.Path != "/admin/" || location.RawQuery != "" || fragment.Get("login_error") != code || fragment.Get("request_id") != "request-reference" {
+				t.Fatalf("status=%d location=%q fragment=%#v", response.Code, location, fragment)
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/oauth/oidc/callback", nil)
+	response := httptest.NewRecorder()
+	if server.redirectAdminLoginFailure(response, request, OIDCFlow{Purpose: oidcPurposeOAuth}, "invalid_identity", "request-reference") {
+		t.Fatal("OAuth continuation was redirected to the administration login")
+	}
+	if response.Header().Get("Location") != "" {
+		t.Fatalf("OAuth continuation received administration redirect %q", response.Header().Get("Location"))
+	}
 }
 
 func TestAdminMultipleOIDCProvidersAreSelectableAndBoundToFlow(t *testing.T) {

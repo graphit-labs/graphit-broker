@@ -146,3 +146,40 @@ back to relay or anonymous access.
 The broker returns `401` for invalid signature, issuer, audience, expiry, required scope, subject,
 username, or claim shape. A valid identity without the action required by RBAC returns `403`.
 Anonymous behavior is considered only when no bearer credential was supplied.
+
+### Diagnosing browser `invalid_identity`
+
+When an upstream identity cannot be verified after a bound administration login callback, the
+Broker returns the browser to `/admin/`. The sign-in screen shows a fixed, safe error and a request
+reference instead of rendering a JSON response or exposing token-endpoint details, token contents,
+claim values, or validation policy. Use that reference to find the matching structured
+`OIDC identity exchange failed` entry in Broker logs. Its `error` field names the failed stage
+without changing the browser message. Broker-managed OAuth authorization instead returns its
+standard error to the registered client. A callback without valid state and browser binding still
+fails closed because the Broker has no trusted continuation to resume.
+
+Do not copy the callback URL, authorization code, state, ID token, access token, or client secret
+into tickets or shared diagnostic output.
+
+Check the logged stage in this order:
+
+1. For `exchange OIDC code`, verify token-endpoint reachability and the configured `client_id`,
+   `client_secret`, and exact `redirect_url`. Also check that the one-time code is fresh and unused
+   and that the same login flow supplied its PKCE verifier. Start a new login after correcting the
+   configuration; do not replay a callback URL.
+2. For `OIDC response omitted id_token`, confirm that the authorization request includes `openid`
+   and that the provider returns an ID token from its token endpoint for this client and flow.
+3. For `verify OIDC ID token` or a nonce mismatch, verify provider discovery/JWKS reachability,
+   issuer, client audience, signature and token time validity. A new login must return the nonce
+   created for that same flow.
+4. For a claim error, inspect the provider's documented ID-token claim schema and the configured
+   selectors. `subject_claim` (default `sub`) and `username_claim` must each select exactly one
+   non-empty string. `name_claim`, `email_claim`, `organization_claim`, `teams_claim`, and
+   `role_claim` are optional, but any selected value must have the documented string or string-array
+   shape; configured role values must also be safe role identifiers. Prefer provider-side claim
+   inspection or redacted schema information instead of logging token contents.
+
+After a change, start a fresh browser login and confirm that the sign-in screen no longer reports a
+failure and no new correlated log entry is written. A valid identity without administration access
+returns to the same sign-in screen with an authorization-specific message; that is authorization,
+not `invalid_identity`.

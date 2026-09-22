@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,27 +111,44 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	var continuation browserOIDCContinuation
 	if json.Unmarshal([]byte(flow.Continuation), &continuation) != nil || continuation.ProviderID == "" {
-		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", requestID(r.Context()))
+		id := requestID(r.Context())
+		if s.redirectAdminLoginFailure(w, r, flow, "invalid_state", id) {
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", id)
 		return
 	}
 	provider, ok := s.browserOIDCProvider(continuation.ProviderID)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", requestID(r.Context()))
+		id := requestID(r.Context())
+		if s.redirectAdminLoginFailure(w, r, flow, "invalid_state", id) {
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid_state", "OIDC login provider is invalid or expired", id)
 		return
 	}
 	if oidcError := strings.TrimSpace(r.URL.Query().Get("error")); oidcError != "" {
 		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected login", requestID(r.Context()))
+		id := requestID(r.Context())
+		if s.redirectAdminLoginFailure(w, r, flow, "oidc_error", id) {
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "oidc_error", "identity provider rejected login", id)
 		return
 	}
 	identity, err := provider.Identity.Exchange(r.Context(), r.URL.Query().Get("code"), flow.PKCEVerifier, flow.Nonce)
 	if err != nil {
+		id := requestID(r.Context())
+		slog.Error("OIDC identity exchange failed", "request_id", id, "error", err)
 		if flow.Purpose == oidcPurposeOAuth && s.redirectOAuthFailure(w, r, flow, "access_denied") {
 			return
 		}
-		writeError(w, http.StatusUnauthorized, "invalid_identity", "OIDC identity is invalid", requestID(r.Context()))
+		if s.redirectAdminLoginFailure(w, r, flow, "invalid_identity", id) {
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "invalid_identity", "OIDC identity is invalid", id)
 		return
 	}
 	if flow.Purpose == oidcPurposeOAuth {
@@ -145,13 +164,29 @@ func (s *Server) adminCallback(w http.ResponseWriter, r *http.Request) {
 		Teams: identity.Teams, Roles: identity.Roles, RolesFromClaim: identity.RolesFromClaim, RoleClaimSelector: identity.RoleClaimSelector}
 	allowed, err := s.authorizeAdmin(r.Context(), session, "session.read")
 	if err != nil || !allowed {
-		writeError(w, http.StatusForbidden, "admin_forbidden", "administration access denied", requestID(r.Context()))
+		id := requestID(r.Context())
+		if s.redirectAdminLoginFailure(w, r, flow, "admin_forbidden", id) {
+			return
+		}
+		writeError(w, http.StatusForbidden, "admin_forbidden", "administration access denied", id)
 		return
 	}
 	if !s.createAdminSession(w, r, session) {
 		return
 	}
 	http.Redirect(w, r, "/admin/", http.StatusSeeOther)
+}
+
+func (s *Server) redirectAdminLoginFailure(w http.ResponseWriter, r *http.Request, flow OIDCFlow, code, id string) bool {
+	if flow.Purpose != oidcPurposeAdmin {
+		return false
+	}
+	fragment := url.Values{"login_error": []string{code}}
+	if id != "" {
+		fragment.Set("request_id", id)
+	}
+	http.Redirect(w, r, "/admin/#"+fragment.Encode(), http.StatusSeeOther)
+	return true
 }
 
 func (s *Server) adminLocalLogin(w http.ResponseWriter, r *http.Request) {

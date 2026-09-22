@@ -92,6 +92,13 @@ session cookies. They are `Secure` by default; only an explicit
 State-changing cookie requests require the per-session `X-CSRF-Token`. Direct bearer requests use
 the normal broker authenticator and do not need CSRF.
 
+After a bound administration callback, an upstream rejection, invalid identity, invalid saved
+provider continuation, or missing administration permission returns the browser to the sign-in
+screen with a fixed message.
+The screen may show a request reference for log correlation, but never the provider error, token,
+claim value, authorization code, or state. Callbacks whose state and browser binding cannot be
+validated fail closed because there is no trusted administration or OAuth continuation to resume.
+
 When adaptive CAPTCHA is enabled, the local credential panel renders the selected Cloudflare
 Turnstile or Google reCAPTCHA v2 Checkbox widget only when the per-process authentication admission
 reaches its configured threshold. A request that crosses the threshold receives

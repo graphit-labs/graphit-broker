@@ -2398,6 +2398,34 @@
         $("status").textContent = text;
         $("status").className = "status " + type;
       }
+      function adminLoginFailure() {
+        const fragment = location.hash.startsWith("#")
+            ? location.hash.slice(1)
+            : "",
+          params = new URLSearchParams(fragment),
+          code = params.get("login_error");
+        if (!code) return "";
+        const messages = {
+            invalid_identity:
+              "Organization sign-in could not be verified. Please try again.",
+            oidc_error:
+              "Organization sign-in was cancelled or rejected. Please try again.",
+            invalid_state:
+              "Organization sign-in expired or is no longer valid. Please try again.",
+            admin_forbidden:
+              "Your identity does not have access to administration.",
+          },
+          requestID = params.get("request_id") || "",
+          reference = /^[A-Za-z0-9_-]{1,128}$/.test(requestID)
+            ? ` Reference: ${requestID}.`
+            : "";
+        history.replaceState(null, "", location.pathname + location.search);
+        return (
+          (messages[code] ||
+            "Organization sign-in could not be completed. Please try again.") +
+          reference
+        );
+      }
       async function api(path, options = {}) {
         if (
           options.method &&
@@ -2810,7 +2838,7 @@
         localChallenge = "";
         start();
       };
-      async function start() {
+      async function start(loginFailure = "") {
         resetInspectors();
         try {
           const [, session] = await api("/admin/api/v1/session");
@@ -2854,7 +2882,7 @@
             "ok",
           );
         } catch (error) {
-          message(error.message, "error");
+          message(loginFailure || error.message, "error");
         }
       }
       document.querySelectorAll("[data-tab]").forEach(
@@ -4052,8 +4080,9 @@
       }
 
       (async () => {
+        const loginFailure = adminLoginFailure();
         await loadLoginOptions();
-        await start();
+        await start(loginFailure);
       })();
     </script>
   </body>
