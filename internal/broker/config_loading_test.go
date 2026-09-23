@@ -10,7 +10,36 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDatabaseConnectTimeoutConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, setting string
+		want          time.Duration
+	}{
+		{"omitted", "", 15 * time.Second},
+		{"configured", "  connect_timeout: 250ms\n", 250 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := DecodeConfig(strings.NewReader("database:\n  dsn: ':memory:'\n"+test.setting), func(string) string { return "" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Database.connectTimeout(); got != test.want {
+				t.Fatalf("connect timeout = %s; want %s", got, test.want)
+			}
+		})
+	}
+	for _, setting := range []string{"0s", "-1s", "invalid"} {
+		t.Run(setting, func(t *testing.T) {
+			_, err := DecodeConfig(strings.NewReader("database:\n  dsn: ':memory:'\n  connect_timeout: "+setting+"\n"), func(string) string { return "" })
+			if err == nil || (setting != "invalid" && !strings.Contains(err.Error(), "database.connect_timeout")) {
+				t.Fatalf("connect_timeout %q accepted or error lacked field: %v", setting, err)
+			}
+		})
+	}
+}
 
 func TestLoadConfigDatabaseEnvironmentRequiresYAMLReference(t *testing.T) {
 	home, err := os.UserHomeDir()

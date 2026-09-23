@@ -3,6 +3,8 @@ database:
   # an empty BROKER_DATABASE_DSN uses the YAML-owned fallback after portable ~ expansion.
   driver: "sqlite"
   dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
+  # Optional timeout for the initial database connection (default: 15s).
+  # connect_timeout: 15s
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m

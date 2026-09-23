@@ -1,10 +1,27 @@
 package broker
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
+
+func TestOpenControlStoreConnectTimeout(t *testing.T) {
+	short := time.Nanosecond
+	cfg := DatabaseConfig{Driver: "sqlite", DSN: ":memory:", MaxOpenConns: 1, MaxIdleConns: 1, ConnectTimeout: &short}
+	if _, err := OpenControlStore(cfg, ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("short connect timeout error = %v; want deadline exceeded", err)
+	}
+	cfg.ConnectTimeout = nil
+	store, err := OpenControlStore(cfg, "")
+	if err != nil {
+		t.Fatalf("default connect timeout: %v", err)
+	}
+	defer store.Close()
+}
 
 func TestDatabaseDialectsBindAndInsertIdempotently(t *testing.T) {
 	tests := []struct {

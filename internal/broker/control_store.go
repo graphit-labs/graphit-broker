@@ -102,12 +102,14 @@ type OIDCFlow struct {
 }
 
 func OpenControlStore(cfg DatabaseConfig, tokenPepper string) (*ControlStore, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	db, dialect, err := openDatabase(ctx, cfg)
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), cfg.connectTimeout())
+	db, dialect, err := openDatabase(connectCtx, cfg)
+	cancelConnect()
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	store := &ControlStore{db: db, dialect: dialect, tokenPepper: []byte(tokenPepper)}
 	if err := store.initialize(ctx); err != nil {
 		_ = db.Close()

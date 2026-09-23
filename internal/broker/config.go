@@ -27,11 +27,19 @@ type Config struct {
 }
 
 type DatabaseConfig struct {
-	Driver          string        `yaml:"driver" json:"driver"`
-	DSN             string        `yaml:"dsn" json:"dsn"`
-	MaxOpenConns    int           `yaml:"max_open_conns" json:"max_open_conns"`
-	MaxIdleConns    int           `yaml:"max_idle_conns" json:"max_idle_conns"`
-	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime" json:"conn_max_lifetime"`
+	Driver          string         `yaml:"driver" json:"driver"`
+	DSN             string         `yaml:"dsn" json:"dsn"`
+	ConnectTimeout  *time.Duration `yaml:"connect_timeout" json:"connect_timeout,omitempty"`
+	MaxOpenConns    int            `yaml:"max_open_conns" json:"max_open_conns"`
+	MaxIdleConns    int            `yaml:"max_idle_conns" json:"max_idle_conns"`
+	ConnMaxLifetime time.Duration  `yaml:"conn_max_lifetime" json:"conn_max_lifetime"`
+}
+
+func (c DatabaseConfig) connectTimeout() time.Duration {
+	if c.ConnectTimeout != nil {
+		return *c.ConnectTimeout
+	}
+	return 15 * time.Second
 }
 
 type ServerConfig struct {
@@ -727,6 +735,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Database.DSN) == "" {
 		return errors.New("database.dsn is required")
+	}
+	if c.Database.ConnectTimeout != nil && *c.Database.ConnectTimeout <= 0 {
+		return errors.New("database.connect_timeout must be positive")
 	}
 	if c.Database.MaxOpenConns <= 0 || c.Database.MaxIdleConns < 0 || c.Database.MaxIdleConns > c.Database.MaxOpenConns {
 		return errors.New("database connection limits require max_open_conns > 0 and 0 <= max_idle_conns <= max_open_conns")

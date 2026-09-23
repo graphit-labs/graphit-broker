@@ -34,6 +34,7 @@ revocation, and last-use timestamps for administration without exposing the secr
 database:
   driver: sqlite
   dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
+  # connect_timeout: 15s  # optional; initial connection only
   max_open_conns: 1
   max_idle_conns: 1
   conn_max_lifetime: 3m
@@ -45,6 +46,12 @@ choose a different variable, a literal DSN, or no environment reference. `${NAME
 the fallback when the selected variable is empty; `${NAME:?message}` makes it required.
 Driver values are `sqlite`, `postgres`, and `mysql`. The database selection and DSN are
 deployment-owned and cannot be changed through the UI.
+
+`connect_timeout` is optional. It accepts a positive duration such as `5s` or `1m` and defaults
+to `15s`; it bounds the initial connection attempt during startup. Schema initialization has its
+own 15-second limit. After startup, Go's `database/sql` pool replaces unusable connections as
+needed. There is no broker setting for a reconnection interval or retry count, and failed SQL
+operations are not automatically replayed.
 
 The example's YAML-owned fallback stores `broker.db` under `.graphit/broker` in the current user's
 home directory. A leading `~/` in a configured SQLite path is resolved with native path rules on

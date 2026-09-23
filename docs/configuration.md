@@ -26,6 +26,7 @@ state; the pepper and resource grants are never persisted from YAML.
 |---|---:|---|
 | `driver` | `sqlite` | `sqlite`, `postgres`, or `mysql` |
 | `dsn` | required | Driver-specific connection string |
+| `connect_timeout` | `15s` | Timeout for the initial database connection; must be positive |
 | `max_open_conns` | SQLite 1; remote 20 | Maximum pool connections |
 | `max_idle_conns` | SQLite 1; remote 10 | Idle pool connections |
 | `conn_max_lifetime` | `3m` | Maximum connection lifetime |
@@ -44,6 +45,10 @@ name, a literal DSN, or a required reference such as
 `${DATABASE_URL:?set the database connection}`. For SQLite and ONNX directory fields, a configured
 leading `~/` is expanded through the operating-system user home on Linux, macOS, and Windows.
 See [database backends](database.md).
+
+`connect_timeout` uses a positive duration such as `5s` or `1m` and applies to the initial
+database connection at startup. The SQL connection pool handles later reconnections as needed;
+the broker has no configurable reconnection interval or retry count.
 
 ## Server
 
