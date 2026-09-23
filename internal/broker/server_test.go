@@ -153,7 +153,7 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatalf("rerank status=%d", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
-	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a","module":"task"}`)
+	resp = post(t, server.URL+"/v1/s3/credentials", "valid", `{"scope":"project","project_id":"project-a","module":"dream"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("s3 status=%d", resp.StatusCode)
 	}
@@ -161,7 +161,7 @@ func TestServerDiscoveryHealthAuthenticationACLAndCapabilities(t *testing.T) {
 		t.Fatal("credential response is cacheable")
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !bytes.Contains(body, []byte("secret_access_key")) || !bytes.Contains(body, []byte("session_token")) || !bytes.Contains(body, []byte(`"bucket"`)) {
+	if !bytes.Contains(body, []byte("secret_access_key")) || !bytes.Contains(body, []byte("session_token")) || !bytes.Contains(body, []byte(`"bucket"`)) || !bytes.Contains(body, []byte(`"module":"dream"`)) {
 		t.Fatalf("credential response is incomplete: %s", body)
 	}
 	_ = resp.Body.Close()

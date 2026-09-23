@@ -96,6 +96,7 @@ func TestResolveS3SessionIsolatesProjectUserAndHubScopes(t *testing.T) {
 	}{
 		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "task"}, []string{"v2/projects/project-a/tasks"}},
 		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "memory"}, []string{"v2/projects/project-a/memory"}},
+		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "dream"}, []string{"v2/projects/project-a/dream"}},
 		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "knowledge"}, []string{"v2/projects/project-a/knowledge"}},
 		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "ast"}, []string{"v2/projects/project-a/ast"}},
 		{S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "hub"}, []string{"v2/projects/project-a/artifacts", "v2/projects/project-a/events", "v2/projects/project-a/project.json", "v2/projects/project-a/registry"}},
@@ -150,5 +151,18 @@ func TestValidateS3SessionScopeRequiresKnownCompatibleModule(t *testing.T) {
 				t.Fatalf("scope %#v was accepted", test.scope)
 			}
 		})
+	}
+}
+
+func TestDreamS3SessionUsesItsOwnProjectPrefix(t *testing.T) {
+	acl := testACL(ACLRuleConfig{ID: "dream", Name: "dream", Access: "authenticated", Capabilities: []string{"s3:read", "s3:write"}, Projects: []string{"project-a"}})
+	grant, err := acl.ResolveS3Session(context.Background(), Principal{Username: "alice", Subject: "s"}, S3SessionScope{Kind: "project", ProjectID: "project-a", Module: "dream"}, "primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"read", "write"} {
+		if got := grant.Access[operation]; len(got) != 1 || got[0] != "v2/projects/project-a/dream" {
+			t.Fatalf("%s prefixes = %#v", operation, got)
+		}
 	}
 }

@@ -38,7 +38,7 @@ type S3SessionScope struct {
 }
 
 var s3StorageModules = map[string]struct{}{
-	"task": {}, "memory": {}, "knowledge": {}, "ast": {}, "hub": {},
+	"task": {}, "memory": {}, "dream": {}, "knowledge": {}, "ast": {}, "hub": {},
 }
 
 func NewACL(grants ResourceGrantReader) *ACL { return &ACL{grants: grants} }
@@ -168,7 +168,7 @@ func s3SessionScopeRoots(principal Principal, scope S3SessionScope) ([]string, e
 		switch scope.Module {
 		case "task":
 			return []string{root + "/tasks"}, nil
-		case "memory", "knowledge", "ast":
+		case "memory", "dream", "knowledge", "ast":
 			return []string{root + "/" + scope.Module}, nil
 		case "hub":
 			return []string{root + "/project.json", root + "/registry", root + "/artifacts", root + "/events"}, nil

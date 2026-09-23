@@ -62,7 +62,7 @@ request is rejected instead of guessing.
 
 `POST /v1/s3/credentials` requires an authenticated bearer and accepts exactly one framework-selected
 scope plus one required module. `project` uses an immutable project ULID and accepts `task`,
-`memory`, `knowledge`, `ast`, or `hub`; `user` accepts only `memory`; and the global `hub` scope
+`memory`, `dream`, `knowledge`, `ast`, or `hub`; `user` accepts only `memory`; and the global `hub` scope
 accepts only `hub`. Identity comes only from the verified principal and authorization comes only
 from the current SQL grant snapshot. A client cannot submit an operation, prefix, route, role,
 bucket, endpoint, duration, or policy; the project ID selects the resource whose grants must be
@@ -71,8 +71,8 @@ evaluated and the module narrows it to fixed object roots.
 For each matching rule, the broker includes an authorization operation when `capabilities` contains
 `s3` or `s3:<operation>` and `s3_operations` is empty, contains `*`, or contains that operation.
 Projects select whether a rule contributes to the requested scope. An omitted project list means
-every project. Project-module roots are `v2/projects/<project>/tasks`, `/memory`, `/knowledge`, and
-`/ast`; project-scoped Hub access is restricted to `project.json` and the `registry`, `artifacts`,
+every project. Project-module roots are `v2/projects/<project>/tasks`, `/memory`, `/dream`, `/knowledge`,
+and `/ast`; project-scoped Hub access is restricted to `project.json` and the `registry`, `artifacts`,
 and `events` subtrees. User memory remains under `v2/users/<verified-username>/memory`; global Hub
 access remains under `v2/registry` and `v2/global/rules`. Explicit prefix templates are rendered
 and intersected with the selected module roots, so even a template such as `v2` cannot enlarge the
