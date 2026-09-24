@@ -2,7 +2,7 @@
 
 include native-deps.env
 
-VERSION ?= dev
+VERSION ?= v0.2.4
 BUILD_DIR ?= .build
 GOLANGCI_LINT_VERSION ?= v2.12.2
 PREFIX ?= /usr/local/bin
