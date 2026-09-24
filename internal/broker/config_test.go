@@ -839,6 +839,39 @@ func TestOIDCIssuerNonceRequirementConfiguration(t *testing.T) {
 	}
 }
 
+func TestOIDCIssuerClaimsSourceConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, setting, expected string
+		valid                   bool
+	}{
+		{name: "default", expected: "id_token", valid: true},
+		{name: "id token", setting: "id_token", expected: "id_token", valid: true},
+		{name: "access token", setting: "access_token", expected: "access_token", valid: true},
+		{name: "userinfo", setting: "userinfo", expected: "userinfo", valid: true},
+		{name: "invalid", setting: "profile", valid: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			setting := ""
+			if test.setting != "" {
+				setting = "      claims_source: " + test.setting + "\n"
+			}
+			cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: preferred_username
+`+setting), func(string) string { return "" })
+			if test.valid {
+				if err != nil || cfg.Authentication.OIDC[0].ClaimsSource != test.expected {
+					t.Fatalf("claims_source=%q err=%v", cfg.Authentication.OIDC[0].ClaimsSource, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "claims_source") {
+				t.Fatalf("invalid claims_source error=%v", err)
+			}
+		})
+	}
+}
+
 func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
 	cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
   local:

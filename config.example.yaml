@@ -107,6 +107,9 @@ authentication:
       # request nonce in the ID token. State, browser binding, PKCE, and all other token validation
       # remain on.
       require_nonce: true
+      # Browser login reads mapped claims from id_token (default), a verified JWT access_token,
+      # or the discovered userinfo endpoint. This setting applies only to browser login.
+      claims_source: id_token
       subject_claim: "sub"
       name_claim: "name"
       email_claim: "email"

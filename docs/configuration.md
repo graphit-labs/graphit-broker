@@ -281,6 +281,7 @@ The following requirements apply to enabled entries:
 | `redirect_url` | browser login | Exact `/oauth/oidc/callback` URL; HTTP is allowed only on loopback |
 | `scopes` | no | Browser scopes; defaults to `openid profile email` |
 | `require_nonce` | no | Require the authorization request nonce in the ID token; defaults to `true`. Set `false` only for Authorization Code providers that cannot return it; state, browser binding, PKCE, and all other ID-token validation remain enabled |
+| `claims_source` | no | Source for mapped claims in browser login: `id_token` (default), `access_token`, or `userinfo`. Does not change direct bearer validation |
 | `subject_claim` | yes | Stable identity selector; defaults to `sub` |
 | `name_claim` | no | Display-name selector; defaults to `name` |
 | `email_claim` | no | Email selector; defaults to `email` |
@@ -307,6 +308,16 @@ string, one string array, or multiple selected strings and flatten/deduplicate t
 JSONPath fails configuration validation. The canonical identity is the verified issuer plus the
 value selected by `subject_claim`, formatted `issuer|subject`. Username remains a separate mutable
 login/display attribute and is never used as the stable RBAC key.
+
+For browser login, `claims_source: access_token` requires a JWT access token verifiable with the
+issuer's discovered signing keys. `claims_source: userinfo` calls the discovered userinfo endpoint
+with the issued access token. That endpoint must use HTTPS except on loopback and return a JSON
+object of at most 1 MiB without a redirect. Both sources must return a `sub` equal to the verified ID token's
+`sub`; a missing endpoint, opaque or invalid access token in JWT mode, failed userinfo response,
+or subject mismatch rejects login. Every configured claim selector, including `role_claim`, reads
+from the selected source. The ID token remains required and verified in every mode, including the
+configured nonce check. Choose the source that contains the attributes needed by this issuer; no
+fallback to another source occurs when a claim is absent.
 
 Local identities are not configuration. They are stored in the selected SQL backend and managed through
 `/admin/api/v1/local-users` or the Local users screen. Each record has a unique username, immutable
@@ -345,6 +356,7 @@ authentication:
       redirect_url: https://broker.example.com/oauth/oidc/callback
       scopes: [openid, profile, email]
       require_nonce: true
+      claims_source: id_token
       subject_claim: sub
       name_claim: name
       email_claim: email

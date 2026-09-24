@@ -31,6 +31,8 @@ See [screenshot maintenance](screenshots.md) when updating these images.
 Configure browser clients on one or more `authentication.oidc` entries. Each entry supplies issuer,
 subject, username, organization, teams, and role mappings for bearer validation and browser login,
 and its `display_name` labels the corresponding button on the login screen.
+For browser login, `claims_source` selects the ID token (default), a verified JWT access token,
+or userinfo as the source for those mappings; it does not change direct bearer validation.
 Register the exact redirect URI `https://BROKER/oauth/oidc/callback`, authorization-code flow,
 PKCE-capable endpoints, the selected scopes, and a confidential client secret. HTTP callbacks are
 accepted only on loopback.
@@ -76,6 +78,7 @@ authentication:
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback
       require_nonce: true
+      claims_source: id_token
       subject_claim: sub
       username_claim: preferred_username
       role_claim: "$.realm_access.roles[*]"

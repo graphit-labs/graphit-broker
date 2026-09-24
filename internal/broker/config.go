@@ -135,6 +135,7 @@ type LocalAuthenticationRateLimit struct {
 type OIDCIssuerConfig struct {
 	Enabled           *bool    `yaml:"enabled" json:"enabled"`
 	RequireNonce      *bool    `yaml:"require_nonce" json:"require_nonce"`
+	ClaimsSource      string   `yaml:"claims_source" json:"claims_source,omitempty"`
 	DisplayName       string   `yaml:"display_name" json:"display_name,omitempty"`
 	Issuer            string   `yaml:"issuer" json:"issuer"`
 	Audiences         []string `yaml:"audiences" json:"audiences"`
@@ -167,6 +168,13 @@ type GraphitCLIConfig struct {
 func (c OIDCIssuerConfig) isEnabled() bool { return c.Enabled == nil || *c.Enabled }
 
 func (c OIDCIssuerConfig) requiresNonce() bool { return c.RequireNonce == nil || *c.RequireNonce }
+
+func (c OIDCIssuerConfig) claimsSource() string {
+	if c.ClaimsSource == "" {
+		return "id_token"
+	}
+	return c.ClaimsSource
+}
 
 func (c OIDCIssuerConfig) loginConfigured() bool {
 	return c.isEnabled() && (strings.TrimSpace(c.ClientID) != "" || strings.TrimSpace(c.ClientSecret) != "" ||
@@ -401,6 +409,9 @@ func (c *Config) defaults() {
 	}
 	for i := range c.Authentication.OIDC {
 		issuer := &c.Authentication.OIDC[i]
+		if issuer.ClaimsSource == "" {
+			issuer.ClaimsSource = "id_token"
+		}
 		if issuer.Enabled == nil {
 			enabled := true
 			issuer.Enabled = &enabled
@@ -769,6 +780,11 @@ func (c Config) Validate() error {
 	for i, issuer := range c.Authentication.OIDC {
 		if !issuer.isEnabled() {
 			continue
+		}
+		switch issuer.claimsSource() {
+		case "id_token", "access_token", "userinfo":
+		default:
+			return fmt.Errorf("authentication.oidc[%d].claims_source must be id_token, access_token, or userinfo", i)
 		}
 		if err := validateHTTPSURL(issuer.Issuer, "OIDC issuer"); err != nil {
 			return fmt.Errorf("authentication.oidc[%d]: %w", i, err)

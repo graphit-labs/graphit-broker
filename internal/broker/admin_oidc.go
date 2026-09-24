@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -55,10 +57,12 @@ func browserOIDCProviderName(cfg OIDCIssuerConfig) string {
 }
 
 type oidcAdminProvider struct {
-	oauth      oauth2.Config
-	verifier   *oidc.IDTokenVerifier
-	httpClient *http.Client
-	config     OIDCIssuerConfig
+	oauth          oauth2.Config
+	verifier       *oidc.IDTokenVerifier
+	accessVerifier *oidc.IDTokenVerifier
+	provider       *oidc.Provider
+	httpClient     *http.Client
+	config         OIDCIssuerConfig
 }
 
 func NewAdminIdentityProvider(ctx context.Context, cfg OIDCIssuerConfig) (AdminIdentityProvider, error) {
@@ -76,7 +80,9 @@ func NewAdminIdentityProvider(ctx context.Context, cfg OIDCIssuerConfig) (AdminI
 			ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret, RedirectURL: cfg.RedirectURL,
 			Endpoint: provider.Endpoint(), Scopes: scopes,
 		},
-		verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}), httpClient: httpClient, config: cfg,
+		verifier:       provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
+		accessVerifier: provider.Verifier(&oidc.Config{SkipClientIDCheck: true}),
+		provider:       provider, httpClient: httpClient, config: cfg,
 	}, nil
 }
 
@@ -109,7 +115,80 @@ func (p *oidcAdminProvider) Exchange(ctx context.Context, code, verifier, nonce 
 	if p.config.requiresNonce() && idToken.Nonce != nonce {
 		return AdminIdentity{}, errors.New("OIDC ID token nonce mismatch")
 	}
-	return adminIdentityFromToken(idToken, p.config)
+	var claims map[string]any
+	switch p.config.claimsSource() {
+	case "id_token":
+		if err := idToken.Claims(&claims); err != nil {
+			return AdminIdentity{}, fmt.Errorf("decode OIDC ID token claims: %w", err)
+		}
+	case "access_token":
+		accessToken, err := p.accessVerifier.Verify(ctx, token.AccessToken)
+		if err != nil {
+			return AdminIdentity{}, fmt.Errorf("verify OIDC access token: %w", err)
+		}
+		if accessToken.Subject == "" || accessToken.Subject != idToken.Subject {
+			return AdminIdentity{}, errors.New("OIDC access token subject does not match ID token")
+		}
+		if err := accessToken.Claims(&claims); err != nil {
+			return AdminIdentity{}, fmt.Errorf("decode OIDC access token claims: %w", err)
+		}
+	case "userinfo":
+		claims, err = p.userinfoClaims(ctx, token.AccessToken)
+		if err != nil {
+			return AdminIdentity{}, err
+		}
+		if subject, ok := claims["sub"].(string); !ok || subject == "" || subject != idToken.Subject {
+			return AdminIdentity{}, errors.New("OIDC userinfo subject does not match ID token")
+		}
+	default:
+		return AdminIdentity{}, errors.New("invalid OIDC claims source")
+	}
+	return adminIdentityFromClaims(idToken.Issuer, claims, p.config)
+}
+
+func (p *oidcAdminProvider) userinfoClaims(ctx context.Context, accessToken string) (map[string]any, error) {
+	if accessToken == "" {
+		return nil, errors.New("OIDC response omitted access_token for userinfo")
+	}
+	endpoint := p.provider.UserInfoEndpoint()
+	if endpoint == "" {
+		return nil, errors.New("OIDC issuer has no userinfo endpoint")
+	}
+	if err := validateHTTPSOrLoopbackURL(endpoint, "OIDC userinfo endpoint"); err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("prepare OIDC userinfo request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	client := http.DefaultClient
+	if p.httpClient != nil {
+		client = p.httpClient
+	}
+	noRedirectClient := *client
+	noRedirectClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := noRedirectClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fetch OIDC userinfo: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch OIDC userinfo: status %d", response.StatusCode)
+	}
+	const maxUserinfoBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxUserinfoBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read OIDC userinfo: %w", err)
+	}
+	if len(body) > maxUserinfoBytes {
+		return nil, errors.New("OIDC userinfo response is too large")
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(body, &claims); err != nil || claims == nil {
+		return nil, errors.New("decode OIDC userinfo claims")
+	}
+	return claims, nil
 }
 
 func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context {
@@ -119,14 +198,7 @@ func (p *oidcAdminProvider) withHTTPClient(ctx context.Context) context.Context 
 	return context.WithValue(ctx, oauth2.HTTPClient, p.httpClient)
 }
 
-func adminIdentityFromToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (AdminIdentity, error) {
-	if token == nil {
-		return AdminIdentity{}, errors.New("OIDC ID token is missing")
-	}
-	var claims map[string]any
-	if err := token.Claims(&claims); err != nil {
-		return AdminIdentity{}, fmt.Errorf("decode OIDC ID token claims: %w", err)
-	}
+func adminIdentityFromClaims(issuer string, claims map[string]any, cfg OIDCIssuerConfig) (AdminIdentity, error) {
 	subjectClaim := strings.TrimSpace(cfg.SubjectClaim)
 	if subjectClaim == "" {
 		subjectClaim = "sub"
@@ -173,7 +245,7 @@ func adminIdentityFromToken(token *oidc.IDToken, cfg OIDCIssuerConfig) (AdminIde
 			return AdminIdentity{}, fmt.Errorf("role claim %q contains invalid role %q", cfg.RoleClaim, role)
 		}
 	}
-	return AdminIdentity{Issuer: token.Issuer, Subject: subject, Name: name, Email: email,
+	return AdminIdentity{Issuer: issuer, Subject: subject, Name: name, Email: email,
 		Username: username, Organization: organization, Teams: teams, Roles: cleanStrings(append(roles, userRole)),
 		RolesFromClaim: rolesFromClaim, RoleClaimSelector: strings.TrimSpace(cfg.RoleClaim)}, nil
 }

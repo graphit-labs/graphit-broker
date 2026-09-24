@@ -20,6 +20,7 @@ authentication:
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback
       scopes: [openid, profile, email]
+      claims_source: id_token
       subject_claim: sub
       name_claim: name
       email_claim: email
@@ -55,6 +56,13 @@ have different jobs:
 
 `name_claim` and `email_claim` default to `name` and `email`. `username_claim` is required.
 Organization and teams are optional. Invalid selectors or wrong selected types fail closed.
+For browser login, `claims_source` chooses `id_token` (default), `access_token`, or `userinfo`
+for all mapped claims, including roles. The ID token is still required and verified in every case.
+The access-token option requires a JWT verifiable with the issuer's keys; the userinfo option
+requires a discovered endpoint and uses the issued access token to call it. Both require a `sub`
+matching the verified ID token. Missing claims follow the usual required/optional rules; the
+Broker does not fall back to another source. This setting does not change direct bearer
+validation.
 
 ## Roles
 
@@ -98,7 +106,7 @@ logins. Only HMAC-protected state and binding are stored in SQL, using
 requires both values and consumes the flow once; a missing/wrong binding does not consume valid
 state. It then exchanges the code using the
 configured confidential client, verifies the ID token and, when configured, its nonce, maps the
-same subject/attribute selectors, then either creates a short-lived administration cookie session or resumes the pending
+same subject/attribute selectors from the configured claims source, then either creates a short-lived administration cookie session or resumes the pending
 Broker authorization. The OIDC provider library then returns a one-time code to Graphit Code's
 loopback callback and signs an EdDSA ID token whose `sub` is derived from the canonical underlying
 identity, independent of mutable username.
@@ -176,7 +184,8 @@ Check the logged stage in this order:
    `true`, a new login must return the nonce created for that same flow. Set `require_nonce: false`
    only when an Authorization Code provider cannot return it; this omits nonce from the request and
    does not weaken state, browser binding, PKCE, or the remaining ID-token checks.
-4. For a claim error, inspect the provider's documented ID-token claim schema and the configured
+4. For a claim error, inspect the provider's documented claim schema for the configured
+   `claims_source` and the configured
    selectors. `subject_claim` (default `sub`) and `username_claim` must each select exactly one
    non-empty string. `name_claim`, `email_claim`, `organization_claim`, `teams_claim`, and
    `role_claim` are optional, but any selected value must have the documented string or string-array
