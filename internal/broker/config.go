@@ -134,6 +134,7 @@ type LocalAuthenticationRateLimit struct {
 
 type OIDCIssuerConfig struct {
 	Enabled           *bool    `yaml:"enabled" json:"enabled"`
+	RequireNonce      *bool    `yaml:"require_nonce" json:"require_nonce"`
 	DisplayName       string   `yaml:"display_name" json:"display_name,omitempty"`
 	Issuer            string   `yaml:"issuer" json:"issuer"`
 	Audiences         []string `yaml:"audiences" json:"audiences"`
@@ -164,6 +165,8 @@ type GraphitCLIConfig struct {
 }
 
 func (c OIDCIssuerConfig) isEnabled() bool { return c.Enabled == nil || *c.Enabled }
+
+func (c OIDCIssuerConfig) requiresNonce() bool { return c.RequireNonce == nil || *c.RequireNonce }
 
 func (c OIDCIssuerConfig) loginConfigured() bool {
 	return c.isEnabled() && (strings.TrimSpace(c.ClientID) != "" || strings.TrimSpace(c.ClientSecret) != "" ||
@@ -401,6 +404,10 @@ func (c *Config) defaults() {
 		if issuer.Enabled == nil {
 			enabled := true
 			issuer.Enabled = &enabled
+		}
+		if issuer.RequireNonce == nil {
+			required := true
+			issuer.RequireNonce = &required
 		}
 		if issuer.SubjectClaim == "" {
 			issuer.SubjectClaim = "sub"

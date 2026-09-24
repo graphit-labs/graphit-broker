@@ -811,6 +811,34 @@ authentication:
 	}
 }
 
+func TestOIDCIssuerNonceRequirementConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		setting  string
+		required bool
+	}{
+		{name: "default", required: true},
+		{name: "required", setting: "      require_nonce: true\n", required: true},
+		{name: "optional", setting: "      require_nonce: false\n", required: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
+  oidc:
+    - issuer: https://identity.example.com
+      audiences: [graphit-broker]
+      username_claim: preferred_username
+`+test.setting), func(string) string { return "" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			issuer := cfg.Authentication.OIDC[0]
+			if issuer.RequireNonce == nil || issuer.requiresNonce() != test.required {
+				t.Fatalf("unexpected require_nonce default for %q", test.setting)
+			}
+		})
+	}
+}
+
 func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
 	cfg, err := decodeConfigForTest(strings.NewReader(`authentication:
   local:
@@ -822,6 +850,7 @@ func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
       audience: custom-audience
   oidc:
     - enabled: false
+      require_nonce: false
       client_secret: private-oidc-secret
 `), func(string) string { return "" })
 	if err != nil {
@@ -833,6 +862,9 @@ func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	var decoded struct {
+		OIDC []struct {
+			RequireNonce *bool `json:"require_nonce"`
+		} `json:"oidc"`
 		Local struct {
 			Login   struct{ Enabled bool } `json:"login"`
 			Captcha struct {
@@ -847,6 +879,9 @@ func TestNestedLocalConfigurationJSONAndSecretRedaction(t *testing.T) {
 	}
 	if decoded.Local.Login.Enabled || decoded.Local.Tokens.Audience != "custom-audience" || decoded.Local.Captcha.SecretKey != configuredSecret || decoded.Local.Captcha.TriggerMultiplier != 1.5 {
 		t.Fatalf("nested config was not preserved/redacted: %s", data)
+	}
+	if len(decoded.OIDC) != 1 || decoded.OIDC[0].RequireNonce == nil || *decoded.OIDC[0].RequireNonce {
+		t.Fatalf("OIDC require_nonce was not preserved: %s", data)
 	}
 	if strings.Contains(string(data), "local_") || strings.Contains(string(data), "private-") {
 		t.Fatalf("legacy fields or secret leaked: %s", data)

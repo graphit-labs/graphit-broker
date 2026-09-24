@@ -82,11 +82,14 @@ func NewAdminIdentityProvider(ctx context.Context, cfg OIDCIssuerConfig) (AdminI
 
 func (p *oidcAdminProvider) AuthorizationURL(state, nonce, verifier string) string {
 	challenge := sha256.Sum256([]byte(verifier))
-	return p.oauth.AuthCodeURL(state,
-		oidc.Nonce(nonce),
+	options := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:])),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
-	)
+	}
+	if p.config.requiresNonce() {
+		options = append(options, oidc.Nonce(nonce))
+	}
+	return p.oauth.AuthCodeURL(state, options...)
 }
 
 func (p *oidcAdminProvider) Exchange(ctx context.Context, code, verifier, nonce string) (AdminIdentity, error) {
@@ -103,7 +106,7 @@ func (p *oidcAdminProvider) Exchange(ctx context.Context, code, verifier, nonce 
 	if err != nil {
 		return AdminIdentity{}, fmt.Errorf("verify OIDC ID token: %w", err)
 	}
-	if idToken.Nonce != nonce {
+	if p.config.requiresNonce() && idToken.Nonce != nonce {
 		return AdminIdentity{}, errors.New("OIDC ID token nonce mismatch")
 	}
 	return adminIdentityFromToken(idToken, p.config)

@@ -103,6 +103,10 @@ authentication:
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
       redirect_url: "https://broker.example.com/oauth/oidc/callback"
       scopes: ["openid", "profile", "email"]
+      # Defaults to true. Set false only for Authorization Code providers that cannot return the
+      # request nonce in the ID token. State, browser binding, PKCE, and all other token validation
+      # remain on.
+      require_nonce: true
       subject_claim: "sub"
       name_claim: "name"
       email_claim: "email"

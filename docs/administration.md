@@ -75,6 +75,7 @@ authentication:
       client_id: graphit-broker
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback
+      require_nonce: true
       subject_claim: sub
       username_claim: preferred_username
       role_claim: "$.realm_access.roles[*]"
@@ -84,10 +85,11 @@ administration:
   cookie_secure: true
 ```
 
-The browser flow uses state, nonce, PKCE, a browser-only 256-bit binding cookie, and a short-lived
-SQL flow record containing only HMACs of state and binding. A callback from another browser fails
-without consuming the original flow. OIDC and local login both issue `HttpOnly`, `SameSite=Lax`
-session cookies. They are `Secure` by default; only an explicit
+The browser flow always uses state, PKCE, a browser-only 256-bit binding cookie, and a short-lived
+SQL flow record containing only HMACs of state and binding. It sends and validates nonce by default;
+an issuer with `require_nonce: false` omits only that optional protection. A callback from another
+browser fails without consuming the original flow. OIDC and local login both issue `HttpOnly`,
+`SameSite=Lax` session cookies. They are `Secure` by default; only an explicit
 `administration.cookie_secure: false` disables that attribute for loopback HTTP development.
 State-changing cookie requests require the per-session `X-CSRF-Token`. Direct bearer requests use
 the normal broker authenticator and do not need CSRF.

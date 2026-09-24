@@ -21,6 +21,7 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	}
 	nonce := "expected-nonce"
 	secretObserved := false
+	includeNonce := true
 	var issuer string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -40,8 +41,11 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 				http.Error(w, `{"error":"invalid_grant"}`, http.StatusUnauthorized)
 				return
 			}
-			claims := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "admin-subject"}, "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(), "nonce": nonce,
+			claims := map[string]any{"iss": issuer, "sub": "provider-subject", "identity": map[string]any{"id": "admin-subject"}, "aud": "admin-client", "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Add(-time.Minute).Unix(),
 				"profile": map[string]any{"display_name": "Admin", "email": "admin@example.test"}, "realm_access": map[string]any{"roles": []string{"admin", "auditor"}}}
+			if includeNonce {
+				claims["nonce"] = nonce
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "access", "token_type": "Bearer", "expires_in": 3600, "id_token": signJWT(t, key, claims)})
 		default:
 			http.NotFound(w, r)
@@ -50,8 +54,9 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	defer server.Close()
 	issuer = server.URL
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, server.Client())
-	provider, err := NewAdminIdentityProvider(ctx, OIDCIssuerConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/oauth/oidc/callback",
-		SubjectClaim: "$.identity.id", NameClaim: "$.profile.display_name", EmailClaim: "$.profile.email", UsernameClaim: "$.profile.email", RoleClaim: "$.realm_access.roles[*]"})
+	providerConfig := OIDCIssuerConfig{Issuer: issuer, ClientID: "admin-client", ClientSecret: "client-secret", RedirectURL: "http://localhost/oauth/oidc/callback",
+		SubjectClaim: "$.identity.id", NameClaim: "$.profile.display_name", EmailClaim: "$.profile.email", UsernameClaim: "$.profile.email", RoleClaim: "$.realm_access.roles[*]"}
+	provider, err := NewAdminIdentityProvider(ctx, providerConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,5 +73,26 @@ func TestAdminIdentityProviderUsesConfidentialCodeFlowAndVerifiesIDToken(t *test
 	}
 	if _, err := provider.Exchange(context.Background(), "valid-code", "pkce-verifier", "wrong-nonce"); err == nil {
 		t.Fatal("ID token with the wrong nonce was accepted")
+	}
+	includeNonce = false
+	if _, err := provider.Exchange(context.Background(), "valid-code", "pkce-verifier", nonce); err == nil {
+		t.Fatal("ID token without the required nonce was accepted")
+	}
+	requireNonce := false
+	providerConfig.RequireNonce = &requireNonce
+	providerWithoutNonce, err := NewAdminIdentityProvider(ctx, providerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizationURL, _ = url.Parse(providerWithoutNonce.AuthorizationURL("state", nonce, "pkce-verifier"))
+	if authorizationURL.Query().Has("nonce") || authorizationURL.Query().Get("state") != "state" || authorizationURL.Query().Get("code_challenge") == "" || authorizationURL.Query().Get("code_challenge_method") != "S256" {
+		t.Fatalf("authorization URL without nonce=%s", authorizationURL)
+	}
+	if _, err := providerWithoutNonce.Exchange(context.Background(), "valid-code", "pkce-verifier", nonce); err != nil {
+		t.Fatalf("ID token without optional nonce was rejected: %v", err)
+	}
+	includeNonce = true
+	if _, err := providerWithoutNonce.Exchange(context.Background(), "valid-code", "pkce-verifier", "different-nonce"); err != nil {
+		t.Fatalf("optional nonce was compared: %v", err)
 	}
 }

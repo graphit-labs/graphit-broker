@@ -2,5 +2,6 @@
 [mcp_servers.graphit-code-stdio-mcp]
 args = ['mcp', '--stdio']
 command = 'graphit'
+startup_timeout_sec = 120
 
 [mcp_servers.graphit-code-stdio-mcp.env]

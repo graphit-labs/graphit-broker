@@ -88,15 +88,17 @@ OIDC login outcome without turning the password into an API credential.
 
 Upstream OIDC may start from `GET /admin/auth/login?provider=ID` for administration or from a
 provider choice inside the Broker authorization. Both create random state, nonce, PKCE verifier,
-and browser-binding values. The selected provider ID is stored in the protected one-time flow, so
+and browser-binding values. By default the Broker sends the nonce and requires the same claim in
+the ID token. An issuer with `require_nonce: false` omits it from the authorization request and
+skips only that check. The selected provider ID is stored in the protected one-time flow, so
 the callback exchanges the code only with the issuer that started the login. The
 binding is held in an `HttpOnly`, `SameSite=Lax` cookie whose per-flow name permits concurrent
 logins. Only HMAC-protected state and binding are stored in SQL, using
 `authentication.token_pepper` and domains distinct from session and password domains. The callback
 requires both values and consumes the flow once; a missing/wrong binding does not consume valid
 state. It then exchanges the code using the
-configured confidential client, verifies the ID token and nonce, maps the same subject/attribute
-selectors, then either creates a short-lived administration cookie session or resumes the pending
+configured confidential client, verifies the ID token and, when configured, its nonce, maps the
+same subject/attribute selectors, then either creates a short-lived administration cookie session or resumes the pending
 Broker authorization. The OIDC provider library then returns a one-time code to Graphit Code's
 loopback callback and signs an EdDSA ID token whose `sub` is derived from the canonical underlying
 identity, independent of mutable username.
@@ -170,8 +172,10 @@ Check the logged stage in this order:
 2. For `OIDC response omitted id_token`, confirm that the authorization request includes `openid`
    and that the provider returns an ID token from its token endpoint for this client and flow.
 3. For `verify OIDC ID token` or a nonce mismatch, verify provider discovery/JWKS reachability,
-   issuer, client audience, signature and token time validity. A new login must return the nonce
-   created for that same flow.
+   issuer, client audience, signature and token time validity. With `require_nonce` omitted or
+   `true`, a new login must return the nonce created for that same flow. Set `require_nonce: false`
+   only when an Authorization Code provider cannot return it; this omits nonce from the request and
+   does not weaken state, browser binding, PKCE, or the remaining ID-token checks.
 4. For a claim error, inspect the provider's documented ID-token claim schema and the configured
    selectors. `subject_claim` (default `sub`) and `username_claim` must each select exactly one
    non-empty string. `name_claim`, `email_claim`, `organization_claim`, `teams_claim`, and

@@ -280,6 +280,7 @@ The following requirements apply to enabled entries:
 | `client_secret` | no | Confidential client secret, normally injected from a secret manager |
 | `redirect_url` | browser login | Exact `/oauth/oidc/callback` URL; HTTP is allowed only on loopback |
 | `scopes` | no | Browser scopes; defaults to `openid profile email` |
+| `require_nonce` | no | Require the authorization request nonce in the ID token; defaults to `true`. Set `false` only for Authorization Code providers that cannot return it; state, browser binding, PKCE, and all other ID-token validation remain enabled |
 | `subject_claim` | yes | Stable identity selector; defaults to `sub` |
 | `name_claim` | no | Display-name selector; defaults to `name` |
 | `email_claim` | no | Email selector; defaults to `email` |
@@ -343,6 +344,7 @@ authentication:
       client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
       redirect_url: https://broker.example.com/oauth/oidc/callback
       scopes: [openid, profile, email]
+      require_nonce: true
       subject_claim: sub
       name_claim: name
       email_claim: email
@@ -364,6 +366,11 @@ consumer bearers and populate browser identities; `client_id`, `client_secret`, 
 `scopes` enable the browser authorization-code flow independently on each issuer. Each configured
 browser client appears under its `display_name` in the login UI. A local-only UI may omit OIDC.
 Session TTL must be between 5 minutes and 168 hours.
+
+Browser login requires the ID-token `nonce` by default. An issuer configured with
+`require_nonce: false` omits nonce from the authorization request and skips only that claim check.
+Use the opt-out only for an Authorization Code provider that cannot return nonce; state, browser
+binding, PKCE, signature, issuer, audience, expiry, and configured claim validation are unchanged.
 
 `authentication.oidc[].role_claim` is optional. When absent, effective roles come from SQL
 `role_assignments`. When configured, its additional role values are authoritative for that OIDC
