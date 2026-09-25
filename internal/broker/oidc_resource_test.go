@@ -245,6 +245,20 @@ func TestResourceSurvivesAuthorizationCodeAndDynamicClientRefresh(t *testing.T) 
 	verifier := strings.Repeat("v", 64)
 	digest := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	query := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirectURI},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"}, "scope": {"openid"}}
+	withoutResource, err := noRedirectClient().Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOAuthError(t, withoutResource, "invalid_target")
+	query.Set("resource", resource)
+	query.Del("code_challenge")
+	withoutPKCE, err := noRedirectClient().Get(httpServer.URL + "/oauth/authorize?" + query.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOAuthError(t, withoutPKCE, "invalid_request")
 	code := authorizeLocalClient(t, httpServer.URL, clientID, redirectURI, challenge, "offline_access", resource)
 	tokenValues := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier}}
@@ -275,9 +289,12 @@ func TestResourceSurvivesAuthorizationCodeAndDynamicClientRefresh(t *testing.T) 
 		"refresh_token": {issued.RefreshToken}, "resource": {otherResource}}
 	assertOAuthError(t, oauthForm(t, httpServer.URL+"/oauth/token", wrongRefresh), "invalid_target")
 
-	// Omitting resource at refresh keeps the original grant rather than dropping its audience.
-	refreshed := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+	// MCP clients must identify the protected resource on every token request.
+	assertOAuthError(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {issued.RefreshToken},
+	}), "invalid_target")
+	refreshed := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {issued.RefreshToken}, "resource": {resource},
 	}))
 	verifyResourceAccessToken(t, httpServer.URL, refreshed.AccessToken, clientID, resource)
 
@@ -288,12 +305,15 @@ func TestResourceSurvivesAuthorizationCodeAndDynamicClientRefresh(t *testing.T) 
 	}))
 	verifyResourceAccessToken(t, httpServer.URL, refreshedAgain.AccessToken, clientID, resource)
 
-	// The token endpoint may omit resource on the authorization-code exchange too; the code
-	// remains bound to the resource recorded at authorization time.
+	// An authorization code also requires the resource on the token request.
 	omittedCode := authorizeLocalClient(t, httpServer.URL, clientID, redirectURI, challenge, "offline_access", resource)
-	omitted := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+	assertOAuthError(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
 		"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {omittedCode},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier},
+	}), "invalid_target")
+	omitted := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {omittedCode},
+		"redirect_uri": {redirectURI}, "code_verifier": {verifier}, "resource": {resource},
 	}))
 	verifyResourceAccessToken(t, httpServer.URL, omitted.AccessToken, clientID, resource)
 }
@@ -349,8 +369,8 @@ func verifyResourceAccessToken(t *testing.T, issuer, raw, clientID, resource str
 	if err := verified.Claims(&claims); err != nil {
 		t.Fatal(err)
 	}
-	if claims["client_id"] != clientID || !claimContains(claims["aud"], "graphit-broker") || !claimContains(claims["aud"], resource) {
-		t.Fatalf("resource access claims=%#v; want client_id=%q and both audiences", claims, clientID)
+	if claims["client_id"] != clientID || claims["token_use"] != "access" || !claimContains(claims["aud"], "graphit-broker") || !claimContains(claims["aud"], resource) {
+		t.Fatalf("resource access claims=%#v; want access token for client_id=%q and both audiences", claims, clientID)
 	}
 	return claims
 }

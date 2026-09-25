@@ -131,6 +131,9 @@ func TestLocalAuthorizationCodeRequiresPKCEAndRotatesRefreshTokens(t *testing.T)
 	if principal, err := service.oidcProvider.AuthenticateAccessToken(context.Background(), tokens.AccessToken); err != nil || principal.Username != "consumer" {
 		t.Fatalf("authenticate Broker access token principal=%#v err=%v claims=%#v", principal, err, accessClaims)
 	}
+	if principal, err := service.oidcProvider.AuthenticateAccessToken(context.Background(), tokens.IDToken); err == nil {
+		t.Fatalf("Broker API accepted an ID token as an access token: principal=%#v err=%v", principal, err)
+	}
 	userinfo := bearerRequest(t, http.MethodGet, httpServer.URL+"/oauth/userinfo", tokens.AccessToken, "")
 	var userinfoClaims map[string]any
 	if userinfo.StatusCode != http.StatusOK || json.NewDecoder(userinfo.Body).Decode(&userinfoClaims) != nil ||
@@ -475,7 +478,7 @@ func verifyBrokerAccessToken(t *testing.T, ctx context.Context, provider *coreoi
 	// checked for any product-specific scope: this provider offers only standard OIDC scopes,
 	// and a token's reach is decided by its audience.
 	scope, scopeOK := claims["scope"].(string)
-	if verified.Issuer == "" || verified.Subject == "" || verified.Expiry.Before(time.Now()) || claims["iat"] == nil || claims["jti"] == "" ||
+	if verified.Issuer == "" || verified.Subject == "" || verified.Expiry.Before(time.Now()) || claims["iat"] == nil || claims["exp"] == nil || claims["jti"] == "" || claims["token_use"] != "access" ||
 		claims["client_id"] != "graphit-cli" || claims["preferred_username"] != username || !scopeOK ||
 		!slices.Contains(strings.Fields(scope), "openid") {
 		t.Fatalf("incomplete Broker access token claims=%#v", claims)

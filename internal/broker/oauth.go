@@ -3,7 +3,9 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -454,6 +456,13 @@ func (s *Server) oauthTokenGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resources := r.PostForm["resource"]
+	// Dynamically registered clients are MCP clients. MCP requires their target
+	// resource in both authorization and token requests; the static Graphit CLI
+	// client may still obtain a Broker API token without an MCP resource.
+	if r.PostForm.Get("client_id") != s.runtime().config.Authentication.Local.Tokens.CLIClientID && len(resources) == 0 {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for an MCP client")
+		return
+	}
 	if len(resources) > 0 {
 		granted, found := s.tokenRequestGrantedResource(r)
 		if found {
@@ -506,11 +515,23 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
 		return
 	}
+	// Every Broker OP client is public, so every authorization code is bound to
+	// an S256 PKCE challenge. The provider verifies the matching code_verifier.
+	challenge := r.FormValue("code_challenge")
+	decodedChallenge, decodeErr := base64.RawURLEncoding.DecodeString(challenge)
+	if r.FormValue("code_challenge_method") != "S256" || decodeErr != nil || len(decodedChallenge) != sha256.Size || base64.RawURLEncoding.EncodeToString(decodedChallenge) != challenge {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "S256 PKCE challenge is required")
+		return
+	}
 	// RFC 8707: the library does not parse `resource`, so it is validated here against the
 	// operator's list and threaded to storage through the request context.
 	resources, err := validateRequestedResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resourceValues(r))
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource is not served by this broker")
+		return
+	}
+	if r.FormValue("client_id") != s.runtime().config.Authentication.Local.Tokens.CLIClientID && len(resources) == 0 {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for an MCP client")
 		return
 	}
 	if len(resources) > 0 {

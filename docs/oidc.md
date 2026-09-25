@@ -111,9 +111,12 @@ Broker authorization. The OIDC provider library then returns a one-time code to 
 loopback callback and signs an EdDSA ID token whose `sub` is derived from the canonical underlying
 identity, independent of mutable username.
 The access token is also an EdDSA JWT signed by the Broker and verifiable through its standard
-discovery/JWKS. Its audience is the configured Broker token audience, and it carries the stable
+discovery/JWKS. It carries `token_use: access`, the configured Broker token audience, and the stable
 Broker subject, client, scopes, preferred username, and non-empty optional organization/group/role
-claims. Refresh tokens remain opaque and rotate on every use. Broker-side revocation is immediate
+claims. A token requested for a configured MCP resource also includes that exact resource in
+`aud`; a Broker API token without the resource is not valid for MCP. This is the Broker's own
+access-token format, not the optional RFC 9068 JWT access-token profile. Refresh tokens remain
+opaque and rotate on every use. Broker-side revocation is immediate
 for Broker endpoints; offline JWKS validators accept an already issued access token until `exp`.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
@@ -129,8 +132,9 @@ An agent that has never been provisioned reaches a usable token on its own when
 `authentication.local.tokens.dynamic_registration` is enabled and `mcp_resources` names the Graphit
 deployment. It discovers the Broker from the MCP endpoint's `401`, reads
 `/.well-known/openid-configuration`, registers itself at `registration_endpoint` (RFC 7591), and
-runs Authorization Code with PKCE while passing the MCP endpoint's canonical URI as the RFC 8707
-`resource`. The Broker issues a **public** client only, so no secret is minted, stored, or returned;
+runs Authorization Code with S256 PKCE while passing the MCP endpoint's canonical URI as the RFC 8707
+`resource` in both the authorization request and every token request, including refresh. The Broker
+rejects an omitted or changed resource. The Broker issues a **public** client only, so no secret is minted, stored, or returned;
 see [configuration](configuration.md) for both keys and their exact validation rules.
 
 Revocation reaches those clients differently from a pure offline validator. A Graphit daemon
@@ -144,12 +148,12 @@ is the call to make when someone's access has to stop. Revoking an **access toke
 that token and leaves its refresh token usable, which the same section leaves as a MAY; use it to
 retire one leaked credential without forcing the client to authenticate again.
 
-## Graphit relay and token exchange
+## Graphit request bearer forwarding
 
-For HTTP MCP, Graphit may relay the end-user token when MCP and broker share an audience, or use RFC
-8693 exchange to obtain a broker-audience token. The broker independently verifies the final token
-against the configured issuer, audiences, scopes, and claim mappings. Exchange failure never falls
-back to relay or anonymous access.
+For HTTP MCP, Graphit forwards the caller's Broker-issued access JWT unchanged. The JWT carries both
+the exact MCP resource audience and the Broker API audience. The MCP listener validates the former;
+Broker APIs validate the latter and the caller's registered client grant. An invalid token is rejected
+without anonymous fallback.
 
 ## Failure behavior
 

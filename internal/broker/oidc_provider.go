@@ -654,6 +654,8 @@ func (s *brokerOIDCStorage) GetPrivateClaimsFromRequest(ctx context.Context, req
 	claims := map[string]any{
 		"preferred_username": principal.Username,
 		"scope":              strings.Join(cleanStrings(request.GetScopes()), " "),
+		// Distinguish an access JWT from the ID token signed by the same OP key.
+		"token_use": "access",
 	}
 	if name := strings.TrimSpace(principal.Name); name != "" {
 		claims["name"] = name
@@ -685,6 +687,7 @@ func (s *brokerOIDCStorage) AuthenticateAccessToken(ctx context.Context, raw str
 	// a revoked token, and RBAC decides what the principal may do.
 	claims, err := op.VerifyAccessToken[*zitoidc.AccessTokenClaims](ctx, raw, verifier)
 	if err != nil || claims.JWTID == "" || claims.Subject == "" ||
+		claims.Claims["token_use"] != "access" ||
 		!slices.Contains(claims.Audience, s.cfg.Authentication.Local.Tokens.Audience) {
 		return Principal{}, ErrUnauthenticated
 	}

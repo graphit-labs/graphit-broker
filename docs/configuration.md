@@ -212,8 +212,8 @@ authentication:
 the single source for two jobs. It validates an RFC 8707 `resource` indicator on an authorization
 request: an indicator outside the list, a relative URI, one carrying a fragment, or more than one in
 the same request is rejected with `invalid_target` and no authorization code is issued. It is also
-published in `/.well-known/graphit-broker`, which is how each Graphit daemon learns which resource it
-is and therefore what to advertise as its OAuth protected resource metadata. Empty means no indicator
+published in `/.well-known/graphit-broker`; each Graphit daemon checks that its locally configured
+canonical `--mcp-resource` URI appears in this list before advertising protected resource metadata. Empty means no indicator
 is accepted at all, so a deployment that never declares a resource cannot have tokens minted for an
 audience it never authorized. Configuration loading trims and deduplicates the list, and rejects an
 entry that is not an absolute URI or contains a fragment.
@@ -221,10 +221,11 @@ entry that is not an absolute URI or contains a fragment.
 When a request carries an accepted indicator, the issued token's `aud` holds both the Broker audience
 and that resource, and a refresh preserves the pair. Keeping the Broker audience is what lets the
 same token continue to work against the Broker's own `/v1/*` API, which the Graphit daemon relays to
-on the caller's behalf. The authorization-code and refresh-token requests may omit `resource`, in
-which case the original grant is preserved. If either request repeats it, the value must exactly
-match the single resource authorized earlier and must still be configured; another value or more
-than one value returns `invalid_target` without consuming the code or refresh token. The Broker
+on the caller's behalf. Dynamically registered MCP clients must send `resource` on authorization,
+code exchange, and every refresh. The value must exactly match the single resource authorized
+earlier and must still be configured; omission, another value, or more than one value returns
+`invalid_target` without consuming the code or refresh token. The static Graphit CLI client may
+omit `resource` when it needs only a Broker API token. The Broker
 deliberately allows one resource per grant even though RFC 8707 permits several, avoiding a bearer
 token that either resource could replay against the other.
 
@@ -245,12 +246,12 @@ one, which is what lets a desktop client vary its port. Registered clients get e
 capabilities of the configured CLI client and never more.
 
 Desktop authorization is a standard public/native OIDC client and accepts only a loopback redirect
-with a nonzero dynamic port and the configured exact path. PKCE method `S256`, `state`, `nonce`,
-and `openid` are mandatory; `openid` because OIDC Core requires it, and no product-specific scope
-beyond it, since a token's reach is decided by its audience. ID and access tokens use EdDSA and the public JWKS. Access
+with a nonzero dynamic port and the configured exact path. PKCE method `S256` and `openid` are
+mandatory; Graphit Code also sends `state` and a `nonce`, which is checked when sent. No product-specific scope
+beyond `openid` is required, since a token's reach is decided by its audience. ID and access tokens use EdDSA and the public JWKS. Access
 tokens are short-lived JWTs whose `aud` always contains `authentication.local.tokens.audience` and,
 when requested, the validated MCP resource. Their signed claims include `sub`, `client_id`, `scope`,
-`preferred_username`, and any non-empty optional identity attributes;
+`token_use: access`, `preferred_username`, and any non-empty optional identity attributes;
 refresh tokens are issued only when `offline_access` is requested, rotate on every use, retain one
 absolute lifetime, and revoke their family when reuse is detected. Service credential expiration
 is mandatory and may not exceed `service_credential_max_ttl`.
