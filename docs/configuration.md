@@ -208,14 +208,14 @@ authentication:
       mcp_resources: []
 ```
 
-`mcp_resources` lists the canonical URIs of the Graphit MCP endpoints this deployment serves. It is
-the single source for two jobs. It validates an RFC 8707 `resource` indicator on an authorization
-request: an indicator outside the list, a relative URI, one carrying a fragment, or more than one in
+`mcp_resources` lists the canonical URIs of the Graphit MCP endpoints this deployment serves. The
+Broker also accepts its own canonical `<public_url>/v1` API resource for Graphit Code browser login.
+The MCP list validates an RFC 8707 `resource` indicator on an authorization
+request: an indicator outside the list and the Broker API resource, a relative URI, one carrying a fragment, or more than one in
 the same request is rejected with `invalid_target` and no authorization code is issued. It is also
 published in `/.well-known/graphit-broker`; each Graphit daemon checks that its locally configured
-canonical `--mcp-resource` URI appears in this list before advertising protected resource metadata. Empty means no indicator
-is accepted at all, so a deployment that never declares a resource cannot have tokens minted for an
-audience it never authorized. Configuration loading trims and deduplicates the list, and rejects an
+canonical `--mcp-resource` URI appears in this list before advertising protected resource metadata. Empty means no MCP resource
+is accepted; the canonical Broker API resource remains available. Configuration loading trims and deduplicates the list, and rejects an
 entry that is not an absolute URI or contains a fragment.
 
 When a request carries an accepted indicator, the issued token's `aud` holds both the Broker audience

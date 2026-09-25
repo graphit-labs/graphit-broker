@@ -456,21 +456,20 @@ func (s *Server) oauthTokenGateway(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resources := r.PostForm["resource"]
-	// Dynamically registered clients are MCP clients. MCP requires their target
-	// resource in both authorization and token requests; the static Graphit CLI
-	// client may still obtain a Broker API token without an MCP resource.
+	// Every dynamically registered client names its target resource. The static
+	// Graphit CLI client may obtain a Broker API token without one.
 	if r.PostForm.Get("client_id") != s.runtime().config.Authentication.Local.Tokens.CLIClientID && len(resources) == 0 {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for an MCP client")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for a registered client")
 		return
 	}
 	if len(resources) > 0 {
 		granted, found := s.tokenRequestGrantedResource(r)
 		if found {
-			if err := validateTokenRequestResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resources, granted); err != nil {
+			if err := validateTokenRequestResource(oauthResources(s.runtime().config), resources, granted); err != nil {
 				writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource was not granted")
 				return
 			}
-		} else if _, err := validateRequestedResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resources); err != nil {
+		} else if _, err := validateRequestedResource(oauthResources(s.runtime().config), resources); err != nil {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource is not served by this broker")
 			return
 		}
@@ -525,13 +524,13 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	// RFC 8707: the library does not parse `resource`, so it is validated here against the
 	// operator's list and threaded to storage through the request context.
-	resources, err := validateRequestedResource(s.runtime().config.Authentication.Local.Tokens.MCPResources, resourceValues(r))
+	resources, err := validateRequestedResource(oauthResources(s.runtime().config), resourceValues(r))
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "the requested resource is not served by this broker")
 		return
 	}
 	if r.FormValue("client_id") != s.runtime().config.Authentication.Local.Tokens.CLIClientID && len(resources) == 0 {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for an MCP client")
+		writeOAuthError(w, http.StatusBadRequest, "invalid_target", "resource is required for a registered client")
 		return
 	}
 	if len(resources) > 0 {

@@ -318,6 +318,44 @@ func TestResourceSurvivesAuthorizationCodeAndDynamicClientRefresh(t *testing.T) 
 	verifyResourceAccessToken(t, httpServer.URL, omitted.AccessToken, clientID, resource)
 }
 
+func TestWebClientCanTargetBrokerAPIWithoutMCPResource(t *testing.T) {
+	_, httpServer := newResourceTestServer(t, nil)
+	resource := httpServer.URL + "/v1"
+	redirectURI := "http://127.0.0.1:49152/api/auth/callback"
+	registration, registered := registerClient(t, httpServer.URL, `{
+		"redirect_uris":["`+redirectURI+`"],
+		"token_endpoint_auth_method":"none",
+		"grant_types":["authorization_code","refresh_token"],
+		"response_types":["code"],
+		"application_type":"web",
+		"scope":"openid profile email offline_access"
+	}`)
+	if registration.StatusCode != http.StatusCreated {
+		t.Fatalf("dynamic registration status=%d body=%v", registration.StatusCode, registered)
+	}
+	clientID, _ := registered["client_id"].(string)
+	verifier := strings.Repeat("v", 64)
+	digest := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	code := authorizeLocalClient(t, httpServer.URL, clientID, redirectURI, challenge, "offline_access", resource)
+	values := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code},
+		"redirect_uri": {redirectURI}, "code_verifier": {verifier}, "resource": {resource}}
+	issued := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", values))
+	verifyResourceAccessToken(t, httpServer.URL, issued.AccessToken, clientID, resource)
+	api := bearerRequest(t, http.MethodPost, httpServer.URL+"/v1/hub/access/resolve", issued.AccessToken, `{}`)
+	defer api.Body.Close()
+	if api.StatusCode != http.StatusOK {
+		t.Fatalf("Broker API status=%d", api.StatusCode)
+	}
+	refreshed := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {issued.RefreshToken}, "resource": {resource},
+	}))
+	verifyResourceAccessToken(t, httpServer.URL, refreshed.AccessToken, clientID, resource)
+	assertOAuthError(t, oauthForm(t, httpServer.URL+"/oauth/token", url.Values{
+		"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {refreshed.RefreshToken}, "resource": {"https://unknown.example/v1"},
+	}), "invalid_target")
+}
+
 type resourceTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`

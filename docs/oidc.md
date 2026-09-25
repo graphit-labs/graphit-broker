@@ -141,6 +141,18 @@ Revocation reaches those clients differently from a pure offline validator. A Gr
 revalidates every inbound MCP access token against `/oauth/userinfo`, so a revoked token stops
 working on the next MCP request rather than at `exp`.
 
+## Graphit Code web UI clients
+
+When Graphit Code enables browser login, it registers a separate public client with an exact
+`/api/auth/callback` redirect. This uses the Broker's own OpenID Provider, regardless of how the
+Broker authenticates the person upstream. The client requests `<broker issuer>/v1` as its single
+RFC 8707 `resource` on authorization, code exchange and refresh. The Broker accepts that canonical
+API resource in addition to operator configured MCP resources, binds it to the grant, and includes
+it and the Broker API audience in the access JWT. The web client cannot change the resource during
+exchange or refresh; an MCP client still needs its endpoint's configured MCP resource. Dynamic
+registration must be enabled for Graphit Code to create the web client. The Code server verifies
+the signed ID and access JWTs and keeps the browser session in an encrypted HttpOnly cookie.
+
 The two token types revoke different amounts on purpose. Revoking a **refresh token** ends the
 whole authorization grant: that token, every access token minted from it, and any further
 renewal, which is what RFC 7009 section 2.1 asks of a server that can revoke access tokens. This

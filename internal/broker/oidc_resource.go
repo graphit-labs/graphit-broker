@@ -32,11 +32,8 @@ func requestedResource(ctx context.Context) string {
 	return resource
 }
 
-// validateRequestedResource checks an RFC 8707 indicator against what the operator configured.
-//
-// The configured list is the only source of truth. An empty list means the deployment never
-// declared a resource, so no indicator can be honoured: the broker must not mint an audience
-// for a URI an unauthenticated caller invented.
+// validateRequestedResource checks an RFC 8707 indicator against the accepted
+// resources: operator configured MCP endpoints and the canonical Broker API URI.
 func validateRequestedResource(accepted []string, values []string) ([]string, error) {
 	allowed := cleanStrings(accepted)
 	resources := make([]string, 0, len(values))
@@ -61,6 +58,13 @@ func validateRequestedResource(accepted []string, values []string) ([]string, er
 		resources = append(resources, resource)
 	}
 	return resources, nil
+}
+
+// A web client registered with this Broker targets the Broker API itself.
+// Keep that URI separate from operator configured MCP resources.
+func oauthResources(cfg Config) []string {
+	resources := append([]string(nil), cfg.Authentication.Local.Tokens.MCPResources...)
+	return append(resources, strings.TrimRight(cfg.Server.PublicURL, "/")+"/v1")
 }
 
 // validateTokenRequestResource applies the broker's RFC 8707 policy at the token endpoint.
