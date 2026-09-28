@@ -36,6 +36,59 @@ The image intentionally contains no operational YAML. The entrypoint requires
 refuses to start otherwise. The mounted YAML, after environment expansion, is always authoritative.
 It is never stored in SQL; edit or replace the deployment file/secrets and restart to apply changes.
 
+### Customize container startup with scripts
+
+Mount scripts at `/docker-entrypoint.d`, outside `GRAPHIT_GLOBAL_DIR` and its persistent data
+volume. Do not copy hooks into the global directory: the separate mount keeps them available even
+when that volume is replaced. They run during each entrypoint invocation. There are two optional
+directories:
+
+| Directory | When it runs | Typical use |
+| --- | --- | --- |
+| `init.d` | Before the entrypoint creates and checks `GRAPHIT_GLOBAL_DIR` and its `broker` directory | Prepare files or create the configuration before the required-file check. |
+| `pre-start.d` | After the directories and `GRAPHIT_BROKER_CONFIG` have been checked, immediately before the broker starts | Inspect the final files or perform a last setup step. |
+
+For example, create local scripts and mount them read-only with a Compose override:
+
+```bash
+mkdir -p entrypoint.d/init.d entrypoint.d/pre-start.d
+cat > entrypoint.d/init.d/10-prepare.sh <<'EOF'
+#!/bin/sh
+set -eu
+mkdir -p "$GRAPHIT_GLOBAL_DIR/broker/models"
+EOF
+cat > entrypoint.d/pre-start.d/20-check.sh <<'EOF'
+#!/bin/sh
+set -eu
+test -r "$GRAPHIT_BROKER_CONFIG"
+EOF
+chmod 0755 entrypoint.d entrypoint.d/init.d entrypoint.d/pre-start.d
+chmod 0644 entrypoint.d/init.d/10-prepare.sh entrypoint.d/pre-start.d/20-check.sh
+cat > compose.custom.yml <<'EOF'
+services:
+  broker:
+    volumes:
+      - ./entrypoint.d:/docker-entrypoint.d:ro
+EOF
+docker compose -f docker-compose.yml -f compose.custom.yml up -d
+```
+
+The normal configuration setup shown above is still required for this example. An `init.d` script
+may instead create `GRAPHIT_BROKER_CONFIG` itself, provided it writes a regular file readable by
+the broker user. Files in each hook directory run in filename order, so prefixes such as `10-` and
+`20-` make dependencies clear. Every non-hidden regular `.sh` file runs with `/bin/sh` and only
+needs read permission; another file needs execute permission and an interpreter available in the
+image. Hidden files are ignored. A non-regular entry, unreadable script, non-executable non-`.sh`
+file, or nonzero script exit stops startup with a diagnostic naming the hook. Missing or empty hook
+directories do nothing.
+
+Hooks run as `graphit` (UID/GID 10001), under the same read-only root filesystem and volume
+permissions as the broker. Mount scripts read-only and make directories traversable and scripts
+readable by that user. They run on every container start and for entrypoint commands such as
+`--check-config`, `--setup-models`, and `--version`; make them safe to run more than once. Scripts
+run as child processes: exported variables they set do not change the later hooks or broker
+environment. Use mounted files or the container environment for values that must persist.
+
 Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
 correctly. Set `server.public_url` to the externally visible HTTPS origin; that exact value becomes
 the Broker's OpenID issuer. When upstream OIDC browser login is enabled, register the public

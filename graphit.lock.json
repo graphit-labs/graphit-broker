@@ -8,5 +8,13 @@
     "codex",
     "claude"
   ],
+  "hooks": {
+    "pre-commit": [
+      "sh -n docker-entrypoint.sh scripts/container-smoke.sh"
+    ],
+    "pre-push": [
+      "make docker-check"
+    ]
+  },
   "artifacts": {}
 }

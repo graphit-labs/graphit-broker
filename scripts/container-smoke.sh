@@ -56,6 +56,81 @@ docker run --rm --user 0:0 --entrypoint /bin/sh \
     -v "$workspace/writable:/mnt/graphit" \
     "$image" -c 'test -d /mnt/graphit/broker/runtime/onnxruntime'
 
+mkdir -p "$workspace/hooks/init.d" "$workspace/hooks/pre-start.d" "$workspace/hooks-global"
+chmod 0777 "$workspace/hooks-global"
+cat > "$workspace/hooks/init.d/10-create-config.sh" <<'EOF'
+#!/bin/sh
+set -eu
+test "$(id -u)" = 10001
+test ! -d "$GRAPHIT_GLOBAL_DIR/broker"
+mkdir -p "$GRAPHIT_GLOBAL_DIR/broker"
+cp /tmp/health-only.yaml "$GRAPHIT_BROKER_CONFIG"
+printf 'init-10\n' >> "$GRAPHIT_GLOBAL_DIR/hooks.trace"
+EOF
+cat > "$workspace/hooks/init.d/20-order.sh" <<'EOF'
+#!/bin/sh
+set -eu
+test "$(cat "$GRAPHIT_GLOBAL_DIR/hooks.trace")" = init-10
+printf 'init-20\n' >> "$GRAPHIT_GLOBAL_DIR/hooks.trace"
+EOF
+cat > "$workspace/hooks/init.d/30-executable" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'init-30\n' >> "$GRAPHIT_GLOBAL_DIR/hooks.trace"
+EOF
+chmod 0755 "$workspace/hooks/init.d/30-executable"
+cat > "$workspace/hooks/pre-start.d/10-config.sh" <<'EOF'
+#!/bin/sh
+set -eu
+test -r "$GRAPHIT_BROKER_CONFIG"
+test "$(cat "$GRAPHIT_GLOBAL_DIR/hooks.trace")" = "$(printf 'init-10\ninit-20\ninit-30')"
+printf 'pre-start-10\n' >> "$GRAPHIT_GLOBAL_DIR/hooks.trace"
+EOF
+cat > "$workspace/hooks/pre-start.d/20-order.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'pre-start-20\n' >> "$GRAPHIT_GLOBAL_DIR/hooks.trace"
+EOF
+docker run --rm \
+    -e GRAPHIT_GLOBAL_DIR=/mnt/graphit \
+    -e GRAPHIT_BROKER_CONFIG=/mnt/graphit/broker/config.yaml \
+    -v "$workspace/hooks-global:/mnt/graphit" \
+    -v "$workspace/hooks:/docker-entrypoint.d:ro" \
+    -v "$PWD/examples/health-only.yaml:/tmp/health-only.yaml:ro" \
+    "$image" --version >/dev/null
+test "$(cat "$workspace/hooks-global/hooks.trace")" = "$(printf 'init-10\ninit-20\ninit-30\npre-start-10\npre-start-20')"
+test -f "$workspace/hooks-global/broker/config.yaml"
+test ! -e "$workspace/hooks-global/init.d"
+test ! -e "$workspace/hooks-global/pre-start.d"
+
+mkdir -p "$workspace/fail-init/init.d" "$workspace/fail-pre-start/pre-start.d"
+printf '#!/bin/sh\nexit 42\n' > "$workspace/fail-init/init.d/10-fail.sh"
+printf '#!/bin/sh\nexit 43\n' > "$workspace/fail-pre-start/pre-start.d/10-fail.sh"
+if fail_output=$(docker run --rm \
+    -v "$workspace/writable:/mnt/graphit" \
+    -e GRAPHIT_GLOBAL_DIR=/mnt/graphit \
+    -e GRAPHIT_BROKER_CONFIG=/mnt/graphit/broker/config.yaml \
+    -v "$workspace/fail-init:/docker-entrypoint.d:ro" \
+    "$image" --version 2>&1); then
+    echo "container unexpectedly continued after init.d hook failure" >&2
+    exit 1
+else
+    test "$?" -eq 42
+fi
+printf '%s\n' "$fail_output" | grep -F '10-fail.sh' | grep -F 'failed with exit code 42'
+if fail_output=$(docker run --rm \
+    -v "$workspace/writable:/mnt/graphit" \
+    -e GRAPHIT_GLOBAL_DIR=/mnt/graphit \
+    -e GRAPHIT_BROKER_CONFIG=/mnt/graphit/broker/config.yaml \
+    -v "$workspace/fail-pre-start:/docker-entrypoint.d:ro" \
+    "$image" --version 2>&1); then
+    echo "container unexpectedly continued after pre-start.d hook failure" >&2
+    exit 1
+else
+    test "$?" -eq 43
+fi
+printf '%s\n' "$fail_output" | grep -F '10-fail.sh' | grep -F 'failed with exit code 43'
+
 mkdir "$workspace/blocked"
 chmod 000 "$workspace/blocked"
 if blocked_output=$(docker run --rm \
