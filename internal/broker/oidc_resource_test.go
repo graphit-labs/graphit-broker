@@ -341,6 +341,7 @@ func TestWebClientCanTargetBrokerAPIWithoutMCPResource(t *testing.T) {
 	values := url.Values{"grant_type": {"authorization_code"}, "client_id": {clientID}, "code": {code},
 		"redirect_uri": {redirectURI}, "code_verifier": {verifier}, "resource": {resource}}
 	issued := decodeTokenResponse(t, oauthForm(t, httpServer.URL+"/oauth/token", values))
+	verifyResourceIDToken(t, httpServer.URL, issued.IDToken, clientID, resource)
 	verifyResourceAccessToken(t, httpServer.URL, issued.AccessToken, clientID, resource)
 	api := bearerRequest(t, http.MethodPost, httpServer.URL+"/v1/hub/access/resolve", issued.AccessToken, `{}`)
 	defer api.Body.Close()
@@ -358,6 +359,7 @@ func TestWebClientCanTargetBrokerAPIWithoutMCPResource(t *testing.T) {
 
 type resourceTokenResponse struct {
 	AccessToken  string `json:"access_token"`
+	IDToken      string `json:"id_token"`
 	RefreshToken string `json:"refresh_token"`
 }
 
@@ -411,6 +413,29 @@ func verifyResourceAccessToken(t *testing.T, issuer, raw, clientID, resource str
 		t.Fatalf("resource access claims=%#v; want access token for client_id=%q and both audiences", claims, clientID)
 	}
 	return claims
+}
+
+func verifyResourceIDToken(t *testing.T, issuer, raw, clientID, resource string) {
+	t.Helper()
+	if raw == "" {
+		t.Fatal("token endpoint omitted ID token")
+	}
+	ctx := coreoidc.InsecureIssuerURLContext(context.Background(), issuer)
+	provider, err := coreoidc.NewProvider(ctx, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := provider.Verifier(&coreoidc.Config{ClientID: clientID}).Verify(ctx, raw)
+	if err != nil {
+		t.Fatalf("verify ID token: %v", err)
+	}
+	var claims map[string]any
+	if err := verified.Claims(&claims); err != nil {
+		t.Fatal(err)
+	}
+	if !claimContains(claims["aud"], clientID) || !claimContains(claims["aud"], "graphit-broker") || !claimContains(claims["aud"], resource) || claims["azp"] != clientID {
+		t.Fatal("ID token must bind the web client and its configured audiences")
+	}
 }
 
 func claimContains(value any, want string) bool {
