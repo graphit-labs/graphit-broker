@@ -10,9 +10,13 @@
   ],
   "hooks": {
     "pre-commit": [
-      "sh -n docker-entrypoint.sh scripts/container-smoke.sh"
+      "sh -n docker-entrypoint.sh scripts/container-smoke.sh",
+      "node scripts/check-admin-ui.cjs",
+      "go test ./internal/broker -run TestAdminOIDCLoginSessionCSRFAndLogout -count=1"
     ],
     "pre-push": [
+      "go vet ./...",
+      "go test ./...",
       "make docker-check"
     ]
   },

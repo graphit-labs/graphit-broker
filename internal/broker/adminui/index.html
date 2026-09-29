@@ -1124,6 +1124,25 @@
         height: 18px;
         flex: none;
       }
+      .permission-action {
+        display: grid;
+        gap: 3px;
+      }
+      .permission-action small {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+        font-size: 11px;
+      }
+      .permission-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .permission-summary .permission-action {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 10px;
+      }
       .profile-layout {
         display: grid;
         grid-template-columns: 1fr 1fr 1fr;
@@ -1147,21 +1166,22 @@
         text-align: left;
       }
       .signin-hero {
-        max-width: 740px;
+        max-width: 1000px;
         margin: 0 auto;
-        display: block;
+        display: grid;
+        grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.1fr);
+        min-height: 0;
       }
       .signin-copy {
         border: 0;
-        border-bottom: 1px solid var(--border);
-        padding: 0 0 24px;
-        margin-bottom: 24px;
+        padding: 42px;
+        margin: 0;
       }
       .signin-methods {
         display: flex;
         flex-direction: column;
         gap: 24px;
-        padding: 0;
+        padding: 36px;
       }
       .signin-methods .subpanel {
         border: 0;
@@ -1171,7 +1191,12 @@
         font-size: 20px;
       }
       .signin-hero .signin-copy h2 {
-        font-size: 28px;
+        font-size: 32px;
+      }
+      @media (max-width: 900px) {
+        .signin-hero { grid-template-columns: 1fr; }
+        .signin-copy { padding: 28px; }
+        .signin-methods { padding: 24px; }
       }
       .permission-denied {
         display: none !important;
@@ -1268,6 +1293,122 @@
       .table-wrap {
         overscroll-behavior-x: contain;
       }
+      .grant-form-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.65fr) minmax(260px, 1fr);
+        gap: 32px;
+        align-items: start;
+      }
+      .grant-form-main { min-width: 0; }
+      .grant-group {
+        margin: 0;
+        padding: 24px 0;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        min-width: 0;
+      }
+      .grant-group legend {
+        padding: 0;
+        font-size: 17px;
+        font-weight: 650;
+        letter-spacing: -0.025em;
+      }
+      .grant-group > .muted { margin: 4px 0 16px; }
+      .choice-row, .choice-list { display: grid; gap: 10px; }
+      .choice-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .choice-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .choice-row label, .choice-list label {
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+        min-width: 0;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--card);
+        cursor: pointer;
+        line-height: 1.4;
+      }
+      .choice-row label:has(input:checked), .choice-list label:has(input:checked) {
+        border-color: var(--primary);
+        background: var(--accent);
+      }
+      .choice-row label:has(input:focus-visible), .choice-list label:has(input:focus-visible) {
+        outline: 2px solid var(--primary);
+        outline-offset: 2px;
+      }
+      .choice-row input, .choice-list input {
+        flex: none;
+        width: 18px;
+        height: 18px;
+        min-width: 18px;
+        margin: 3px 0 0;
+        padding: 0;
+        accent-color: var(--primary);
+      }
+      .choice-row span, .choice-list span { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; margin: 0; }
+      .choice-row small, .choice-list small {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 400;
+      }
+      .grant-dependent { margin-top: 16px; }
+      .grant-dependent label, .grant-advanced label { display: block; }
+      .grant-dependent label > span, .grant-advanced label > span {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: 600;
+      }
+      .grant-dependent input, .grant-dependent select, .grant-dependent textarea,
+      .grant-advanced input { width: 100%; }
+      .grant-dependent textarea { min-height: 76px; }
+      .grant-dependent label + label { display: block; margin-top: 14px; }
+      .grant-warning, .grant-error {
+        padding: 12px 14px;
+        margin: 16px 0 0;
+        border-radius: 6px;
+        color: var(--warn);
+        background: var(--warn-soft);
+      }
+      .grant-error { color: var(--danger); background: var(--danger-soft); }
+      .grant-advanced { padding: 18px 0; border-bottom: 1px solid var(--border); }
+      .grant-advanced summary { color: var(--primary); font-weight: 600; cursor: pointer; }
+      .grant-advanced .editor-fields { margin: 16px 0 0; gap: 16px; }
+      .grant-preview {
+        position: sticky;
+        top: 20px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--primary);
+        border-radius: 6px;
+        background: var(--muted-surface);
+      }
+      .grant-preview .fact-list { margin: 8px 0 14px; }
+      .grant-preview .fact-list dt { font-size: 12px; text-transform: none; letter-spacing: 0; }
+      .grant-preview .fact-list dd { font-weight: 600; }
+      .identity-simple { max-width: 820px; margin: 0 auto; }
+      .identity-simple > .muted { margin: 0 0 22px; }
+      .identity-simple .grant-advanced { margin-top: 18px; }
+      .identity-simple .grant-advanced .editor-fields { margin-top: 18px; }
+      .assignment-choice { display: grid; gap: 8px; margin: 18px 0 4px; }
+      .assignment-choice label { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+      .assignment-choice input { width: 18px; min-width: 18px; height: 18px; margin: 0; accent-color: var(--primary); }
+      #role-assignments .grant-dependent select, #role-assignments .grant-dependent input { width: 100%; }
+      #tab-access .actions { white-space: normal; min-width: 220px; }
+      #tab-access .actions button { margin: 2px 5px 2px 0; }
+      #tab-access td { overflow-wrap: anywhere; }
+      @media (max-width: 1050px) {
+        .grant-form-layout { grid-template-columns: 1fr; }
+        .grant-preview { position: static; grid-row: 1; }
+      }
+      @media (max-width: 650px) {
+        .choice-row, .choice-list { grid-template-columns: 1fr; }
+        .grant-group { padding: 20px 0; }
+        #tab-access .editor-footer { align-items: stretch; }
+        #tab-access .editor-footer button { flex: 1; }
+      }
     </style>
   </head>
   <body class="dark">
@@ -1308,7 +1449,7 @@
           <button
             data-tab="projects"
             data-permission="projects.read"
-            data-title="Project access"
+            data-title="Your projects"
             data-kicker="Connect your environment"
             data-description="Your authorized projects and Graphit CLI connection"
           >
@@ -1321,9 +1462,23 @@
             ></span>
             Projects
           </button>
-          <p class="nav-section-label" style="margin-top: 26px">
-            Identity & access
-          </p>
+          <p class="nav-section-label" style="margin-top: 26px">Identity &amp; access</p>
+          <button
+            data-tab="access"
+            data-permission="grants.read"
+            data-title="Project access"
+            data-kicker="Identity & access"
+            data-description="Choose who can use projects and what they can do"
+          >
+            <span class="nav-icon"
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path
+                  d="M12 3 4.5 6v5.5c0 4.8 3.2 7.8 7.5 9.5 4.3-1.7 7.5-4.7 7.5-9.5V6z"
+                />
+                <path d="m9 12 2 2 4-4" /></svg
+            ></span>
+            Project access
+          </button>
           <button
             data-tab="users"
             data-permission="users.read"
@@ -1339,35 +1494,21 @@
                 /></svg
             ></span>
             Local users</button
-          ><button
+          >
+          <button
             data-tab="roles"
             data-permission="roles.read"
-            data-title="Roles"
-            data-kicker="Administration permissions"
-            data-description="Define reusable permissions and assign them to identities"
+            data-title="Administration roles"
+            data-kicker="Identity & access"
+            data-description="Give or remove permissions to manage the Broker"
           >
             <span class="nav-icon"
               ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path d="M5 4h14v4H5zM5 10h14v4H5zM5 16h14v4H5z" />
                 <path d="M8 6h.01M8 12h.01M8 18h.01" /></svg
             ></span>
-            Roles</button
-          ><button
-            data-tab="access"
-            data-permission="grants.read"
-            data-title="Resource grants"
-            data-kicker="Resource access"
-            data-description="Manage capability and project authorization rules"
+            Admin roles</button
           >
-            <span class="nav-icon"
-              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path
-                  d="M12 3 4.5 6v5.5c0 4.8 3.2 7.8 7.5 9.5 4.3-1.7 7.5-4.7 7.5-9.5V6z"
-                />
-                <path d="m9 12 2 2 4-4" /></svg
-            ></span>
-            Resource grants
-          </button>
           <p class="nav-section-label" style="margin-top: 26px">Operations</p>
           <button
             data-tab="configuration"
@@ -1397,12 +1538,6 @@
             ><span id="identity">Checking session…</span>
           </div>
           <div class="sidebar-actions">
-            <a
-              id="signin"
-              class="button primary hidden"
-              href="/admin/auth/login"
-              >Sign in</a
-            >
             <button
               id="theme-toggle"
               type="button"
@@ -1461,26 +1596,25 @@
           <section id="signed-out" class="signed-out hidden">
             <div class="panel signin-hero">
               <div class="signin-copy">
-                <div class="eyebrow">Secure administration</div>
-                <h2>Connect your identity to the Broker</h2>
+                <div class="eyebrow">Graphit Broker</div>
+                <h2>Choose how to sign in</h2>
                 <p>
-                  Use your organization account or a local identity to access
-                  projects, policies and runtime configuration.
+                  Use your organization account or a Broker account to open
+                  your projects and administration tools.
                 </p>
               </div>
               <div class="signin-methods">
                 <div id="oidc-login-panel" class="subpanel">
-                  <div class="section-label">Organization</div>
-                  <h2>Choose an organization account</h2>
+                  <div class="section-label">Organization account</div>
+                  <h2>Sign in with your organization</h2>
                   <p class="muted">
-                    Continue through one of the configured OpenID Connect
-                    providers.
+                    Choose the sign-in service your organization uses.
                   </p>
                   <div id="oidc-provider-buttons" class="provider-list"></div>
                 </div>
                 <div id="local-login-panel" class="subpanel">
-                  <div class="section-label">Identity verification</div>
-                  <h2 id="local-step-title">Sign in locally</h2>
+                  <div class="section-label">Broker account</div>
+                  <h2 id="local-step-title">Sign in with a Broker account</h2>
                   <div id="local-credentials-step">
                     <label
                       ><span>Username</span
@@ -1508,7 +1642,7 @@
                       class="primary"
                       style="margin-top: 14px; width: 100%"
                     >
-                      Sign in locally
+                      Sign in
                     </button>
                   </div>
                   <div id="local-password-step" class="hidden">
@@ -1590,8 +1724,8 @@
                 ><button id="reload-projects">Refresh</button>
               </div>
               <div id="all-projects" class="callout hidden">
-                Your grants include all projects. Discover project metadata
-                through Graphit Hub after connecting your CLI.
+                  You can access all projects, including new ones. Connect your
+                  CLI below to find project names and details in Graphit Hub.
               </div>
               <div class="directory-tools">
                 <label class="search-field"
@@ -1599,7 +1733,7 @@
                   ><input
                     id="project-search"
                     type="search"
-                    placeholder="Find an authorized project"
+                    placeholder="Search listed project IDs"
                 /></label>
               </div>
               <div class="directory-layout">
@@ -1642,8 +1776,8 @@
                 <aside class="panel">
                   <h2>Configuration index</h2>
                   <p class="muted">
-                    Choose a section or find a value in the redacted deployment
-                    document.
+                     Find a setting or jump to a section of the current,
+                     redacted deployment configuration.
                   </p>
                   <label
                     ><span>Find in configuration</span
@@ -1657,8 +1791,8 @@
                   <div class="inspector-divider">
                     <h3>Apply a deployment change</h3>
                     <p class="muted">
-                      Update config.yml or its environment-provided secrets,
-                      then restart the Broker.
+                       Update the deployment config.yaml or its secrets,
+                       then restart the Broker.
                     </p>
                     <span class="tag">Read only</span>
                   </div>
@@ -1680,227 +1814,109 @@
             <section id="tab-access" class="tab hidden">
               <div id="grant-directory">
                 <div class="scope-strip">
-                  <span>Grants add access when a rule matches.</span
-                  ><span id="access-revision" class="revision"></span
-                  ><button id="reload-access">Refresh</button
-                  ><button
-                    id="new-rule"
-                    class="primary"
-                    data-write="grants.write"
-                  >
-                    Compose grant
-                  </button>
+                  <span>Access applies to new requests as soon as it is saved.</span>
+                  <span id="access-revision" class="revision"></span>
+                  <button id="reload-access">Refresh</button>
+                  <button id="new-rule" class="primary" data-write="grants.write">Give access</button>
                 </div>
                 <div class="directory-tools">
-                  <label class="search-field"
-                    ><span class="sr-only"
-                      >Find a grant, audience or capability</span
-                    ><input
-                      id="grant-search"
-                      type="search"
-                      placeholder="Find a grant, audience or capability"
-                  /></label>
+                  <label class="search-field"><span class="sr-only">Find an access rule</span>
+                    <input id="grant-search" type="search" placeholder="Search people, projects or access" />
+                  </label>
                 </div>
                 <section class="panel">
                   <div class="section-heading">
-                    <h2>Resource policy</h2>
+                    <div><h2>Who has access</h2><p class="muted">Each row adds access for its audience. Removing a row can take access away.</p></div>
                     <span id="grant-count" class="muted"></span>
                   </div>
                   <div class="table-wrap">
                     <table>
-                      <thead>
-                        <tr>
-                          <th>Grant</th>
-                          <th>Audience</th>
-                          <th>Capabilities</th>
-                          <th>Resource scope</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
+                      <thead><tr><th>Who</th><th>Projects</th><th>Can do</th><th>Actions</th></tr></thead>
                       <tbody id="rules"></tbody>
                     </table>
                   </div>
                 </section>
+                <section id="grant-inspector" class="panel hidden" aria-live="polite"></section>
               </div>
-              <section
-                id="grant-editor"
-                class="panel hidden"
-                data-write="grants.write"
-              >
+              <section id="grant-editor" class="panel grant-editor hidden" data-write="grants.write" aria-labelledby="rule-title">
                 <div class="section-heading">
-                  <div>
-                    <div class="eyebrow">Policy composer</div>
-                    <h2 id="rule-title">Compose a resource grant</h2>
-                  </div>
-                  <button id="close-rule">Back to policy</button>
+                  <div><h2 id="rule-title" tabindex="-1">Give project access</h2><p class="muted">Choose who, where, and what they can do. Changes apply to the next request.</p></div>
+                  <button id="close-rule">Back to access list</button>
                 </div>
-                <nav
-                  id="grant-steps"
-                  class="journey-steps"
-                  aria-label="Grant composition"
-                >
-                  <button data-grant-step="0">01 · Audience</button
-                  ><button data-grant-step="1">02 · Resources</button
-                  ><button data-grant-step="2">03 · Storage</button
-                  ><button data-grant-step="3">04 · Review</button>
-                </nav>
-                <div class="composer-layout">
-                  <div>
-                    <section data-grant-panel="0">
-                      <h3>Who needs access, and why?</h3>
-                      <p class="muted">
-                        Choose the verified identity attribute this rule
-                        matches. Administration roles are independent.
-                      </p>
+                <div class="grant-form-layout">
+                  <div class="grant-form-main">
+                    <fieldset class="grant-group">
+                      <legend>Who gets access?</legend>
+                      <p class="muted">Choose the identity that the Broker has verified.</p>
+                      <div class="choice-row">
+                        <label><input type="radio" name="grant-audience" value="authenticated" checked /><span>People signed in<small>Anyone with a valid account or token</small></span></label>
+                        <label><input type="radio" name="grant-audience" value="team" /><span>A team<small>Members of one team</small></span></label>
+                        <label><input type="radio" name="grant-audience" value="user" /><span>One person<small>Match a username</small></span></label>
+                        <label><input type="radio" name="grant-audience" value="more" /><span>Other audience<small>Organization, subject or public access</small></span></label>
+                      </div>
+                      <div id="rule-other-audience" class="grant-dependent hidden">
+                        <label><span>Audience</span><select id="rule-access">
+                          <option value="organization">One organization</option>
+                          <option value="subject">One exact identity</option>
+                          <option value="global">Everyone, including visitors</option>
+                          <option value="anonymous">Visitors who are not signed in</option>
+                        </select></label>
+                      </div>
+                      <div id="rule-principal-field" class="grant-dependent hidden">
+                        <label><span id="rule-principal-label">Name or ID</span><input id="rule-principal" autocomplete="off" />
+                          <small id="rule-principal-help" class="field-help">Enter the exact value from the verified identity.</small></label>
+                      </div>
+                      <p id="rule-audience-warning" class="grant-warning hidden">This includes requests without a signed-in identity. Storage credentials still require sign-in.</p>
+                    </fieldset>
+                    <fieldset class="grant-group">
+                      <legend>Which projects?</legend>
+                      <div class="choice-row two-options">
+                        <label><input type="radio" name="grant-scope" value="all" checked /><span>All projects<small>Current and future projects</small></span></label>
+                        <label><input type="radio" name="grant-scope" value="selected" /><span>Specific projects<small>Match exact project IDs</small></span></label>
+                      </div>
+                      <div id="rule-project-field" class="grant-dependent hidden">
+                        <label><span>Project IDs</span><textarea id="rule-projects" rows="2" placeholder="One project ID per line"></textarea>
+                          <small class="field-help">Paste project IDs from Graphit Hub. Separate several IDs with commas or new lines.</small></label>
+                      </div>
+                    </fieldset>
+                    <fieldset class="grant-group">
+                      <legend>What can they do?</legend>
+                      <div class="choice-list">
+                        <label><input type="radio" name="grant-preset" value="read" checked /><span><strong>Read project data</strong><small>Find projects and read their stored data</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="discover" /><span><strong>Find projects</strong><small>See available projects without storage access</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="write" /><span><strong>Work on projects</strong><small>Read and write project data</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="manage" /><span><strong>Manage project data</strong><small>Read, write, publish and delete</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="ai" /><span><strong>Use AI tools</strong><small>Embeddings and reranking</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="custom" /><span><strong>Choose capabilities</strong><small>For an existing or specialized rule</small></span></label>
+                      </div>
+                      <p class="field-help">Reading or changing stored project data needs project storage to be set up. If it is not, choose <strong>Find projects</strong> to give access to project discovery.</p>
+                      <div id="rule-custom-fields" class="grant-dependent hidden">
+                        <label><span>Capabilities</span><input id="rule-capabilities" placeholder="hub, s3, embeddings, rerank" />
+                          <small class="field-help">Separate capabilities with commas. Use s3:read for a specific storage operation.</small></label>
+                        <label><span>Storage operations</span><input id="rule-operations" placeholder="read, write, publish, delete" />
+                          <small class="field-help">Leave empty to use the capability's full default access.</small></label>
+                      </div>
+                    </fieldset>
+                    <details id="rule-advanced" class="grant-advanced">
+                      <summary>Advanced details</summary>
+                      <p class="muted">Most grants do not need these settings. Keep existing values when editing a specialized rule.</p>
                       <div class="editor-fields">
-                        <label
-                          ><span>Stable grant ID</span
-                          ><input
-                            id="rule-id"
-                            placeholder="team-platform-projects"
-                          /><small class="field-help"
-                            >Used in API URLs and audit references. It cannot
-                            change after creation.</small
-                          ></label
-                        ><label
-                          ><span>Display name</span
-                          ><input
-                            id="rule-name"
-                            placeholder="Platform team project access"
-                          /><small class="field-help"
-                            >Describe who receives access and why.</small
-                          ></label
-                        ><label
-                          ><span>Audience</span
-                          ><select id="rule-access">
-                            <option value="global">
-                              Everyone — including anonymous requests
-                            </option>
-                            <option value="anonymous">
-                              Anonymous requests only
-                            </option>
-                            <option value="authenticated">
-                              Any signed-in identity
-                            </option>
-                            <option value="user">One username</option>
-                            <option value="team">One team</option>
-                            <option value="organization">
-                              One organization
-                            </option>
-                            <option value="subject">
-                              One canonical subject
-                            </option></select
-                          ><small class="field-help"
-                            >RBAC roles do not grant project access; this
-                            audience is evaluated independently.</small
-                          ></label
-                        ><label id="rule-principal-field" class="wide hidden"
-                          ><span id="rule-principal-label">Principal value</span
-                          ><input
-                            id="rule-principal"
-                            placeholder="platform"
-                          /><small id="rule-principal-help" class="field-help"
-                            >Enter the exact value from the verified
-                            identity.</small
-                          ></label
-                        >
+                        <label><span>Rule name</span><input id="rule-name" placeholder="Generated from your choices" /><small class="field-help">Optional label shown in the access list.</small></label>
+                        <label><span>Storage route</span><input id="rule-route" placeholder="Configured default" /><small class="field-help">Use a configured route name only when needed.</small></label>
+                        <label class="wide"><span>Storage prefixes</span><input id="rule-prefixes" placeholder="No extra prefix constraint" /><small class="field-help">Comma-separated logical key templates.</small></label>
                       </div>
-                    </section>
-                    <section data-grant-panel="1" class="hidden">
-                      <h3>What can this audience use?</h3>
-                      <p class="muted">
-                        Combine the capability with its project scope. An empty
-                        project list means every project.
-                      </p>
-                      <div class="editor-fields">
-                        <label
-                          ><span>Capabilities</span
-                          ><input
-                            id="rule-capabilities"
-                            placeholder="hub, embeddings, rerank, s3"
-                          /><small class="field-help"
-                            >At least one is required. Use
-                            <code>s3:read</code> to grant a single S3
-                            operation.</small
-                          ></label
-                        ><label
-                          ><span>Projects</span
-                          ><input
-                            id="rule-projects"
-                            placeholder="01ARZ3NDEKTSV4RRFFQ69G5FAV"
-                          /><small class="field-help"
-                            >Exact project ULIDs or <code>*</code>. Leave blank
-                            to match all projects.</small
-                          ></label
-                        >
-                      </div>
-                    </section>
-                    <section data-grant-panel="2" class="hidden">
-                      <h3>Constrain storage access</h3>
-                      <p id="storage-not-needed" class="muted">
-                        Storage constraints apply only to grants containing an
-                        S3 capability.
-                      </p>
-                      <div id="rule-s3-section">
-                        <div class="editor-fields">
-                          <label
-                            ><span>Allowed operations</span
-                            ><input
-                              id="rule-operations"
-                              placeholder="read, write, publish"
-                            /><small class="field-help"
-                              >Supported values: read, write, publish and
-                              delete.</small
-                            ></label
-                          ><label
-                            ><span>Storage route</span
-                            ><input
-                              id="rule-route"
-                              placeholder="Default route"
-                            /><small class="field-help"
-                              >Leave blank to use the configured default
-                              route.</small
-                            ></label
-                          ><label
-                            ><span>Key prefix templates</span
-                            ><input
-                              id="rule-prefixes"
-                              placeholder="v2/projects/{project}"
-                            /><small class="field-help"
-                              >Supports project, username, organization and
-                              subject placeholders.</small
-                            ></label
-                          >
-                        </div>
-                      </div>
-                    </section>
-                    <section data-grant-panel="3" class="hidden">
-                      <h3>Review the access you will grant</h3>
-                      <p class="muted">
-                        Matching rules are additive. This change applies to
-                        subsequent requests.
-                      </p>
-                      <div id="grant-review" class="review-sheet"></div>
-                    </section>
+                      <input id="rule-id" type="hidden" />
+                    </details>
+                    <p id="grant-error" class="grant-error hidden" role="alert" tabindex="-1"></p>
                     <div class="editor-footer">
-                      <button id="clear-rule">Reset draft</button>
-                      <div>
-                        <button id="grant-back">Previous</button
-                        ><button id="grant-next" class="primary">
-                          Continue</button
-                        ><button id="apply-rule" class="primary hidden">
-                          Create grant
-                        </button>
-                      </div>
+                      <button id="clear-rule" type="button">Reset choices</button>
+                      <button id="apply-rule" class="primary" type="button">Give access</button>
                     </div>
                   </div>
-                  <aside class="context-note">
-                    <div class="eyebrow">Draft scope</div>
+                  <aside class="grant-preview" aria-live="polite">
+                    <h3>Access to grant</h3>
                     <div id="grant-summary"></div>
-                    <p class="muted">
-                      A request with no matching grant is denied. Project
-                      identifiers and identity attributes must match exactly.
-                    </p>
+                    <p class="muted">Access is added to any other matching rules. Administration roles are managed separately.</p>
                   </aside>
                 </div>
               </section>
@@ -1974,163 +1990,48 @@
               >
                 <div class="section-heading">
                   <div>
-                    <div class="eyebrow">Identity configuration</div>
-                    <h2 id="user-title">Create local identity</h2>
+                    <div class="eyebrow">Local users</div>
+                    <h2 id="user-title">Add a person</h2>
                   </div>
-                  <button id="close-user">Back to directory</button>
+                  <button id="close-user">Back to users</button>
                 </div>
-                <div class="identity-editor-layout">
-                  <aside>
-                    <nav
-                      class="section-index"
-                      aria-label="Identity editor sections"
-                    >
-                      <a href="#identity-core">Identity</a
-                      ><a href="#identity-membership">Membership</a
-                      ><a href="#identity-security">Authentication</a>
-                    </nav>
-                    <p class="muted">
-                      The subject anchors authorization. Human and service
-                      identities have different authentication methods.
-                    </p>
-                  </aside>
-                  <div>
-                    <section id="identity-core" class="editor-section">
-                      <h3>Identity & sign-in method</h3>
-                      <div class="editor-fields">
-                        <label
-                          ><span>Username</span
-                          ><input
-                            id="user-username"
-                            autocomplete="off"
-                            placeholder="alice"
-                          /><small class="field-help"
-                            >May be renamed later without changing the
-                            authorization identity.</small
-                          ></label
-                        ><label
-                          ><span>Stable subject</span
-                          ><input
-                            id="user-subject"
-                            autocomplete="off"
-                            placeholder="identity-01"
-                          /><small class="field-help"
-                            >Immutable after creation. Local RBAC uses
-                            <code>local|subject</code>.</small
-                          ></label
-                        ><label
-                          ><span>Identity type</span
-                          ><select id="user-kind">
-                            <option value="human">
-                              Human — password and MFA
-                            </option>
-                            <option value="service">
-                              Service — revocable credentials
-                            </option></select
-                          ><small id="user-kind-help" class="field-help"
-                            >Humans sign in with a password and enroll MFA when
-                            required.</small
-                          ></label
-                        >
-                      </div>
-                    </section>
-                    <section id="identity-membership" class="editor-section">
-                      <h3>Profile & membership</h3>
-                      <p class="muted">
-                        Verified attributes available to resource grants.
-                      </p>
-                      <div class="editor-fields">
-                        <label
-                          ><span>Display name</span
-                          ><input
-                            id="user-name"
-                            autocomplete="off"
-                            placeholder="Alice Example" /></label
-                        ><label
-                          ><span>Email</span
-                          ><input
-                            id="user-email"
-                            type="email"
-                            autocomplete="off"
-                            placeholder="alice@example.com" /></label
-                        ><label
-                          ><span>Organization</span
-                          ><input
-                            id="user-organization"
-                            autocomplete="off"
-                            placeholder="acme" /></label
-                        ><label
-                          ><span>Teams</span
-                          ><input
-                            id="user-teams"
-                            placeholder="platform, security"
-                          /><small class="field-help"
-                            >Comma-separated exact team identifiers used by team
-                            grants.</small
-                          ></label
-                        ><label
-                          ><span>Additional system roles</span
-                          ><input
-                            id="user-roles"
-                            placeholder="admin, auditor"
-                          /><small class="field-help"
-                            >Controls Broker and admin actions. Every enabled
-                            identity already receives the built-in
-                            <code>user</code> role.</small
-                          ></label
-                        >
-                      </div>
-                    </section>
-                    <section id="identity-security" class="editor-section">
-                      <h3>Authentication & access state</h3>
-                      <p class="muted">
-                        Changes invalidate existing sessions and credentials.
-                      </p>
-                      <div class="editor-fields">
-                        <label
-                          ><span>Identity state</span
-                          ><select id="user-enabled">
-                            <option value="true">
-                              Enabled — can authenticate
-                            </option>
-                            <option value="false">
-                              Disabled — access blocked
-                            </option>
-                          </select></label
-                        ><label id="user-password-field"
-                          ><span>Password</span
-                          ><input
-                            id="user-password"
-                            type="password"
-                            minlength="15"
-                            autocomplete="new-password"
-                          /><small id="user-password-help" class="field-help"
-                            >At least 15 characters. Required when creating a
-                            human; blank keeps the current password while
-                            editing.</small
-                          ></label
-                        ><label id="user-password-change-field"
-                          ><span>Next sign-in</span
-                          ><select id="user-password-change">
-                            <option value="false">
-                              Use current password state
-                            </option>
-                            <option value="true">
-                              Require password change
-                            </option></select
-                          ><small class="field-help"
-                            >An administrator can require a change but only the
-                            user can clear it.</small
-                          ></label
-                        >
-                      </div>
-                    </section>
-                    <div class="editor-footer">
-                      <button id="clear-user">Reset draft</button
-                      ><button id="save-user" class="primary">
-                        Create identity
-                      </button>
+                <div class="identity-simple">
+                  <p class="muted">Add someone who signs in, or a service that uses revocable credentials.</p>
+                  <div class="editor-fields">
+                    <label><span>Account type</span><select id="user-kind">
+                      <option value="human">Person</option>
+                      <option value="service">Service</option>
+                    </select><small id="user-kind-help" class="field-help">People sign in with a password and set up MFA when required.</small></label>
+                    <label><span>Name</span><input id="user-name" autocomplete="off" placeholder="Alice Example" /></label>
+                    <label><span>Username</span><input id="user-username" autocomplete="off" placeholder="alice" />
+                      <small class="field-help">Used to sign in. You can rename it later.</small></label>
+                    <label id="user-password-field"><span>Temporary password</span><input id="user-password" type="password" minlength="15" autocomplete="new-password" />
+                      <small id="user-password-help" class="field-help">At least 15 characters. The person changes it at first sign-in.</small></label>
+                  </div>
+                  <details id="user-advanced" class="grant-advanced">
+                    <summary>Advanced details</summary>
+                    <p class="muted">Set these only when an existing identity or access policy needs exact values.</p>
+                    <div class="editor-fields">
+                      <label><span>Stable subject</span><input id="user-subject" autocomplete="off" />
+                        <small class="field-help">Generated automatically for new accounts. Changing it before creation changes the permanent identity.</small></label>
+                      <label><span>Email</span><input id="user-email" type="email" autocomplete="off" placeholder="alice@example.com" /></label>
+                      <label><span>Organization</span><input id="user-organization" autocomplete="off" placeholder="acme" /></label>
+                      <label><span>Teams</span><input id="user-teams" placeholder="platform, security" />
+                        <small class="field-help">Exact team names used by project access rules, separated by commas.</small></label>
+                      <label><span>Additional administration roles</span><input id="user-roles" placeholder="admin, auditor" />
+                        <small class="field-help">Every account already has the basic user role. You can also give roles from Admin roles.</small></label>
+                      <label><span>Account state</span><select id="user-enabled">
+                        <option value="true">Enabled</option><option value="false">Disabled</option>
+                      </select></label>
+                      <label id="user-password-change-field"><span>Next sign-in</span><select id="user-password-change">
+                        <option value="false">Keep current requirement</option>
+                        <option value="true">Require password change</option>
+                      </select><small class="field-help">Only the account owner can complete a required password change.</small></label>
                     </div>
+                  </details>
+                  <div class="editor-footer">
+                    <button id="clear-user">Reset changes</button>
+                    <button id="save-user" class="primary">Add person</button>
                   </div>
                 </div>
               </section>
@@ -2184,14 +2085,14 @@
                   grants</span
                 ><button id="reload-roles">Refresh</button>
               </div>
-              <nav class="journey-steps" aria-label="Role workspace">
-                <button data-role-view="definitions" class="active">
-                  Role definitions</button
-                ><button data-role-view="assignments">
-                  Identity assignments
+              <nav class="journey-steps" aria-label="Administration roles">
+                <button data-role-view="assignments" class="active">
+                  Who has roles</button
+                ><button data-role-view="definitions">
+                  Define roles
                 </button>
               </nav>
-              <div id="role-definitions">
+              <div id="role-definitions" class="hidden">
                 <div class="directory-tools">
                   <label class="search-field"
                     ><span class="sr-only">Find a role</span
@@ -2275,14 +2176,14 @@
                   </div>
                 </section>
               </div>
-              <div id="role-assignments" class="hidden">
+              <div id="role-assignments">
                 <div id="bootstrap-note" class="callout hidden">
                   Every authenticated identity receives the built-in user role,
                   even without explicit assignments.
                 </div>
                 <div class="directory-layout">
                   <section class="panel">
-                    <h2>Explicit assignments</h2>
+                    <h2>Who can administer</h2>
                     <p class="muted">
                       Configured identity-provider role claims take precedence
                       over database assignments.
@@ -2291,7 +2192,7 @@
                       <table>
                         <thead>
                           <tr>
-                            <th>Canonical identity</th>
+                            <th>Person or identity</th>
                             <th>Role</th>
                             <th></th>
                           </tr>
@@ -2301,30 +2202,27 @@
                     </div>
                   </section>
                   <aside class="panel inspector" data-write="roles.write">
-                    <div class="eyebrow">Assign responsibility</div>
-                    <h2>Grant an administration role</h2>
-                    <div class="editor-fields">
-                      <label style="margin-top: 16px"
-                        ><span>Canonical identity</span
-                        ><input
-                          id="assignment-subject"
-                          placeholder="local|identity-01"
-                        /><small class="field-help"
-                          >Format: <code>issuer|subject</code>. For local users
-                          the issuer is <code>local</code>.</small
-                        ></label
-                      ><label style="margin-top: 13px"
-                        ><span>Role to grant</span
-                        ><select id="assignment-role"></select
-                      ></label>
+                    <h2>Give an administration role</h2>
+                    <div class="assignment-choice" role="group" aria-label="Identity type">
+                      <label><input type="radio" name="assignment-kind" value="local" checked /> Local person or service</label>
+                      <label><input type="radio" name="assignment-kind" value="external" /> External identity</label>
+                    </div>
+                    <div id="assignment-local-field" class="grant-dependent">
+                      <label><span>Person or service</span><select id="assignment-local"></select>
+                        <small class="field-help">Choose a local identity. The Broker uses its stable subject automatically.</small></label>
+                    </div>
+                    <div id="assignment-external-field" class="grant-dependent hidden">
+                      <label><span>Exact external identity</span><input id="assignment-subject" placeholder="issuer|subject" />
+                        <small class="field-help">Use the verified issuer and subject, separated by a vertical bar.</small></label>
+                    </div>
+                    <div class="grant-dependent">
+                      <label><span>Role to give</span><select id="assignment-role"></select></label>
                     </div>
                     <p class="muted">
-                      Use issuer|subject, not an email or display name. The
-                      assignment applies on the next request.
+                      Administration roles control the Broker console. Project access is managed separately.
+                      The change applies on the next request.
                     </p>
-                    <button id="assign-role" class="primary">
-                      Assign role
-                    </button>
+                    <button id="assign-role" class="primary">Give role</button>
                   </aside>
                 </div>
               </div>
@@ -2343,6 +2241,7 @@
         selectedService = "",
         credentialRequest = 0,
         localUsers = [],
+        sessionGeneration = 0,
         roles = [],
         actions = [],
         providerCommand = "",
@@ -2354,8 +2253,8 @@
       const captchaScripts = {};
       let sessionPermissions = new Set(),
         authorizedProjects = [],
+        allProjectsAccess = false,
         selectedProject = "",
-        grantStep = 0,
         selectedIdentity = "",
         selectedRole = "",
         assignmentState = { assignments: [] };
@@ -2460,8 +2359,11 @@
           showSignedOut();
           throw new Error("Sign in required.");
         }
-        if (!response.ok)
-          throw new Error(body.error?.message || `HTTP ${response.status}`);
+        if (!response.ok) {
+          const error = new Error(body.error?.message || `HTTP ${response.status}`);
+          error.status = response.status;
+          throw error;
+        }
         return [response, body];
       }
       function setPageHeader(title, kicker, description) {
@@ -2548,19 +2450,16 @@
           link.textContent = "Continue with " + provider.name;
           container.appendChild(link);
         }
-        const signin = $("signin");
-        signin.href =
-          providers.length === 1
-            ? "/admin/auth/login?provider=" +
-              encodeURIComponent(providers[0].id)
-            : "#signed-out";
       }
       function showSignedOut() {
         resetInspectors();
+        sessionGeneration++;
+        localUsers = [];
+        $("assignment-local").replaceChildren();
+        $("assignment-subject").value = "";
         $("app").classList.add("hidden");
         $("admin-nav").classList.add("hidden");
         $("signed-out").classList.remove("hidden");
-        $("signin").classList.toggle("hidden", oidcProviders().length === 0);
         $("logout").classList.add("hidden");
         $("identity").textContent = "Signed out";
         setPageHeader(
@@ -2588,7 +2487,6 @@
             "hidden",
             !loginOptions.local,
           );
-          $("signin").classList.toggle("hidden", oidcProviders().length === 0);
           if (loginOptions.captcha)
             await renderLocalCaptcha(loginOptions.captcha);
         } catch {}
@@ -2623,7 +2521,7 @@
           id !== "local-credentials-step" || !oidcProviders().length,
         );
         $("local-step-title").textContent = {
-          "local-credentials-step": "Sign in locally",
+          "local-credentials-step": "Sign in with a Broker account",
           "local-password-step": "Choose your new password",
           "local-mfa-step": "Verify your identity",
           "local-recovery-step": "Save recovery codes",
@@ -2840,6 +2738,10 @@
       };
       async function start(loginFailure = "") {
         resetInspectors();
+        sessionGeneration++;
+        localUsers = [];
+        $("assignment-local").replaceChildren();
+        $("assignment-subject").value = "";
         try {
           const [, session] = await api("/admin/api/v1/session");
           csrf = session.csrf_token;
@@ -2848,7 +2750,6 @@
             session.email ||
             session.username ||
             session.subject;
-          $("signin").classList.add("hidden");
           $("logout").classList.remove("hidden");
           $("signed-out").classList.add("hidden");
           $("admin-nav").classList.remove("hidden");
@@ -2868,8 +2769,11 @@
           if (can("projects.read")) loaders.push(loadProjects());
           if (can("configuration.read")) loaders.push(loadConfig());
           if (can("grants.read")) loaders.push(loadAccess());
-          if (can("users.read")) loaders.push(loadUsers());
-          if (can("roles.read")) loaders.push(loadRoles());
+          if (can("users.read")) {
+            const usersLoad = loadUsers();
+            loaders.push(usersLoad);
+            if (can("roles.read")) loaders.push(usersLoad.then(loadRoles, loadRoles));
+          } else if (can("roles.read")) loaders.push(loadRoles());
           const first = document.querySelector("[data-tab]:not(.hidden)");
           if (first) first.click();
           await Promise.all(loaders);
@@ -2937,11 +2841,15 @@
       async function loadProjects() {
         const [, body] = await api("/admin/api/v1/projects");
         authorizedProjects = body.projects || [];
+        allProjectsAccess = Boolean(body.all_projects);
         providerCommand = body.provider_command || "";
-        $("provider-command").textContent = providerCommand;
+        $("provider-command").textContent = providerCommand || "Connection commands are unavailable for this Broker.";
+        $("copy-provider").disabled = !providerCommand;
+        $("project-search").disabled = authorizedProjects.length === 0;
+        if (!authorizedProjects.length) $("project-search").value = "";
         $("projects-revision").textContent =
           `Authorization revision ${body.authorization_revision}`;
-        $("all-projects").classList.toggle("hidden", !body.all_projects);
+        $("all-projects").classList.toggle("hidden", !allProjectsAccess);
         if (!authorizedProjects.some((p) => p.id === selectedProject))
           selectedProject = "";
         renderProjects();
@@ -2961,6 +2869,7 @@
       async function loadConfig() {
         const [, body] = await api("/admin/api/v1/config");
         $("config-yaml").value = body.yaml || "";
+        $("copy-config").disabled = !$("config-yaml").value;
         $("config-revision").textContent =
           "Read only · restart to apply deployment changes";
         const headings = [
@@ -2971,7 +2880,7 @@
             (x) =>
               `<button data-config-offset="${x.index}">${escapeHTML(x[1])}</button>`,
           )
-          .join("");
+          .join("") || '<p class="muted">No configuration sections available.</p>';
         findConfig();
       }
       $("reload-config").onclick = () =>
@@ -2983,183 +2892,296 @@
         const [response, body] = await api("/admin/api/v1/grants");
         accessETag = response.headers.get("ETag");
         policy = body;
+        $("grant-inspector").classList.add("hidden");
+        $("grant-inspector").replaceChildren();
         $("access-revision").textContent = `revision ${body.revision}`;
         renderRules();
       }
+      const grantPresets = {
+        discover: { capabilities: ["hub"], s3_operations: [] },
+        read: { capabilities: ["hub", "s3"], s3_operations: ["read"] },
+        write: { capabilities: ["hub", "s3"], s3_operations: ["read", "write"] },
+        manage: { capabilities: ["hub", "s3"], s3_operations: ["read", "write", "publish", "delete"] },
+        ai: { capabilities: ["embeddings", "rerank"], s3_operations: [] },
+      };
+      const grantPresetNames = {
+        discover: "Find projects",
+        read: "Read project data",
+        write: "Work on projects",
+        manage: "Manage project data",
+        ai: "Use AI tools",
+        custom: "Custom capabilities",
+      };
+      const grantAudienceNames = {
+        authenticated: "People signed in",
+        team: "Team",
+        user: "Person",
+        organization: "Organization",
+        subject: "Exact identity",
+        global: "Everyone, including visitors",
+        anonymous: "Visitors",
+      };
+      const grantPrincipalLabels = {
+        team: ["Team ID", "Enter the exact team from the verified identity."],
+        user: ["Username", "Enter the exact username from the verified identity."],
+        organization: ["Organization ID", "Enter the exact organization from the verified identity."],
+        subject: ["Identity subject", "Enter the exact subject from the verified identity."],
+      };
+      const grantValues = (id) => $(id).value.split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
+      const selectedGrantValue = (name) => document.querySelector(`input[name="${name}"]:checked`)?.value;
+      function chooseGrantValue(name, value) {
+        const input = document.querySelector(`input[name="${name}"][value="${value}"]`);
+        if (input) input.checked = true;
+      }
+      function currentGrantAudience() {
+        const audience = selectedGrantValue("grant-audience");
+        return audience === "more" ? $("rule-access").value : audience;
+      }
+      function presetForGrant(rule) {
+        if (rule.s3_route || (rule.s3_prefixes || []).length) return "custom";
+        const same = (a, b) => JSON.stringify([...(a || [])].sort()) === JSON.stringify([...(b || [])].sort());
+        return Object.keys(grantPresets).find((key) =>
+          same(rule.capabilities, grantPresets[key].capabilities) &&
+          same(rule.s3_operations, grantPresets[key].s3_operations)
+        ) || "custom";
+      }
+      function grantAudienceText(rule) {
+        const label = grantAudienceNames[rule.access] || rule.access;
+        return rule.principal ? `${label}: ${rule.principal}` : label;
+      }
+      function grantProjectText(rule) {
+        return !rule.projects?.length || rule.projects.includes("*")
+          ? "All projects" : rule.projects.join(", ");
+      }
+      function grantCapabilityText(rule) {
+        const preset = presetForGrant(rule);
+        return preset === "custom"
+          ? (rule.capabilities || []).join(", ") +
+            (rule.s3_operations?.length ? ` · Storage: ${rule.s3_operations.join(", ")}` : "")
+          : grantPresetNames[preset];
+      }
       function renderRules() {
-        const q = $("grant-search").value.toLowerCase(),
-          rows = (policy.rules || [])
-            .map((r, i) => ({ r, i }))
-            .filter(({ r }) => JSON.stringify(r).toLowerCase().includes(q));
-        $("grant-count").textContent =
-          `${rows.length} of ${(policy.rules || []).length} grants`;
-        $("rules").innerHTML =
-          rows
-            .map(
-              ({ r, i }) =>
-                `<tr><td><button class="link-button" data-inspect-grant="${i}"><strong>${escapeHTML(r.name)}</strong><br><code>${escapeHTML(r.id)}</code></button></td><td>${escapeHTML(r.access)}${r.principal ? `<br><code>${escapeHTML(r.principal)}</code>` : ""}</td><td>${tags(r.capabilities)}</td><td>${r.projects?.length ? tags(r.projects) : '<span class="tag">All projects</span>'}${tags(r.s3_operations)}${r.s3_route ? `<br>Route: ${escapeHTML(r.s3_route)}` : ""}${tags(r.s3_prefixes)}</td><td class="actions">${canAction("grants.write") ? `<button onclick="editRule(${i})">Edit</button><button class="danger" onclick="removeRule(${i})">Delete</button>` : '<span class="muted">Read only</span>'}</td></tr>`,
-            )
-            .join("") ||
-          '<tr><td colspan="5" class="empty-state">' +
-            (q
-              ? "No grants match this search."
-              : "No grants. Consumer requests are denied until a rule matches.") +
-            "</td></tr>";
-      }
-      const ruleLists = {
-        capabilities: "capabilities",
-        projects: "projects",
-        operations: "s3_operations",
-        prefixes: "s3_prefixes",
-      };
-      const principalAudiences = {
-        user: ["Username", "Exact username from the verified identity."],
-        team: ["Team ID", "Exact team identifier from the verified identity."],
-        organization: [
-          "Organization ID",
-          "Exact organization identifier from the verified identity.",
-        ],
-        subject: [
-          "Canonical subject",
-          "Stable subject claim from the verified identity.",
-        ],
-      };
-      function syncRuleAudience() {
-        const setting = principalAudiences[$("rule-access").value],
-          field = $("rule-principal-field");
-        field.classList.toggle("hidden", !setting);
-        if (setting) {
-          $("rule-principal-label").textContent = setting[0];
-          $("rule-principal-help").textContent = setting[1];
-        }
-      }
-      function syncS3Fields() {
-        const enabled = split("rule-capabilities").some(
-          (value) => value === "s3" || value.startsWith("s3:"),
+        const q = $("grant-search").value.trim().toLowerCase();
+        const rows = (policy.rules || []).map((r, i) => ({ r, i })).filter(({ r }) =>
+          `${r.name} ${grantAudienceText(r)} ${grantProjectText(r)} ${grantCapabilityText(r)}`.toLowerCase().includes(q)
         );
-        $("rule-s3-section").classList.toggle("hidden", !enabled);
+        $("grant-count").textContent = `${rows.length} of ${(policy.rules || []).length} rules`;
+        $("rules").innerHTML = rows.map(({ r, i }) =>
+          `<tr><td><strong>${escapeHTML(grantAudienceText(r))}</strong>${r.name === `${grantAudienceNames[r.access]} · ${grantCapabilityText(r)}` ? "" : `<br><small>${escapeHTML(r.name)}</small>`}</td>` +
+          `<td>${escapeHTML(grantProjectText(r))}</td><td>${escapeHTML(grantCapabilityText(r))}</td>` +
+          `<td class="actions"><button data-inspect-grant="${i}">Details</button>` +
+          (canAction("grants.write") ? `<button data-edit-grant="${i}">Change</button><button class="danger" data-remove-grant="${i}">Remove access</button>` : "") +
+          `</td></tr>`
+        ).join("") || `<tr><td colspan="4" class="empty-state">${q
+          ? "No access rules match your search." : "No access rules yet. Give access to let people use projects."}</td></tr>`;
+      }
+      function syncGrantFields() {
+        const audience = currentGrantAudience();
+        const principal = grantPrincipalLabels[audience];
+        $("rule-other-audience").classList.toggle("hidden", selectedGrantValue("grant-audience") !== "more");
+        $("rule-principal-field").classList.toggle("hidden", !principal);
+        if (principal) {
+          $("rule-principal-label").textContent = principal[0];
+          $("rule-principal-help").textContent = principal[1];
+        }
+        $("rule-audience-warning").classList.toggle("hidden", !["global", "anonymous"].includes(audience));
+        $("rule-project-field").classList.toggle("hidden", selectedGrantValue("grant-scope") !== "selected");
+        $("rule-custom-fields").classList.toggle("hidden", selectedGrantValue("grant-preset") !== "custom");
+        const custom = selectedGrantValue("grant-preset") === "custom";
+        const hasS3 = custom ? grantValues("rule-capabilities").some((c) => c === "s3" || c.startsWith("s3:"))
+          : (grantPresets[selectedGrantValue("grant-preset")]?.capabilities || []).includes("s3");
+        $("rule-route").disabled = !hasS3;
+        $("rule-prefixes").disabled = !hasS3;
+        updateGrantSummary();
       }
       function clearRule() {
         editingRule = -1;
-        $("rule-title").textContent = "Add resource grant";
-        $("apply-rule").textContent = "Create grant";
-        $("rule-id").disabled = false;
-        ["id", "name", "principal", "route", ...Object.keys(ruleLists)].forEach(
-          (id) => ($("rule-" + id).value = ""),
-        );
-        $("rule-access").value = "global";
-        syncRuleAudience();
-        syncS3Fields();
-        setGrantStep(0);
+        $("rule-title").textContent = "Give project access";
+        $("apply-rule").textContent = "Give access";
+        $("grant-error").classList.add("hidden");
+        for (const id of ["id", "name", "principal", "projects", "capabilities", "operations", "route", "prefixes"])
+          $("rule-" + id).value = "";
+        chooseGrantValue("grant-audience", "authenticated");
+        chooseGrantValue("grant-scope", "all");
+        chooseGrantValue("grant-preset", "read");
+        $("rule-access").value = "organization";
+        $("rule-advanced").open = false;
+        syncGrantFields();
+      }
+      function openGrant() {
+        if (!canAction("grants.write")) return;
+        $("grant-directory").classList.add("hidden");
+        $("grant-editor").classList.remove("hidden");
+        $("rule-title").focus();
+        $("grant-editor").scrollIntoView({ block: "start" });
+      }
+      function closeGrant() {
+        $("grant-editor").classList.add("hidden");
+        $("grant-directory").classList.remove("hidden");
+        $("new-rule").focus();
+      }
+      function showGrantError(text, field) {
+        $("grant-error").textContent = text;
+        $("grant-error").classList.remove("hidden");
+        if (field) field.focus(); else $("grant-error").focus();
+      }
+      function grantDraft() {
+        const access = currentGrantAudience();
+        const preset = selectedGrantValue("grant-preset");
+        const capability = preset === "custom"
+          ? { capabilities: grantValues("rule-capabilities"), s3_operations: grantValues("rule-operations") }
+          : grantPresets[preset];
+        const principal = grantPrincipalLabels[access] ? $("rule-principal").value.trim() : "";
+        const projects = selectedGrantValue("grant-scope") === "selected" ? grantValues("rule-projects") : [];
+        const rule = {
+          id: $("rule-id").value || `grant-${crypto.randomUUID()}`,
+          name: $("rule-name").value.trim() || `${grantAudienceNames[access]} · ${grantPresetNames[preset]}`,
+          access,
+          capabilities: [...capability.capabilities],
+        };
+        if (principal) rule.principal = principal;
+        if (projects.length) rule.projects = projects;
+        else if (editingRule >= 0 && policy.rules[editingRule]?.projects?.includes("*")) rule.projects = ["*"];
+        if (capability.s3_operations.length) rule.s3_operations = [...capability.s3_operations];
+        const hasS3 = rule.capabilities.some((c) => c === "s3" || c.startsWith("s3:"));
+        if (hasS3 || (preset === "custom" && editingRule >= 0)) {
+          const route = $("rule-route").value.trim();
+          const prefixes = grantValues("rule-prefixes");
+          if (route) rule.s3_route = route;
+          if (prefixes.length) rule.s3_prefixes = prefixes;
+        }
+        return rule;
+      }
+      function updateGrantSummary() {
+        const access = currentGrantAudience();
+        const principal = grantPrincipalLabels[access] ? $("rule-principal").value.trim() : "";
+        const preset = selectedGrantValue("grant-preset");
+        const projects = selectedGrantValue("grant-scope") === "selected" ? grantValues("rule-projects") : [];
+        $("grant-summary").innerHTML = facts([
+          ["Who", (grantAudienceNames[access] || access) + (principal ? `: ${principal}` : grantPrincipalLabels[access] ? " · choose a name or ID" : "")],
+          ["Projects", projects.length ? projects.join(", ") : selectedGrantValue("grant-scope") === "all" ? "All current and future projects" : "Choose project IDs"],
+          ["Can do", preset === "custom" ? grantValues("rule-capabilities").join(", ") || "Choose capabilities" : grantPresetNames[preset]],
+        ]);
       }
       window.editRule = (i) => {
-        editingRule = i;
         const r = policy.rules[i];
+        if (!r) return;
+        clearRule();
+        editingRule = i;
         $("rule-id").value = r.id;
-        $("rule-id").disabled = true;
         $("rule-name").value = r.name;
-        $("rule-access").value = r.access;
         $("rule-principal").value = r.principal || "";
+        $("rule-projects").value = (r.projects || []).filter((id) => id !== "*").join("\n");
+        $("rule-capabilities").value = (r.capabilities || []).join(", ");
+        $("rule-operations").value = (r.s3_operations || []).join(", ");
         $("rule-route").value = r.s3_route || "";
-        for (const [id, key] of Object.entries(ruleLists))
-          $("rule-" + id).value = (r[key] || []).join(", ");
-        $("rule-title").textContent = "Edit resource grant";
-        $("apply-rule").textContent = "Update grant";
-        syncRuleAudience();
-        syncS3Fields();
+        $("rule-prefixes").value = (r.s3_prefixes || []).join(", ");
+        if (["authenticated", "team", "user"].includes(r.access)) chooseGrantValue("grant-audience", r.access);
+        else { chooseGrantValue("grant-audience", "more"); $("rule-access").value = r.access; }
+        chooseGrantValue("grant-scope", !r.projects?.length || r.projects.includes("*") ? "all" : "selected");
+        chooseGrantValue("grant-preset", presetForGrant(r));
+        $("rule-advanced").open = presetForGrant(r) === "custom";
+        $("rule-title").textContent = "Change project access";
+        $("apply-rule").textContent = "Save access changes";
+        syncGrantFields();
         openGrant();
-        focusEditor("rule-name", "rule-title");
       };
       window.removeRule = async (i) => {
         const r = policy.rules[i];
-        if (
-          !confirm(
-            `Delete resource grant "${r.name || r.id}"? Requests that depend on it may be denied immediately.`,
-          )
-        )
-          return;
+        if (!r || !confirm(`Remove access for ${grantAudienceText(r)} to ${grantProjectText(r)}? Requests that rely on this rule may be denied immediately.`)) return;
+        const button = document.querySelector(`[data-remove-grant="${i}"]`);
+        if (button) { button.disabled = true; button.textContent = "Removing…"; }
         try {
           await api("/admin/api/v1/grants/" + encodeURIComponent(r.id), {
-            method: "DELETE",
-            headers: { "If-Match": accessETag },
+            method: "DELETE", headers: { "If-Match": accessETag },
           });
           await loadAccess();
-          clearRule();
-          message("Resource grant deleted.", "ok");
+          $("grant-inspector").classList.add("hidden");
+          message("Access removed.", "ok");
         } catch (e) {
-          message(e.message, "error");
+          if (button) { button.disabled = false; button.textContent = "Remove access"; }
+          message(e.status === 409 || e.status === 412
+            ? "Access changed elsewhere. Refresh the list and review before removing it." : e.message, "error");
         }
       };
       $("apply-rule").onclick = async () => {
+        $("grant-error").classList.add("hidden");
+        const audience = currentGrantAudience();
+        const preset = selectedGrantValue("grant-preset");
+        if (grantPrincipalLabels[audience] && !$("rule-principal").value.trim())
+          return showGrantError(`Enter the ${grantPrincipalLabels[audience][0].toLowerCase()} to match.`, $("rule-principal"));
+        if (selectedGrantValue("grant-scope") === "selected" && !grantValues("rule-projects").length)
+          return showGrantError("Add at least one project ID, or choose all projects.", $("rule-projects"));
+        if (selectedGrantValue("grant-scope") === "selected" && grantValues("rule-projects").some((id) => !/^[A-Za-z0-9_-]+$/.test(id)))
+          return showGrantError("Project IDs must be exact IDs without spaces or wildcards.", $("rule-projects"));
+        if (preset === "custom" && !grantValues("rule-capabilities").length)
+          return showGrantError("Choose at least one capability.", $("rule-capabilities"));
+        const rule = grantDraft();
+        const button = $("apply-rule");
+        button.disabled = true;
+        button.textContent = editingRule < 0 ? "Giving access…" : "Saving…";
         try {
-          const rule = {
-            id: $("rule-id").value.trim(),
-            name: $("rule-name").value.trim(),
-            access: $("rule-access").value,
-            capabilities: split("rule-capabilities"),
-          };
-          const principal = $("rule-principal").value.trim(),
-            requiresPrincipal = Boolean(principalAudiences[rule.access]),
-            hasS3 = rule.capabilities.some(
-              (value) => value === "s3" || value.startsWith("s3:"),
-            );
-          if (requiresPrincipal && !principal)
-            throw new Error(
-              `A ${principalAudiences[rule.access][0].toLowerCase()} is required for this audience.`,
-            );
-          if (principal) rule.principal = principal;
-          const projects = split("rule-projects");
-          if (projects.length) rule.projects = projects;
-          if (hasS3) {
-            const route = $("rule-route").value.trim(),
-              operations = split("rule-operations"),
-              prefixes = split("rule-prefixes");
-            if (route) rule.s3_route = route;
-            if (operations.length) rule.s3_operations = operations;
-            if (prefixes.length) rule.s3_prefixes = prefixes;
-          }
-          if (!rule.id || !rule.name || !rule.capabilities.length)
-            throw new Error(
-              "A stable ID, display name, and at least one capability are required.",
-            );
-          const path =
-              editingRule < 0
-                ? "/admin/api/v1/grants"
-                : "/admin/api/v1/grants/" + encodeURIComponent(rule.id),
-            method = editingRule < 0 ? "POST" : "PUT";
-          await api(path, {
-            method,
-            headers: {
-              "Content-Type": "application/json",
-              "If-Match": accessETag,
-            },
+          const creating = editingRule < 0;
+          await api(creating ? "/admin/api/v1/grants" : "/admin/api/v1/grants/" + encodeURIComponent(rule.id), {
+            method: creating ? "POST" : "PUT",
+            headers: { "Content-Type": "application/json", "If-Match": accessETag },
             body: JSON.stringify(rule),
           });
           await loadAccess();
-          clearRule();
           closeGrant();
-          message(
-            `Resource grant ${method === "POST" ? "created" : "updated"}.`,
-            "ok",
-          );
+          clearRule();
+          message(creating ? "Access granted." : "Access updated.", "ok");
         } catch (e) {
-          message(e.message, "error");
+          showGrantError(e.status === 409 || e.status === 412
+            ? "Access changed elsewhere. Review the current rules before trying again. Your choices are still here."
+            : e.status === 400 && /storage route .* is not configured/i.test(e.message)
+              ? "Project storage is not set up for this access level. Choose Find projects to allow discovery without storage, or configure project storage first. Your choices are still here."
+            : `Could not save access: ${e.message}. Your choices are still here.`);
+        } finally {
+          button.disabled = false;
+          button.textContent = editingRule < 0 ? "Give access" : "Save access changes";
         }
       };
-      $("clear-rule").onclick = clearRule;
-      $("rule-access").onchange = syncRuleAudience;
-      $("rule-capabilities").oninput = syncS3Fields;
-      syncRuleAudience();
-      syncS3Fields();
-      $("reload-access").onclick = () =>
-        loadAccess()
-          .then(() => message("Resource grants reloaded.", "ok"))
-          .catch((e) => message(e.message, "error"));
+      $("new-rule").onclick = () => { clearRule(); openGrant(); };
+      $("close-rule").onclick = closeGrant;
+      $("clear-rule").onclick = () => {
+        if (editingRule >= 0) editRule(editingRule);
+        else clearRule();
+        $("rule-title").focus();
+      };
+      $("grant-editor").addEventListener("input", syncGrantFields);
+      $("grant-editor").addEventListener("change", syncGrantFields);
+      $("grant-search").oninput = renderRules;
+      $("rules").addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        if (button.dataset.editGrant !== undefined) return editRule(Number(button.dataset.editGrant));
+        if (button.dataset.removeGrant !== undefined) return removeRule(Number(button.dataset.removeGrant));
+        if (button.dataset.inspectGrant === undefined) return;
+        const r = policy.rules[Number(button.dataset.inspectGrant)];
+        $("grant-inspector").innerHTML = `<div class="section-heading"><h2>${escapeHTML(r.name)}</h2><button id="close-grant-inspector">Close details</button></div>` + facts([
+          ["Who", grantAudienceText(r)], ["Projects", grantProjectText(r)],
+          ["Can do", grantCapabilityText(r)], ["Rule ID", r.id],
+          ...(r.s3_route ? [["Storage route", r.s3_route]] : []),
+          ...(r.s3_prefixes?.length ? [["Storage prefixes", r.s3_prefixes.join(", ")]] : []),
+        ]);
+        $("grant-inspector").classList.remove("hidden");
+        $("close-grant-inspector").onclick = () => { $("grant-inspector").classList.add("hidden"); button.focus(); };
+        $("grant-inspector").scrollIntoView({ block: "start" });
+      });
+      $("reload-access").onclick = () => loadAccess()
+        .then(() => message("Access list refreshed.", "ok"))
+        .catch((e) => message(e.message, "error"));
+      clearRule();
 
       async function loadUsers() {
+        const generation = sessionGeneration;
         const [, body] = await api("/admin/api/v1/local-users");
+        if (generation !== sessionGeneration || !canAction("users.read")) return;
         localUsers = body.users || [];
         renderUsers();
+        renderAssignmentPeople();
+        renderAssignments();
       }
       function renderUsers() {
         const q = $("user-search").value.toLowerCase(),
@@ -3178,23 +3200,32 @@
           rows
             .map(
               (u) =>
-                `<tr><td><button class="link-button" data-inspect-user="${escapeHTML(u.username)}"><strong>${escapeHTML(u.name || u.username)}</strong><br><code>${escapeHTML(u.username)}</code></button><br><span class="tag">${escapeHTML(u.kind)}</span></td><td>${escapeHTML(u.organization || "—")}${tags(u.teams)}</td><td>${tags(u.roles)}</td><td><span class="tag">${u.enabled ? "Enabled" : "Disabled"}</span>${u.kind === "human" ? `<br>${u.mfa_enabled ? "MFA configured" : "MFA pending"}${u.password_change_required ? "<br>Password change required" : ""}` : "Revocable credentials"}</td><td><button data-inspect-user="${escapeHTML(u.username)}">Open profile</button></td></tr>`,
+                `<tr><td><button class="link-button" data-inspect-user="${escapeHTML(u.username)}"><strong>${escapeHTML(u.name || u.username)}</strong><br><code>${escapeHTML(u.username)}</code></button><br><span class="tag">${u.kind === "service" ? "Service" : "Person"}</span></td><td>${escapeHTML(u.organization || "—")}${tags(u.teams)}</td><td>${tags(u.roles)}</td><td><span class="tag">${u.enabled ? "Enabled" : "Disabled"}</span>${u.kind === "human" ? `<br>${u.mfa_enabled ? "MFA configured" : "MFA pending"}${u.password_change_required ? "<br>Password change required" : ""}` : "Revocable credentials"}</td><td><button data-inspect-user="${escapeHTML(u.username)}">Open profile</button></td></tr>`,
             )
             .join("") ||
           '<tr><td colspan="5" class="empty-state">' +
             (q || filter !== "all"
               ? "No identities match these filters."
-              : "No local identities. Use the bootstrap command to create the first administrator.") +
+              : canAction("users.write")
+                ? "No local users yet. Add a person or service to get started."
+                : "No local users yet. Ask an administrator to add one.") +
             "</td></tr>";
         if (selectedIdentity) inspectIdentity(selectedIdentity, false);
       }
       function syncUserKind() {
         const service = $("user-kind").value === "service";
         $("user-password-field").classList.toggle("hidden", service);
-        $("user-password-change-field").classList.toggle("hidden", service);
+        $("user-password-change-field").classList.toggle("hidden", service || !editingUsername);
         $("user-kind-help").textContent = service
-          ? "Services do not use passwords or MFA. Create revocable credentials after saving the identity."
-          : "Humans sign in with a password and enroll MFA when required.";
+          ? "Services use credentials you create after saving. They do not use passwords or MFA."
+          : "People sign in with a password and set up MFA when required.";
+        if (!editingUsername) {
+          $("user-title").textContent = service ? "Add a service" : "Add a person";
+          $("save-user").textContent = service ? "Add service" : "Add person";
+        }
+        $("user-password-help").textContent = editingUsername
+          ? "Leave blank to keep the current password. A new password needs at least 15 characters."
+          : "At least 15 characters. The person changes it at first sign-in.";
         if (service) {
           $("user-password").value = "";
           $("user-password-change").value = "false";
@@ -3202,8 +3233,6 @@
       }
       function clearUser() {
         editingUsername = "";
-        $("user-title").textContent = "Create local identity";
-        $("save-user").textContent = "Create identity";
         $("user-subject").disabled = false;
         $("user-kind").disabled = false;
         [
@@ -3216,17 +3245,19 @@
           "roles",
           "password",
         ].forEach((id) => ($("user-" + id).value = ""));
+        $("user-subject").value = "identity-" + crypto.randomUUID();
         $("user-kind").value = "human";
         $("user-enabled").value = "true";
         $("user-password-change").value = "false";
+        $("user-advanced").open = false;
         syncUserKind();
       }
       function editUser(username) {
         const user = localUsers.find((x) => x.username === username);
         if (!user) return;
         editingUsername = user.username;
-        $("user-title").textContent = "Edit local identity";
-        $("save-user").textContent = "Update identity";
+        $("user-title").textContent = "Edit " + (user.name || user.username);
+        $("save-user").textContent = "Save changes";
         $("user-username").value = user.username;
         $("user-subject").value = user.subject;
         $("user-subject").disabled = true;
@@ -3242,6 +3273,7 @@
         $("user-password").value = "";
         $("user-enabled").value = String(Boolean(user.enabled));
         $("user-password-change").value = "false";
+        $("user-advanced").open = true;
         syncUserKind();
         openIdentityEditor();
         focusEditor("user-username", "user-title");
@@ -3442,7 +3474,10 @@
           message(e.message, "error");
         }
       };
-      $("clear-user").onclick = clearUser;
+      $("clear-user").onclick = () => {
+        if (editingUsername) editUser(editingUsername);
+        else clearUser();
+      };
       $("reload-users").onclick = () =>
         loadUsers()
           .then(() => message("Local users reloaded.", "ok"))
@@ -3457,9 +3492,71 @@
         actions = roleBody.actions || [];
         renderRoles(assignmentBody);
       }
+      let assignmentKindTouched = false;
+      const actionNames = {
+        "session.read": "View your session",
+        "configuration.read": "View configuration",
+        "grants.read": "View project access",
+        "grants.write": "Manage project access",
+        "roles.read": "View administration roles",
+        "roles.write": "Manage administration roles",
+        "users.read": "View local users",
+        "users.write": "Manage local users",
+        "projects.read": "View projects",
+      };
+      const actionGroups = {
+        session: "Session",
+        configuration: "Configuration",
+        grants: "Project access",
+        roles: "Administration roles",
+        users: "Local users",
+        projects: "Projects",
+      };
+      function actionName(action) {
+        return actionNames[action] || action.replaceAll(".", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+      }
+      function actionDetail(action) {
+        return `<span class="permission-action"><strong>${escapeHTML(actionName(action))}</strong><small>${escapeHTML(action)}</small></span>`;
+      }
+      function renderAssignmentPeople() {
+        const local = canAction("users.read")
+          ? localUsers.filter((user) => user.subject)
+          : [];
+        const localChoice = document.querySelector('input[name="assignment-kind"][value="local"]');
+        localChoice.disabled = !local.length;
+        $("assignment-local").innerHTML = '<option value="">Choose a person or service</option>' +
+          local.map((user) => `<option value="${escapeHTML("local|" + user.subject)}">${escapeHTML(user.name || user.username)} (${escapeHTML(user.username)}${user.enabled ? "" : ", disabled"})</option>`).join("");
+        if (!local.length) chooseGrantValue("assignment-kind", "external");
+        else if (!assignmentKindTouched) chooseGrantValue("assignment-kind", "local");
+        syncAssignmentKind();
+      }
+      function syncAssignmentKind() {
+        const local = selectedGrantValue("assignment-kind") === "local";
+        $("assignment-local-field").classList.toggle("hidden", !local);
+        $("assignment-external-field").classList.toggle("hidden", local);
+      }
+      document.querySelectorAll('input[name="assignment-kind"]').forEach((input) => {
+        input.onchange = () => { assignmentKindTouched = true; syncAssignmentKind(); };
+      });
+      function assignmentIdentity(subject) {
+        const user = canAction("users.read")
+          ? localUsers.find((item) => "local|" + item.subject === subject)
+          : null;
+        return user ? `${user.name || user.username} (${user.username})` : subject;
+      }
+      function renderAssignments() {
+        $("assignments").innerHTML =
+          (assignmentState.assignments || []).map((assignment) =>
+            `<tr><td><strong>${escapeHTML(assignmentIdentity(assignment.subject))}</strong><br><code>${escapeHTML(assignment.subject)}</code></td>` +
+            `<td>${escapeHTML(assignment.role)}</td><td class="actions">${canAction("roles.write")
+              ? `<button class="danger" data-revoke-subject="${escapeHTML(assignment.subject)}" data-revoke-role="${escapeHTML(assignment.role)}">Remove role</button>`
+              : "Read only"}</td></tr>`
+          ).join("") || '<tr><td colspan="3" class="empty-state">No extra administration roles. Signed-in people still have the built-in user role.</td></tr>';
+      }
       function renderRoles(assignmentsBody) {
         assignmentState = assignmentsBody;
         renderRoleDirectory();
+        renderAssignmentPeople();
         $("assignment-role").innerHTML =
           '<option value="" disabled selected>Choose a role</option>' +
           roles.map((r) => `<option>${escapeHTML(r.name)}</option>`).join("");
@@ -3472,21 +3569,14 @@
         $("role-permissions").innerHTML = Object.entries(groups)
           .map(
             ([group, items]) =>
-              `<fieldset class="permission-group"><legend>${escapeHTML(group)}</legend>${items.map((a) => `<label><input type="checkbox" value="${escapeHTML(a)}"><span>${escapeHTML(a)}</span></label>`).join("")}</fieldset>`,
+              `<fieldset class="permission-group"><legend>${escapeHTML(actionGroups[group] || group)}</legend>${items.map((a) => `<label><input type="checkbox" value="${escapeHTML(a)}">${actionDetail(a)}</label>`).join("")}</fieldset>`,
           )
           .join("");
         $("bootstrap-note").classList.toggle(
           "hidden",
           !assignmentsBody.bootstrap_only,
         );
-        $("assignments").innerHTML =
-          (assignmentsBody.assignments || [])
-            .map(
-              (a) =>
-                `<tr><td><code>${escapeHTML(a.subject)}</code></td><td>${escapeHTML(a.role)}</td><td class="actions">${canAction("roles.write") ? `<button class="danger" data-revoke-subject="${escapeHTML(a.subject)}" data-revoke-role="${escapeHTML(a.role)}">Revoke</button>` : "Read only"}</td></tr>`,
-            )
-            .join("") ||
-          '<tr><td colspan="3" class="empty-state">No explicit role assignments.</td></tr>';
+        renderAssignments();
         updatePermissionCount();
       }
       function clearRole() {
@@ -3571,20 +3661,25 @@
       };
       $("assign-role").onclick = async () => {
         try {
-          const subject = $("assignment-subject").value.trim(),
+          const subject = selectedGrantValue("assignment-kind") === "local"
+              ? $("assignment-local").value
+              : $("assignment-subject").value.trim(),
             role = $("assignment-role").value;
           if (!subject || !role)
             throw new Error(
-              "Choose a role and enter the canonical issuer|subject identity.",
+              "Choose a person or enter an external identity, then choose a role.",
             );
+          if (selectedGrantValue("assignment-kind") === "external" && !/^[^|\s]+\|[^|\s]+$/.test(subject))
+            throw new Error("Enter the exact external identity as issuer|subject.");
           await api("/admin/api/v1/role-assignments", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ subject, role }),
           });
           $("assignment-subject").value = "";
+          $("assignment-local").value = "";
           await loadRoles();
-          message("Role assigned.", "ok");
+          message("Administration role given.", "ok");
         } catch (e) {
           message(e.message, "error");
         }
@@ -3592,7 +3687,7 @@
       async function revokeRole(subject, role) {
         if (
           !confirm(
-            `Revoke role "${role}" from "${subject}"? The identity may lose administration access on its next request.`,
+            `Remove role "${role}" from "${assignmentIdentity(subject)}"? This identity may lose administration access on its next request.`,
           )
         )
           return;
@@ -3603,7 +3698,7 @@
             body: JSON.stringify({ subject, role }),
           });
           await loadRoles();
-          message("Role revoked.", "ok");
+          message("Administration role removed.", "ok");
         } catch (e) {
           message(e.message, "error");
         }
@@ -3647,6 +3742,8 @@
         selectedProject = "";
         selectedRole = "";
         selectedIdentity = "";
+        $("grant-inspector").classList.add("hidden");
+        $("grant-inspector").replaceChildren();
         $("project-detail").innerHTML =
           '<div class="empty-state">Select a project to inspect its capabilities.</div>';
         $("role-detail").innerHTML =
@@ -3655,13 +3752,15 @@
         clearCredentials();
       }
       function renderProjects() {
-        const q = $("project-search").value.toLowerCase(),
+        const q = $("project-search").value.trim().toLowerCase(),
           rows = authorizedProjects.filter((p) =>
             (p.id + " " + (p.capabilities || []).join(" "))
               .toLowerCase()
               .includes(q),
           );
-        $("project-count").textContent = `${rows.length} listed`;
+        $("project-count").textContent = allProjectsAccess
+          ? `${rows.length} listed · all projects available`
+          : `${rows.length} listed`;
         $("projects").innerHTML =
           rows
             .map(
@@ -3669,7 +3768,11 @@
                 `<button class="directory-row" data-project="${escapeHTML(p.id)}" aria-pressed="${p.id === selectedProject}"><span><code>${escapeHTML(p.id)}</code><small>${(p.capabilities || []).length} capabilities</small></span><span aria-hidden="true">↗</span></button>`,
             )
             .join("") ||
-          '<div class="empty-state">No exact project identifiers in this view. Check the resource scope above or refine your search.</div>';
+          `<div class="empty-state">${q
+            ? "No listed project matches this search. Clear the search to see the list."
+            : allProjectsAccess
+              ? "You can access all projects. Connect your CLI to find their names and details in Graphit Hub."
+              : "No projects are available to your account yet. Ask an administrator for project access."}</div>`;
         const project = authorizedProjects.find(
           (p) => p.id === selectedProject,
         );
@@ -3683,7 +3786,11 @@
             )}`;
         else
           $("project-detail").innerHTML =
-            '<div class="empty-state">Select a project to inspect its capabilities.</div>';
+            `<div class="empty-state">${authorizedProjects.length
+              ? "Select a listed project to see what you can use."
+              : allProjectsAccess
+                ? "Project details are available in Graphit Hub after you connect your CLI."
+                : "Your project access will appear here when it is granted."}</div>`;
       }
       $("project-search").oninput = renderProjects;
       $("projects").onclick = (e) => {
@@ -3709,11 +3816,13 @@
         const q = $("config-search").value,
           text = $("config-yaml").value,
           index = q ? text.toLowerCase().indexOf(q.toLowerCase()) : -1;
-        $("config-matches").textContent = q
-          ? index < 0
-            ? "No matching text."
-            : `${text.toLowerCase().split(q.toLowerCase()).length - 1} matches · first at line ${text.slice(0, index).split("\n").length}`
-          : "";
+        $("config-matches").textContent = !text
+          ? "No configuration is available to display."
+          : q
+            ? index < 0
+              ? "No matching text."
+              : `${text.toLowerCase().split(q.toLowerCase()).length - 1} matches · first at line ${text.slice(0, index).split("\n").length}`
+            : "Select a section or search the current settings.";
         if (index >= 0) {
           $("config-yaml").setSelectionRange(index, index + q.length);
           $("config-yaml").scrollTop = Math.max(
@@ -3734,139 +3843,6 @@
           .catch(() =>
             message("Select the YAML and copy it manually.", "warn"),
           );
-      function grantFacts() {
-        return [
-          ["Grant", $("rule-name").value || "Untitled draft"],
-          ["Stable ID", $("rule-id").value || "Not set"],
-          ["Audience", $("rule-access").selectedOptions[0].textContent],
-          ...(principalAudiences[$("rule-access").value]
-            ? [["Principal", $("rule-principal").value || "Not set"]]
-            : []),
-          [
-            "Capabilities",
-            split("rule-capabilities").join(", ") || "None selected",
-          ],
-          ["Projects", split("rule-projects").join(", ") || "All projects"],
-          ...(split("rule-capabilities").some(
-            (c) => c === "s3" || c.startsWith("s3:"),
-          )
-            ? [
-                [
-                  "S3 operations",
-                  split("rule-operations").join(", ") || "Capability defaults",
-                ],
-                ["S3 route", $("rule-route").value || "Configured default"],
-                [
-                  "S3 prefixes",
-                  split("rule-prefixes").join(", ") || "No prefix constraint",
-                ],
-              ]
-            : []),
-        ];
-      }
-      function updateGrantReview() {
-        $("grant-summary").innerHTML = facts(
-          grantFacts().filter(([key]) =>
-            ["Audience", "Principal", "Capabilities", "Projects"].includes(key),
-          ),
-        );
-        $("grant-review").innerHTML = facts(grantFacts());
-      }
-      function setGrantStep(step) {
-        grantStep = step;
-        document
-          .querySelectorAll("[data-grant-panel]")
-          .forEach((el) =>
-            el.classList.toggle(
-              "hidden",
-              Number(el.dataset.grantPanel) !== step,
-            ),
-          );
-        document.querySelectorAll("[data-grant-step]").forEach((el) => {
-          el.classList.toggle("active", Number(el.dataset.grantStep) === step);
-          el.setAttribute(
-            "aria-current",
-            Number(el.dataset.grantStep) === step ? "step" : "false",
-          );
-        });
-        $("grant-back").disabled = step === 0;
-        $("grant-next").classList.toggle("hidden", step === 3);
-        $("apply-rule").classList.toggle("hidden", step !== 3);
-        updateGrantReview();
-      }
-      function openGrant() {
-        if (!canAction("grants.write")) return;
-        $("grant-directory").classList.add("hidden");
-        $("grant-editor").classList.remove("hidden");
-        setGrantStep(0);
-      }
-      function closeGrant() {
-        $("grant-editor").classList.add("hidden");
-        $("grant-directory").classList.remove("hidden");
-        $("new-rule").focus();
-      }
-      $("new-rule").onclick = () => {
-        clearRule();
-        openGrant();
-        $("rule-id").focus();
-      };
-      $("close-rule").onclick = closeGrant;
-      $("grant-back").onclick = () => setGrantStep(Math.max(0, grantStep - 1));
-      $("grant-next").onclick = () => {
-        if (
-          grantStep === 0 &&
-          (!$("rule-id").value.trim() ||
-            !$("rule-name").value.trim() ||
-            (principalAudiences[$("rule-access").value] &&
-              !$("rule-principal").value.trim()))
-        ) {
-          message(
-            "Complete the grant identity and audience before continuing.",
-            "warn",
-          );
-          return;
-        }
-        if (grantStep === 1 && !split("rule-capabilities").length) {
-          message("Choose at least one capability.", "warn");
-          return;
-        }
-        setGrantStep(Math.min(3, grantStep + 1));
-      };
-      document
-        .querySelectorAll("[data-grant-step]")
-        .forEach(
-          (b) => (b.onclick = () => setGrantStep(Number(b.dataset.grantStep))),
-        );
-      $("grant-editor").addEventListener("input", updateGrantReview);
-      $("grant-search").oninput = renderRules;
-      $("rules").addEventListener("click", (e) => {
-        const b = e.target.closest("[data-inspect-grant]");
-        if (!b) return;
-        const r = policy.rules[Number(b.dataset.inspectGrant)];
-        let detail = $("grant-inspector");
-        if (!detail) {
-          detail = document.createElement("section");
-          detail.id = "grant-inspector";
-          detail.className = "panel";
-          $("grant-directory").append(detail);
-        }
-        detail.innerHTML = `<div class="section-heading"><h2>${escapeHTML(r.name)}</h2><button id="close-grant-inspector">Close inspection</button></div>${facts(
-          [
-            ["ID", r.id],
-            ["Audience", r.access],
-            ["Principal", r.principal],
-            ["Capabilities", (r.capabilities || []).join(", ")],
-            ["Projects", (r.projects || []).join(", ") || "All projects"],
-            ["S3 operations", (r.s3_operations || []).join(", ")],
-            ["S3 route", r.s3_route],
-            ["S3 prefixes", (r.s3_prefixes || []).join(", ")],
-          ],
-        )}`;
-        detail.classList.remove("hidden");
-        $("close-grant-inspector").onclick = () =>
-          detail.classList.add("hidden");
-        detail.scrollIntoView({ block: "start", behavior: "smooth" });
-      });
       function inspectIdentity(username, scroll = true) {
         if (selectedService && selectedService !== username) clearCredentials();
         const u = localUsers.find((x) => x.username === username);
@@ -3883,7 +3859,7 @@
             ["Username", u.username],
             ["Subject", u.subject],
             ["Canonical identity", "local|" + u.subject],
-            ["Kind", u.kind],
+            ["Account type", u.kind === "service" ? "Service" : "Person"],
             ["Revision", String(u.revision)],
           ])}</div><div><h3>Membership</h3>${facts([
             ["Email", u.email],
@@ -3907,7 +3883,7 @@
                   ],
                 ]
               : []),
-          ])}<div class="profile-actions">${canAction("users.write") ? `<button data-edit-user="${escapeHTML(username)}">Edit identity</button>${u.kind === "human" && u.mfa_enabled ? `<button class="danger" data-reset-mfa="${escapeHTML(username)}">Reset MFA</button>` : ""}<button class="danger" data-delete-user="${escapeHTML(username)}">Delete identity</button>` : ""}${u.kind === "service" ? `<button data-service-credentials="${escapeHTML(username)}">Manage credentials</button>` : ""}</div></div></div>`;
+           ])}<div class="profile-actions">${canAction("users.write") ? `<button data-edit-user="${escapeHTML(username)}">Edit account</button>${u.kind === "human" && u.mfa_enabled ? `<button class="danger" data-reset-mfa="${escapeHTML(username)}">Reset MFA</button>` : ""}<button class="danger" data-delete-user="${escapeHTML(username)}">Delete account</button>` : ""}${u.kind === "service" ? `<button data-service-credentials="${escapeHTML(username)}">${canAction("users.write") ? "Manage" : "View"} credentials</button>` : ""}</div></div></div>`;
         if (scroll)
           $("identity-profile").scrollIntoView({
             block: "start",
@@ -3961,7 +3937,7 @@
       function renderRoleDirectory() {
         const q = $("role-search").value.toLowerCase(),
           rows = roles.filter((r) =>
-            JSON.stringify(r).toLowerCase().includes(q),
+            `${r.name} ${(r.permissions || []).map((action) => `${action} ${actionName(action)}`).join(" ")}`.toLowerCase().includes(q),
           );
         $("role-list").innerHTML =
           rows
@@ -3984,12 +3960,14 @@
         selectedRole = name;
         const builtIn = ["admin", "user"].includes(name);
         $("role-detail").innerHTML =
-          `<div class="eyebrow">Permission bundle</div><h2>${escapeHTML(name)}</h2><p class="muted">${builtIn ? "Built-in definition · read only" : "Custom administration role"}</p><h3>Allowed actions</h3>${tags(r.permissions)}<div class="inspector-divider"><div class="profile-actions">${!builtIn && canAction("roles.write") ? `<button data-edit-role="${escapeHTML(name)}">Edit permissions</button><button class="danger" data-delete-role="${escapeHTML(name)}">Delete role</button>` : ""}${canAction("roles.write") ? `<button id="assign-inspected-role">Assign this role</button>` : ""}</div></div>`;
+          `<div class="eyebrow">Permission bundle</div><h2>${escapeHTML(name)}</h2><p class="muted">${builtIn ? "Built-in definition · read only" : "Custom administration role"}</p><h3>Allowed actions</h3><div class="permission-summary">${(r.permissions || []).map(actionDetail).join("")}</div><div class="inspector-divider"><div class="profile-actions">${!builtIn && canAction("roles.write") ? `<button data-edit-role="${escapeHTML(name)}">Edit permissions</button><button class="danger" data-delete-role="${escapeHTML(name)}">Delete role</button>` : ""}${canAction("roles.write") ? `<button id="assign-inspected-role">Assign this role</button>` : ""}</div></div>`;
         if ($("assign-inspected-role"))
           $("assign-inspected-role").onclick = () => {
             setRoleView("assignments");
             $("assignment-role").value = name;
-            $("assignment-subject").focus();
+            (selectedGrantValue("assignment-kind") === "local"
+              ? $("assignment-local")
+              : $("assignment-subject")).focus();
           };
         document
           .querySelectorAll("[data-inspect-role]")

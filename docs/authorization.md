@@ -139,6 +139,14 @@ selects one route.
 
 ## Recommended project grant
 
+In the administration UI, **Project access → Give access** starts with **People signed in**, **All
+projects** and **Read project data**. Saving these choices creates a grant for authenticated
+identities across current and future projects with `hub`, `s3` and `s3_operations: ["read"]`.
+This choice requires a configured default storage route. Without one, choose **Find projects**
+for `hub` discovery without S3. Choose a narrower audience, exact projects or a different access
+level when needed. The UI generates the required stable grant ID; the API example below shows the
+explicit document.
+
 For a team that must discover and use one project, grant both `hub` and `s3` for that exact
 project. `hub` makes the project visible through `graphit-hub-access-v1`; `s3` permits the
 subsequent direct S3 access through a restricted STS session.

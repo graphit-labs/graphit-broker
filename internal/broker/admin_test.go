@@ -94,9 +94,11 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	for _, hook := range []string{
 		`id="oidc-provider-buttons"`, `id="local-login"`,
 		`id="project-search"`, `id="project-detail"`, `id="provider-command"`, `id="copy-provider"`,
-		`id="grant-steps"`, `id="grant-review"`, `id="apply-rule"`,
+		`id="grant-editor"`, `name="grant-audience" value="authenticated" checked`,
+		`name="grant-scope" value="all" checked`, `name="grant-preset" value="read" checked`,
+		`id="grant-summary"`, `id="apply-rule"`, `data-remove-grant=`,
 		`id="identity-profile"`, `id="service-credentials"`,
-		`id="role-permissions"`, `id="assignment-subject"`, `id="assign-role"`,
+		`id="role-permissions"`, `id="assignment-local"`, `id="assignment-subject"`, `id="assign-role"`,
 		`id="config-yaml"`, `id="config-search"`,
 		`new URLSearchParams(fragment)`, `Organization sign-in could not be verified. Please try again.`,
 		`history.replaceState(null, "", location.pathname + location.search)`, `start(loginFailure)`,
@@ -107,6 +109,9 @@ func TestAdminOIDCLoginSessionCSRFAndLogout(t *testing.T) {
 	}
 	if bytes.Contains(pageBody, []byte("sessionStorage")) || bytes.Contains(pageBody, []byte("Administrator bearer token")) {
 		t.Fatal("administration UI retained the obsolete static-token login")
+	}
+	if bytes.Contains(pageBody, []byte(`id="grant-steps"`)) || bytes.Contains(pageBody, []byte(`id="grant-next"`)) {
+		t.Fatal("administration UI retained the obsolete grant wizard")
 	}
 	_ = page.Body.Close()
 

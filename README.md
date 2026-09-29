@@ -34,8 +34,8 @@ evaluates deny-by-default resource grants from SQL, and exposes:
   OpenAI-compatible, Cohere, Voyage, or Google adapter;
 - `POST /v1/rerank` — the versioned Graphit contract backed by local inference, native
   Cohere/Voyage/Jina adapters, or embedding-simulated OpenAI and Google Gemini adapters;
-- `/admin/` — the OIDC/local-password UI for read-only configuration, resource grants, system roles,
-  role assignments, local-identity lifecycle, and service credentials.
+- `/admin/` — the OIDC/local-password UI for Projects, Project access, Local users, Admin roles,
+  and read-only Configuration, including role assignments and service credentials.
 
 Only the broker knows AI API keys, upstream models, and the permanent S3 credentials used to call
 STS. After authenticating Graphit, it selects the route from current grants for the requested scope and returns that route's
@@ -56,11 +56,10 @@ or anonymous access.
 
 ## The governance workspace
 
-![Graphit Broker resource grants for fictional Aster Delivery projects and teams](docs/assets/broker-resource-grants.jpg)
-
-Review who can use each capability and which projects a grant covers. Administration roles and
-resource authorization remain separate decisions. This screenshot uses fictional English data in
-an isolated Broker; no production identities, credentials or services are shown.
+In **Project access**, choose who gets access, which projects it covers and what people can do.
+The initial choices grant signed-in people read access to all projects when a default storage route
+is configured. Without project storage, choose **Find projects** for discovery access. Advanced
+storage settings stay available for specialized rules. Administration roles remain a separate decision.
 
 See the [administration guide](docs/administration.md#the-governance-workspace) for identity and
 policy workflows, or explore [Code and Broker together](https://graphit-labs.github.io/graphit-code/#workspace-demo).

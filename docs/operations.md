@@ -17,7 +17,7 @@ credentials, bodies, or upstream secrets.
 |---|---|---|
 | startup rejects schema | database belongs to another development build | recreate the development database; schema migrations and compatibility paths are intentionally unsupported |
 | startup cannot connect | driver/DSN/TLS/network/credentials | YAML `database.driver`/`database.dsn` and their explicit ENV references, database policy, CA |
-| every consumer gets 403 | empty/mismatched resource grants | Resource grants UI, exact project, capability, access scope |
+| every consumer gets 403 | empty/mismatched resource grants | Project access UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
 | UI identity gets 403 | default `user` or assigned/claimed roles do not permit the action | unified OIDC `role_claim`, canonical-subject assignments |
 | grant write gets 409 | another admin changed the ACL revision | reload and reapply |
