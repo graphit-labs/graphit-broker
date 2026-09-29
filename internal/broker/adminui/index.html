@@ -1885,11 +1885,13 @@
                         <label><input type="radio" name="grant-preset" value="read" checked /><span><strong>Read project data</strong><small>Find projects and read their stored data</small></span></label>
                         <label><input type="radio" name="grant-preset" value="discover" /><span><strong>Find projects</strong><small>See available projects without storage access</small></span></label>
                         <label><input type="radio" name="grant-preset" value="write" /><span><strong>Work on projects</strong><small>Read and write project data</small></span></label>
-                        <label><input type="radio" name="grant-preset" value="manage" /><span><strong>Manage project data</strong><small>Read, write, publish and delete</small></span></label>
-                        <label><input type="radio" name="grant-preset" value="ai" /><span><strong>Use AI tools</strong><small>Embeddings and reranking</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="manage" /><span><strong>Manage project data</strong><small>Read, write, publish and delete stored data</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="ai" /><span><strong>Use AI tools</strong><small>Embeddings and reranking; no storage access</small></span></label>
+                        <label><input type="radio" name="grant-preset" value="full" /><span><strong>Full project access</strong><small>Manage project data and use AI tools</small></span></label>
                         <label><input type="radio" name="grant-preset" value="custom" /><span><strong>Choose capabilities</strong><small>For an existing or specialized rule</small></span></label>
                       </div>
                       <p class="field-help">Reading or changing stored project data needs project storage to be set up. If it is not, choose <strong>Find projects</strong> to give access to project discovery.</p>
+                      <p id="grant-ai-scope-help" class="field-help hidden">Project IDs limit project discovery and stored data. AI tools have no project ID in their requests, so this choice grants AI use across the selected audience.</p>
                       <div id="rule-custom-fields" class="grant-dependent hidden">
                         <label><span>Capabilities</span><input id="rule-capabilities" placeholder="hub, s3, embeddings, rerank" />
                           <small class="field-help">Separate capabilities with commas. Use s3:read for a specific storage operation.</small></label>
@@ -2903,6 +2905,7 @@
         write: { capabilities: ["hub", "s3"], s3_operations: ["read", "write"] },
         manage: { capabilities: ["hub", "s3"], s3_operations: ["read", "write", "publish", "delete"] },
         ai: { capabilities: ["embeddings", "rerank"], s3_operations: [] },
+        full: { capabilities: ["hub", "s3", "embeddings", "rerank"], s3_operations: ["read", "write", "publish", "delete"] },
       };
       const grantPresetNames = {
         discover: "Find projects",
@@ -2910,6 +2913,7 @@
         write: "Work on projects",
         manage: "Manage project data",
         ai: "Use AI tools",
+        full: "Full project access",
         custom: "Custom capabilities",
       };
       const grantAudienceNames = {
@@ -2988,6 +2992,9 @@
         $("rule-project-field").classList.toggle("hidden", selectedGrantValue("grant-scope") !== "selected");
         $("rule-custom-fields").classList.toggle("hidden", selectedGrantValue("grant-preset") !== "custom");
         const custom = selectedGrantValue("grant-preset") === "custom";
+        const hasAI = custom ? grantValues("rule-capabilities").some((c) => ["embeddings", "rerank"].includes(c))
+          : (grantPresets[selectedGrantValue("grant-preset")]?.capabilities || []).some((c) => ["embeddings", "rerank"].includes(c));
+        $("grant-ai-scope-help").classList.toggle("hidden", selectedGrantValue("grant-scope") !== "selected" || !hasAI);
         const hasS3 = custom ? grantValues("rule-capabilities").some((c) => c === "s3" || c.startsWith("s3:"))
           : (grantPresets[selectedGrantValue("grant-preset")]?.capabilities || []).includes("s3");
         $("rule-route").disabled = !hasS3;

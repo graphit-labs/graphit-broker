@@ -49,6 +49,23 @@ func TestACLIsDenyByDefaultAndReadsCurrentGrants(t *testing.T) {
 	}
 }
 
+func TestProjectLimitedFullGrantKeepsAIAudienceWide(t *testing.T) {
+	acl := testACL(ACLRuleConfig{
+		ID: "full", Name: "full", Access: "authenticated", Projects: []string{"project-a"},
+		Capabilities: []string{"hub", "s3", "embeddings", "rerank"},
+		S3Operations: []string{"read", "write", "publish", "delete"},
+	})
+	principal := Principal{Username: "alice", Subject: "subject"}
+	for _, capability := range []string{"embeddings", "rerank"} {
+		if err := acl.AuthorizeCapability(context.Background(), principal, capability); err != nil {
+			t.Fatalf("%s should be authorized without a project ID: %v", capability, err)
+		}
+	}
+	if _, err := acl.ResolveS3Session(context.Background(), principal, S3SessionScope{Kind: "project", ProjectID: "project-b", Module: "task"}, "primary"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("unlisted project should be denied for S3: %v", err)
+	}
+}
+
 func TestResolveS3SessionDerivesAllEffectiveOperationsAndCurrentRevision(t *testing.T) {
 	reader := &resourceGrantStub{document: PolicyDocument{Version: 1, Revision: 9, Rules: []ACLRuleConfig{
 		{ID: "read", Name: "read", Access: "team", Principal: "dev", Capabilities: []string{"s3:read"}, Projects: []string{"a", "b"}},

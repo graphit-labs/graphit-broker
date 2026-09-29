@@ -147,6 +147,12 @@ for `hub` discovery without S3. Choose a narrower audience, exact projects or a 
 level when needed. The UI generates the required stable grant ID; the API example below shows the
 explicit document.
 
+Choose **Full project access** to combine `hub`, `s3`, `embeddings` and `rerank` with the S3
+`read`, `write`, `publish` and `delete` operations for the selected audience. If you select specific
+projects, those IDs restrict Hub and S3, but embeddings and rerank requests have no project ID and
+remain available to that audience. Storage operations require a configured project storage route.
+This project grant does not confer an administration role.
+
 For a team that must discover and use one project, grant both `hub` and `s3` for that exact
 project. `hub` makes the project visible through `graphit-hub-access-v1`; `s3` permits the
 subsequent direct S3 access through a restricted STS session.
