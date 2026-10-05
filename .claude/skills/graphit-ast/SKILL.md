@@ -5,7 +5,7 @@ description: 'AST: replace local code search, file reads and symbol navigation w
 
 # Graphit AST
 
-`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host.
+`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host. Stores follow the checked-out project version (Git branch; `main` without Git); optional `project_version` reaches another.
 
 Use AST first for supported code discovery, reading and structural analysis. Map your agent's local capability to the operation below; host tool names are examples, not dependencies. Keep source evidence and impact findings for an executable Task plan.
 

@@ -81,6 +81,14 @@ credential. A narrower project template must include the module namespace, for e
 project selector; Hub scope additionally requires an effective `hub` capability, which may come
 from a separate matching rule.
 
+A module root also covers the project versions of that module. Graphit keeps each version (the Git
+branch of the checkout) as a native Lance branch inside the same table dataset: its objects live
+under `<table>.lance/tree/<branch>/` and its reference under `<table>.lance/_refs/branches/`, so a
+`write` grant on the module root already reads, writes and lists every version. Creating a version
+needs nothing beyond `write`; deleting one, like compaction and pruning, also needs `delete` (or
+`publish`). A narrower template that stops inside one dataset, such as a single `.lance` directory,
+still covers its branches only when it includes the whole dataset.
+
 All matching S3 rules for the requested scope are additive and must select one route. An explicit `s3_route` selects it;
 an empty value uses `default_route`. If the same principal matches rules for different routes, the
 request fails closed because one credential response contains one bucket, region, and endpoint.

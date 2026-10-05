@@ -5,7 +5,7 @@ description: 'Hub: locate ecosystem projects locally, then in the published cata
 
 # Graphit Hub
 
-`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host.
+`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host. Stores follow the checked-out project version (Git branch; `main` without Git); optional `project_version` reaches another.
 
 Use this skill for named ecosystem projects/systems, Hub artifacts and Graphit configuration. Known public libraries, frameworks, languages and APIs do not require Hub discovery: use established knowledge and official documentation for current or version-specific details. Honor an explicit request for a Hub artifact. Reuse verified identities and versions.
 

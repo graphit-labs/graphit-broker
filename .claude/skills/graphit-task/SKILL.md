@@ -5,7 +5,7 @@ description: 'Task: preserve requests in durable sessions; plan, execute, checkp
 
 # Graphit Task
 
-`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host.
+`project_dir` is a runtime MCP argument, not persisted project identity. In docs, Task, Memory and handoffs save project identity plus repository-relative paths; never copy a machine-specific checkout root. Resolve the local root again on each host. Stores follow the checked-out project version (Git branch; `main` without Git); optional `project_version` reaches another.
 
 Task owns durable sessions, specifications, plans, backlog, checks and lifecycle, including analysis. Use MCP; never edit tables or substitute the CLI. Native plans may supplement these records.
 
