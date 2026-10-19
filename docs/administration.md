@@ -1,9 +1,26 @@
+---
+references:
+  - target: {type: task, id: tsk-ea46, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+---
 # Administration
 
 The control plane is served at `/admin/`. It uses the same authentication model as every broker
 consumer: any configured OIDC issuer mapping or a SQL-backed local user. Administration is an RBAC
 decision, not a separate identity provider. Deployment configuration remains read-only; local
 users, roles, assignments, and resource grants are mutable SQL state.
+
+For the native PostgreSQL server, use the [native session reference](rust-admin-session-http.md)
+and [LOCAL cookie reference](rust-admin-cookie-session.md). The [native administrative reads](rust-admin-read.md)
+provide the caller's project catalog, roles, assignments, LOCAL users, principal hints,
+grants with their ETag, and a redacted deployment view. Each read requires its own
+current SQL action; `session.read` does not grant those actions. The session references cover current session reads,
+the authenticated cookie producer and confirmed CSRF/logout. [Native HTTP password/MFA login](rust-admin-local-login.md)
+adds genuine password/change/enrollment/TOTP/recovery→cookie steps. The
+[native federated browser journey](rust-admin-upstream-login.md) serves the existing
+workspace HTML and connects real upstream authentication to those reads. Native
+[role and assignment mutations](rust-admin-rbac.md) are mounted for PostgreSQL, using their own current `roles.write` permission and cookie CSRF. [Resource-grant mutations](rust-admin-grants.md) are available in the native PostgreSQL and HTTP consumers. [LOCAL user/MFA/service-credential mutations](rust-admin-users.md) are mounted in their PostgreSQL and HTTP consumers. Use the native configuration
+reference for every enabled section.
 
 ## The governance workspace
 
@@ -17,10 +34,10 @@ this guide.
 
 ## Unified OIDC login
 
-Configure browser clients on one or more `authentication.oidc` entries. Each entry supplies issuer,
+Configure explicit `browser_clients` on one or more native `auth.oidc` entries. Each entry supplies issuer,
 subject, username, organization, teams, and role mappings for bearer validation and browser login,
 and its `display_name` labels the corresponding button on the login screen.
-For browser login, `claims_source` selects the ID token (default), a verified JWT access token,
+For each browser client, `claims_source` selects the ID token (default), a verified JWT access token,
 or userinfo as the source for those mappings; it does not change direct bearer validation.
 Register the exact redirect URI `https://BROKER/oauth/oidc/callback`, authorization-code flow,
 PKCE-capable endpoints, the selected scopes, and a confidential client secret. HTTP callbacks are
@@ -28,54 +45,7 @@ accepted only on loopback.
 
 There is no `administration.oidc`. The `administration` section contains only control-plane options:
 
-```yaml
-authentication:
-  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?at least 32 random bytes}"
-  local:
-    rate_limit:
-      max_failures: 5
-      window: 1m
-      lockout: 5m
-      max_concurrent: 2
-      saturation_multiplier: 4
-    captcha:
-      enabled: false
-      provider: turnstile # or recaptcha
-      site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
-      secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
-      trigger_multiplier: 1.5
-      verification_timeout: 3s
-    mfa:
-      required: true
-      issuer: Graphit Broker
-      challenge_ttl: 10m
-    login:
-      enabled: true
-    tokens:
-      audience: graphit-broker
-      cli_client_id: graphit-cli
-      cli_redirect_path: /oauth/callback
-      access_ttl: 10m
-      refresh_ttl: 720h
-  oidc:
-    - enabled: true
-      display_name: Corporate SSO
-      issuer: https://identity.example.com
-      audiences: [graphit-broker]
-      required_scopes: []
-      client_id: graphit-broker
-      client_secret: "${BROKER_OIDC_CLIENT_SECRET:?required}"
-      redirect_url: https://broker.example.com/oauth/oidc/callback
-      require_nonce: true
-      claims_source: id_token
-      subject_claim: sub
-      username_claim: preferred_username
-      role_claim: "$.realm_access.roles[*]"
-administration:
-  enabled: true
-  session_ttl: 8h
-  cookie_secure: true
-```
+Use the complete [native server configuration](rust-broker-server.md#supply-configuration-and-key-files), [upstream browser policies](rust-admin-upstream-login.md), [LOCAL login policy](rust-admin-local-login.md) and [cookie transport bounds](rust-admin-cookie-session.md). These closed schemas require their explicit limits and enablement; an earlier authentication mapping is not accepted or imported.
 
 The browser flow always uses state, PKCE, a browser-only 256-bit binding cookie, and a short-lived
 SQL flow record containing only HMACs of state and binding. It sends and validates nonce by default;
@@ -104,27 +74,42 @@ while the threshold remains reached; organization OIDC login is independent and 
 
 ## First local administrator
 
-There is no superadmin bypass and no local user in `config.yaml`. On an empty database, set
-`authentication.token_pepper` and run:
+The native Rust server creates its first local administrator through explicit stdin:
 
-```bash
-graphit-broker --config config.yaml --bootstrap-admin
-```
+~~~text
+cat /run/secrets/broker-first-admin-password | graphit-broker --config config.yaml --bootstrap-admin-stdin
+~~~
 
-The terminal form reads and confirms the password without echo. Automation must pass the password
-only through the explicit stdin form:
+Use the [native server configuration](rust-broker-server.md), including `auth.pepper`,
+[LOCAL password and MFA policy](rust-admin-local-login.md), and enabled
+[administrative cookie sessions](rust-admin-cookie-session.md). These features must already be
+operational in the captured configuration; bootstrap does not enable them. Select PostgreSQL
+or private SQLite explicitly. There is no local user in configuration or superadmin bypass.
 
-```bash
-cat /run/secrets/broker-first-admin-password | \
-  graphit-broker --config config.yaml --bootstrap-admin-stdin
-```
+Stdin must be a non-terminal stream ending at EOF. Supply one UTF-8 password containing at least
+15 Unicode characters and at most 4096 bytes. Exactly one final LF, or CRLF, is removed; all other
+bytes, including surrounding spaces, belong to the password. Invalid UTF-8, short or oversized
+input fails before password workers or SQL are opened. Password input is never accepted as a
+flag value or dedicated environment variable and never appears in output. Keep the stdin source
+private. The interactive `--bootstrap-admin` flag is not part of the native executable.
 
-Both commands accept only a password containing at least 15 Unicode characters. The supplied
-password is temporary and must be replaced at the first login. They create the fixed local username and subject `admin`,
-persist only its peppered Argon2id PHC, assign the `admin` role, and refuse to run when any local
-user already exists. The pepper remains solely in deployment configuration. There is deliberately
-no migration or compatibility path in this development version; recreate an incompatible database
-before bootstrapping.
+The command creates the fixed username and subject `admin` as an enabled human with a temporary
+peppered Argon2id PHC and explicit `local|admin` → `admin` role assignment in one transaction.
+Any existing local user, including a service identity, prevents creation. Concurrent attempts can
+create at most one administrator. It grants no project/resource access and issues no session or
+token, initializes no storage volume and opens no listener. On success it prints only
+`local administrator created` and physically closes password workers and SQL before exiting.
+
+Start the server normally and open `/admin/`. The first login must replace the temporary password.
+When `auth.local.mfa.required` is true, confirm TOTP enrollment and retain the ten recovery codes
+before the administrative cookie is issued. With explicit `false`, the configured password-only
+journey remains available. The account uses current SQL roles and the ordinary administrative
+authorization checks. Resource grants remain a separate, initially empty policy.
+
+If a write outcome is uncertain, inspect the database/retry result rather than assuming that no
+account exists. A physical shutdown failure after commit is reported as a failure with creation
+already acknowledged; it must not be treated as permission to overwrite the identity. There is no
+migration or compatibility path: recreate an incompatible development database explicitly.
 
 ## UI
 
@@ -175,7 +160,7 @@ keeps the current verifier). Every password supplied at create/bootstrap or by a
 temporary. Set `password_change_required: true` to force another change at the next login without
 replacing the password. The flag cannot be cleared administratively: only a successful password
 change by that user clears it. The API hashes password input immediately with
-`authentication.token_pepper` and never returns it. New passwords require at least 15 Unicode
+`auth.pepper` and never returns it. New passwords require at least 15 Unicode
 characters and have no character-class composition rules.
 
 MFA is required for human local users by default. On first login, the UI displays a QR code and
@@ -199,7 +184,7 @@ disabling, or deleting the service identity invalidates all credentials through 
 Local passwords and upstream IdP tokens are never passed to [Graphit Code](https://github.com/graphit-labs/graphit-code) as Bearer credentials.
 A desktop client first reads `/.well-known/graphit-broker`, then uses the Broker's standard
 `/.well-known/openid-configuration`, authorization, token, JWKS, userinfo, and revocation endpoints.
-The protocol implementation is provided by `github.com/zitadel/oidc/v3`; the Broker-owned page
+The Rust Broker implements these endpoints in its control and server crates. Its login page
 offers local login and one named choice per available upstream OIDC provider. The Broker completes
 either method and returns signed ID/access JWTs plus an opaque rotating refresh token. Graphit Code
 never needs the upstream issuer or client secret. If exactly one upstream OIDC provider is enabled and
@@ -242,7 +227,6 @@ Protect the last administrator and retain encrypted SQL backups. If every admini
 restore a compatible backup or recreate the development database and run the bootstrap command.
 The bootstrap command intentionally refuses to overwrite a non-empty local-user table.
 
-
 ## Console navigation and visual identity
 
 The Broker shares Graphit Code and the public site's cobalt/navy identity. Its internal workspaces start with the operator's decision: find the resource, inspect its authoritative state, then enter a dedicated change flow. Navigation exposes only sections allowed by the current session. Read permission permits inspection; write permission exposes mutation actions. Backend authorization remains authoritative.
@@ -274,7 +258,7 @@ Rules are additive; unmatched requests are denied. Writes send the current polic
 
 **Local users** is a searchable directory with People, Services, Disabled and MFA-pending filters. **Open profile** shows identity, membership and authentication state before permitted actions. **Add a person** asks for a name, username and temporary password; **Add a service** asks for a name and username. The Broker UI generates a permanent subject automatically. Open **Advanced details** only when an exact subject, membership, additional role or account state is needed. Human passwords require at least 15 characters and must be changed at first sign-in. Services use revocable credentials instead of passwords or MFA. **Edit account** retains the original subject and kind; username may change, and an empty password keeps the current one. **Reset changes** restores the persisted account while editing or clears a new-account draft.
 
-A service profile opens its credential inventory. Creation shows the token once; copy it before dismissing or closing the inventory. The secret is cleared from the displayed inventory on dismissal, identity change or change of service. Delayed credential responses cannot reopen a closed inventory or display a token under another service. Credential scopes are metadata, not resource authorization. Revocation, identity deletion and MFA reset retain explicit confirmation and backend last-administrator protections.
+A service profile opens its credential inventory with ID, scopes, expiry and revocation state. The inventory does not report a last-use metric. Creation shows the token once; copy it before dismissing or closing the inventory. The secret is cleared from the displayed inventory on dismissal, identity change or change of service. Delayed credential responses cannot reopen a closed inventory or display a token under another service. Credential scopes are metadata, not resource authorization. Revocation, identity deletion and MFA reset retain explicit confirmation and backend last-administrator protections.
 
 ### Define responsibility, then assign it
 
@@ -292,6 +276,6 @@ The administration sign-in surface offers an organization account and a Broker a
 
 OAuth forms preserve the original request URL and challenge fields. The authentication template needs no inline application JavaScript and retains its strict CSP; configured CAPTCHA scripts are the only permitted providers. A single upstream OIDC provider with local login disabled still redirects automatically.
 
-The console supports light/dark themes and mobile navigation with focus containment. Wide policy and credential tables scroll within their own surfaces; editors and inspectors stack on small screens. The standalone authentication template is light-only. System-font fallbacks require no external font request.
+The console supports light/dark themes and mobile navigation with focus containment. Primary actions use the paired action/foreground tokens; destructive actions retain the danger color when hovered. Disabled buttons retain their disabled appearance on hover. Keyboard focus remains visible on the fixed navy navigation in either theme. At mobile widths, buttons and the menu trigger have a minimum 44px height, and editor actions wrap rather than being compressed into a single row. Wide policy and credential tables scroll within their own surfaces; editors and inspectors stack on small screens. The standalone authentication template is light-only. System-font fallbacks require no external font request.
 
-The canonical [Graphit design system](https://github.com/graphit-labs/graphit-code/blob/main/docs/specs/design_system.md) documents shared principles, tokens, page patterns, responsive behavior and evolution checks. The implementation owners are `internal/broker/adminui/index.html` and `internal/broker/oauthui/index.html`; API/security contracts remain covered by `admin_test.go` and `oauth_test.go`. Use the reference revision corresponding to the implementation under review.
+The canonical [Graphit design system](https://github.com/graphit-labs/graphit-code/blob/main/docs/specs/design_system.md) documents shared principles, tokens, page patterns, responsive behavior and evolution checks. The native console consumes `crates/broker-presence/assets/admin/index.html`; OAuth/Device rendering uses the maintained Rust templates under `crates/broker-presence/src/templates/oauth/`. Native Control, Presence and Server contracts cover authentication, current SQL authorization and the HTTP journeys described above. Use the reference revision corresponding to the implementation under review.

@@ -1,0 +1,70 @@
+[package]
+name = "broker-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "graphit-broker"
+path = "src/main.rs"
+
+[features]
+cuda = ["graphit-ai/cuda"]
+
+[dependencies]
+graphit-auth = { path = "../../../graphit-code/crates/graphit-auth", version = "=0.1.0" }
+graphit-ai = { path = "../../../graphit-code/crates/graphit-ai", version = "=0.1.0" }
+graphit-http = { path = "../../../graphit-code/crates/graphit-http", version = "=0.1.0" }
+graphit-core = { path = "../../../graphit-code/crates/graphit-core", version = "=0.1.0", features = ["async-cancel"] }
+graphit-fs = { path = "../../../graphit-code/crates/graphit-fs", version = "=0.1.0" }
+totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "otpauth"] }
+broker-control = { path = "../broker-control" }
+broker-security = { path = "../broker-security" }
+broker-storage = { path = "../broker-storage" }
+broker-presence = { path = "../broker-presence" }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+clap = { version = "=4.6.7", features = ["derive", "env"] }
+dirs = "=6.0.0"
+serde-saphyr = { version = "=1.3.0", default-features = false, features = ["deserialize", "serialize"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
+regex = "=1.13.1"
+humantime = "=2.4.0"
+url = "=2.5.8"
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "=1.15.1", features = ["std"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls"] }
+hyper = { version = "=1.12.0", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio", "service", "http1"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "signal"] }
+tokio-io-timeout = "=1.2.1"
+tower-http = { version = "=0.6.11", default-features = false, features = ["timeout", "cors"] }
+
+[dev-dependencies]
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["cookies"] }
+base64 = "=0.22.1"
+http-body-util = "=0.1.5"
+oauth2 = { version = "=5.0.0", default-features = false }
+openidconnect = { version = "=4.0.1", default-features = false }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
+broker-now-wire = { path = "../broker-now-wire" }
+futures-util = { version = "=0.3.34", default-features = false, features = ["std", "async-await", "sink"] }
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = ["connect", "handshake"] }
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["aws_lc_rs"] }
+rcgen = "=0.14.10"
+tempfile = "=3.27.0"
+object_store = { version = "=0.14.2", default-features = false, features = ["aws"] }
+aws-sigv4 = { version = "=1.6.0", default-features = false, features = ["sign-http", "http1"] }
+aws-credential-types = "=1.3.0"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+getrandom = "=0.4.3"
+sqlx-core = { version = "=0.9.0", default-features = false, features = ["json", "_rt-tokio", "_tls-rustls-ring-webpki"] }
+sqlx-postgres = { version = "=0.9.0", default-features = false, features = ["json"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["process"] }

@@ -1,273 +1,259 @@
+---
+title: Deployment
+references:
+  - target: {type: knowledge, id: Rust_Copilot_one-shot_Knowledge_Ask, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: uses
+  - target: {type: task, id: tsk-ea46, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+  - target: {type: task, id: tsk-8069, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: uses
+  - target: {type: task, id: tsk-170b, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: uses
+  - target: {type: task, id: tsk-6413, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+---
 # Deployment
 
-## Container
+Configure the Rust Broker with [native PostgreSQL or explicit private SQLite](rust-broker-server.md). The image runs the same executable and preserves its key, authentication and storage contracts. GGUF CPU inference requires explicitly provisioned GGUF model files. Native process tests do not establish container, GPU, other-platform or hosted-publication support.
 
-Each tagged release publishes a Linux amd64 image to
-`ghcr.io/graphit-labs/graphit-broker`. For `v0.1.1`, the available tags are `0.1.1`, `0.1`, `0`, and
-`latest`; image tags never include the Git tag's `v` prefix. The release workflow builds the image
-from the same self-contained Linux binary it publishes as a release artifact. The runtime image
-does not download a binary or contain a Go toolchain.
-
-The image runs as `graphit` (UID/GID 10001), includes CA certificates, CUDA libraries, and a
-readiness health check, but no model weights. The example Compose service uses a read-only root
-filesystem, drops all capabilities, enables `no-new-privileges`, and mounts configuration,
-database state, downloaded model files, and the embedded runtime beneath one persistent Graphit
-broker directory.
-
-```bash
-cp .env.example .env
-cp config.example.yaml config.yaml
-# Fill .env and edit config.yaml before continuing.
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml create broker
-docker compose -f docker-compose.yml cp config.yaml broker:/home/graphit/.graphit/broker/config.yaml
-docker compose -f docker-compose.yml up -d
-```
-
-Set `GRAPHIT_BROKER_IMAGE` to pin another published tag. For a local image, run
-`make build VERSION=dev && docker build -t graphit-broker:local .`, then set
-`GRAPHIT_BROKER_IMAGE=graphit-broker:local` before starting Compose.
-The mounted YAML chooses the SQLite DSN, whether it references an environment variable, and that
-variable's name. `config.example.yaml` selects `BROKER_DATABASE_DSN` with a portable
-`~/.graphit/broker/broker.db` fallback; this name is not built into the executable or image.
-
-The image intentionally contains no operational YAML. The entrypoint requires
-`/home/graphit/.graphit/broker/config.yaml` to exist as a regular file readable by UID 10001 and
-refuses to start otherwise. The mounted YAML, after environment expansion, is always authoritative.
-It is never stored in SQL; edit or replace the deployment file/secrets and restart to apply changes.
-
-### Customize container startup with scripts
-
-Mount scripts at `/docker-entrypoint.d`, outside `GRAPHIT_GLOBAL_DIR` and its persistent data
-volume. Do not copy hooks into the global directory: the separate mount keeps them available even
-when that volume is replaced. They run during each entrypoint invocation. There are two optional
-directories:
-
-| Directory | When it runs | Typical use |
-| --- | --- | --- |
-| `init.d` | Before the entrypoint creates and checks `GRAPHIT_GLOBAL_DIR` and its `broker` directory | Prepare files or create the configuration before the required-file check. |
-| `pre-start.d` | After the directories and `GRAPHIT_BROKER_CONFIG` have been checked, immediately before the broker starts | Inspect the final files or perform a last setup step. |
-
-For example, create local scripts and mount them read-only with a Compose override:
-
-```bash
-mkdir -p entrypoint.d/init.d entrypoint.d/pre-start.d
-cat > entrypoint.d/init.d/10-prepare.sh <<'EOF'
-#!/bin/sh
-set -eu
-mkdir -p "$GRAPHIT_GLOBAL_DIR/broker/models"
-EOF
-cat > entrypoint.d/pre-start.d/20-check.sh <<'EOF'
-#!/bin/sh
-set -eu
-test -r "$GRAPHIT_BROKER_CONFIG"
-EOF
-chmod 0755 entrypoint.d entrypoint.d/init.d entrypoint.d/pre-start.d
-chmod 0644 entrypoint.d/init.d/10-prepare.sh entrypoint.d/pre-start.d/20-check.sh
-cat > compose.custom.yml <<'EOF'
-services:
-  broker:
-    volumes:
-      - ./entrypoint.d:/docker-entrypoint.d:ro
-EOF
-docker compose -f docker-compose.yml -f compose.custom.yml up -d
-```
-
-The normal configuration setup shown above is still required for this example. An `init.d` script
-may instead create `GRAPHIT_BROKER_CONFIG` itself, provided it writes a regular file readable by
-the broker user. Files in each hook directory run in filename order, so prefixes such as `10-` and
-`20-` make dependencies clear. Every non-hidden regular `.sh` file runs with `/bin/sh` and only
-needs read permission; another file needs execute permission and an interpreter available in the
-image. Hidden files are ignored. A non-regular entry, unreadable script, non-executable non-`.sh`
-file, or nonzero script exit stops startup with a diagnostic naming the hook. Missing or empty hook
-directories do nothing.
-
-Hooks run as `graphit` (UID/GID 10001), under the same read-only root filesystem and volume
-permissions as the broker. Mount scripts read-only and make directories traversable and scripts
-readable by that user. They run on every container start and for entrypoint commands such as
-`--check-config`, `--setup-models`, and `--version`; make them safe to run more than once. Scripts
-run as child processes: exported variables they set do not change the later hooks or broker
-environment. Use mounted files or the container environment for values that must persist.
-
-Bind only to loopback when a reverse proxy owns public TLS. Forward the original host/scheme
-correctly. Set `server.public_url` to the externally visible HTTPS origin; that exact value becomes
-the Broker's OpenID issuer. When upstream OIDC browser login is enabled, register the public
-`/oauth/oidc/callback` URL exactly with the upstream IdP.
-
-Local development may use `server.public_url: http://localhost:8080` (or a loopback IP) with
-`administration.cookie_secure: false`. HTTP public URLs on remote or private-network hosts are rejected.
-
-If adaptive local-login CAPTCHA is enabled, `server.public_url` must be the exact origin whose
-hostname is registered with the selected provider. Allow browser CSP access and backend egress only
-to `challenges.cloudflare.com` for Turnstile, or to Google's documented reCAPTCHA origins and
-`www.google.com` Siteverify for reCAPTCHA v2. Store the provider secret in the secret manager; only
-the site key is public. The CAPTCHA threshold is per process, so multiple replicas multiply both
-the local admission capacity and the number of attempts possible before each replica requires a
-challenge. Use load-balancer/WAF controls when a cluster-wide abuse envelope is required.
-
-## Database selection
-
-SQLite uses `broker/broker.db` in the named `broker-global` volume and needs exactly one writable
-broker. PostgreSQL or MySQL
-should use a secret-injected DSN and database network policy; several stateless broker replicas may
-share the remote database. See [database backends](database.md).
-
-The first process creates the current SQL schema. Start one replica for a new database, verify it,
-then scale. There are no migrations: an incompatible schema requires an
-explicit recreate/restore for the matching build.
-
-## S3 routes
-
-Create a least-privilege assumable role and broker signing identity per private route. The role
-needs permission only for its `bucket/base_prefix` and operations that grants can authorize. The
-signing identity needs `sts:AssumeRole` for that role. Multiple routes may target different AWS
-accounts, regions, buckets, or S3-compatible services, but the matching grants for each requested
-storage scope must select exactly one route.
-
-The broker signs `AssumeRole`, intersects the role/user permissions with its generated session
-policy, and returns temporary credentials plus the selected topology. Graphit identifies the
-project, user-memory, or Hub-metadata scope but cannot override the route, roots, or policy. Its S3,
-LanceDB, and Ladybug traffic then goes directly to object storage. For
-write/delete grants, use object versioning, retention, and audit controls appropriate to the data.
-
-Named routes can provide logical staging/production separation inside one broker when exact
-projects and distinct deployment principals deterministically select each route. This still
-shares one broker process, administration boundary, deployment configuration, and grant database. For
-strong environment isolation, deploy separate brokers with separate databases, credentials,
-buckets/accounts, and administration configuration:
+## Build and configure the native image
 
 ```text
-Graphit staging    -> broker staging    -> database/S3 staging
-Graphit production -> broker production -> database/S3 production
+cargo run --locked -p xtask -- build --debug
+cargo run --release --locked -p xtask -- package --binary ./graphit-broker --output installer-package
+docker build -t graphit-broker:local .
 ```
 
-Prefer the separate-broker model when a configuration mistake, compromised administrator, or
-credential exposure in staging must not be able to affect production. If one broker owns both
-environments, make every environment grant name its route explicitly and test that staging
-principals and project IDs cannot match production grants.
+Omit `--debug` for a release-profile build. Packaging uses the existing executable;
+choose a new output directory or remove only a previous generated package first.
+The Dockerfile extracts `installer-package/graphit-broker-linux-amd64.tar.gz` and
+copies its complete layout, including native notices and runtime libraries.
+Ubuntu24.04 supplies its base runtime libraries; the maintained
+`buildpack-deps:noble-curl` stage supplies the OS CA bundle required by the HTTP
+client. Model weights are provisioned separately; the image contains the native GGUF runtime.
+The shell remains available for operator startup hooks.
 
-## AI services
+A CUDA-enabled package includes its Cargo-built engine and CUDA user-space runtime beside the executable;
+see [Cargo CUDA backend](binary.md#cargo-cuda-backend). Supply the
+host NVIDIA driver and NVIDIA Container Toolkit separately and start the container
+with `--gpus all`. Model execution still follows the configured CPU/CUDA/auto choice;
+enabling this build feature does not enable rerank or force GPU inference. A CPU-only
+package needs no CUDA installation. This layout contract is separate from actual
+GPU container execution, which must be validated on the deployment hardware.
 
-The broker owns upstream endpoint, model, API key, timeouts, limits, and cache. It supports the
-[Graphit Code](https://github.com/graphit-labs/graphit-code) provider set: OpenAI-compatible, Cohere, Voyage, and Google embeddings; Cohere,
-Voyage, and Jina rerank; plus local CodeRankEmbed and BGE rerank inference. Allow egress only to
-configured upstreams and, when local models are activated, to their pinned Hugging Face artifact
-URLs.
+The runtime user is `graphit:graphit` (UID/GID10001), with working directory
+`/home/graphit/.graphit/broker`. That protected directory and
+`/var/lib/graphit/hub` are declared volumes with matching ownership.
+Supply a regular native config readable by UID10001 at
+`/home/graphit/.graphit/broker/config.yaml`, plus its real key and CA files.
+There is no embedded operational YAML, old-schema importer or no-SQL smoke mode.
 
-At startup, each enabled `upstream.protocol: onnx` service resolves its `upstream.model` from
-`upstream.directory`; an HTTP or disabled service does not touch the catalog.
-`on_demand` manifests download missing verified artifacts before the listener starts. `setup`
-manifests use `--setup-models`, while `never` manifests require a fully populated bundle and perform
-no network access. Cached bundles survive restarts under `broker/models` in `broker-global`. See the
-[local model catalog](models.md) for every manifest field and complete examples.
+After provisioning `/srv/graphit-broker` and its files for UID/GID10001, for example:
 
-One way to seed that named volume without another Compose file is to create the service, copy the
-artifacts, and then start it:
-
-```bash
-docker compose create broker
-docker compose cp ./models/custom-embedding broker:/home/graphit/.graphit/broker/models/custom-embedding
-docker compose up -d
+```text
+docker run --rm --name graphit-broker -p 127.0.0.1:8080:8080 --mount type=bind,src=/srv/graphit-broker,dst=/home/graphit/.graphit/broker --mount type=volume,src=graphit-hub,dst=/var/lib/graphit/hub graphit-broker:local
 ```
 
-The copied directory must include `manifest.json` and every required artifact, and be readable by
-the image's non-root broker user. Run a controlled prefetch without another Compose file via
-`docker compose run --rm broker --setup-models`.
+Set `server.address: 0.0.0.0:8080` in that namespace and configure the public
+HTTPS origin separately. Database DNS must resolve inside the container and
+match its TLS trust. PostgreSQL remains an external configured service, with no
+implicit SQLite file. Select explicit native storage directories when using the
+Hub volume. Protect private configuration/key/pepper files and grant UID10001
+only the volume access it needs. Supply any referenced secrets through the
+container environment or protected configuration; startup does not create login credentials.
 
-Default Compose and local ONNX inference run on CPU. On an NVIDIA host with the Container Toolkit
-installed, set `upstream.device: auto` explicitly for each local service that should try CUDA,
-then expose GPUs through the same Compose file. `auto` falls back to CPU using the same image:
+Bind the host port to loopback when a reverse proxy owns public TLS. Preserve
+the original host/scheme and exact configured upstream browser callback.
+Use the native [OIDC](oidc.md), [authorization](authorization.md) and server
+contracts for policy; container startup does not grant administrators.
 
-```bash
-GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up -d
+## Probe, recover and shut down
+
+The image sets `GRAPHIT_GLOBAL_DIR=/home/graphit/.graphit`,
+`GRAPHIT_BROKER_CONFIG=/home/graphit/.graphit/broker/config.yaml` and
+`GRAPHIT_BROKER_HEALTHCHECK_URL=http://127.0.0.1:8080/readyz`.
+Change the probe URL when changing the listener. The probe removes only the
+config variable from its subprocess to preserve the CLI conflict contract;
+normal service startup keeps it.
+
+`/healthz` reports liveness. `/readyz` becomes ready after productive startup
+and is cleared during shutdown; it is not a new continuous SQL-health policy.
+The native HTTP(S) probe has a five-second timeout and follows no redirects.
+
+```text
+docker exec graphit-broker env -u GRAPHIT_BROKER_CONFIG /usr/local/bin/graphit-broker --healthcheck http://127.0.0.1:8080/readyz
+docker stop graphit-broker
 ```
 
-Omit `device` or set `device: cpu` to use CPU; set `device: cuda` to require CUDA. The resolved
-manifest and artifact identity is appended to each local revision automatically; an embedding
-identity change requires reindexing because Graphit isolates incompatible vector spaces.
+Missing/unreadable config, inaccessible bootstrap directories or failed hooks
+produce nonzero startup. Valid configuration still needs reachable TLS SQL and
+usable storage. Fix the dependency and restart; do not weaken TLS or add fallback.
+The entrypoint execs the native process as PID1, so SIGTERM and SIGINT reach its
+normal admission/drain/SQL-close lifecycle and configured shutdown budget.
 
-The Compose environment selects the container runtime, not the inference device policy. Set
-`upstream.device: auto` to prefer an exposed GPU or use `cuda` when startup must fail unless it is
-usable. `GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia` requires the NVIDIA Container Toolkit to have
-registered the `nvidia` runtime with Docker. Confirm host visibility with `nvidia-smi`; the broker
-logs the chosen `cuda` or `cpu` device when each local model becomes ready.
+## Local Linux user service
 
-For native installation, see [running the native binary](binary.md). CPU and macOS CoreML do not
-require CUDA or cuDNN; native CUDA selection does.
+The Broker is an independently operated server. A local installation can use the
+existing systemd user manager with the same native executable and configuration.
+Keep its executable at a stable installation path; the native builder documented
+in [Running the native binary](binary.md) publishes `--output` through a staged
+copy, fsync and rename. Preserve a private backup when replacing a qualified
+installed executable. Building is separate from starting the service.
 
-The image's self-contained broker extracts its embedded GPU-capable ONNX payload into
-`/home/graphit/.graphit`, with its `broker` subdirectory persisted by the `broker-global` volume at
-`/home/graphit/.graphit/broker`. That same directory is the image's working directory.
-`GRAPHIT_GLOBAL_DIR` may select another path, but it must be readable, writable, and traversable by
-UID 10001; the entrypoint refuses to start otherwise. `GRAPHIT_BROKER_CONFIG` selects the YAML path,
-and `GRAPHIT_BROKER_HEALTHCHECK_URL` can override the default readiness probe at
-`http://127.0.0.1:8080/readyz`. Native Linux and Windows releases embed the same ONNX shared/CUDA
-provider libraries but load them only when CUDA is selected. macOS embeds CoreML in its main ONNX
-dylib.
+For the private `.graphit-rust` installation, prepare
+`graphit-broker-rust.service` with the following contents:
 
-A storage route using the `filesystem` driver keeps Hub objects on a second volume, mounted by
-Compose at `/var/lib/graphit/hub`, which is the directory `config.example.yaml` names. It holds
-project artifacts rather than broker state, so size it like a bucket and back it up on its own
-schedule. The directory is owned by UID 10001 in the image, which is what makes a fresh named
-volume writable; another path must be writable by that UID too. Conditional writes are serialized
-inside one broker process, so exactly one broker may own that volume: a deployment that needs more
-than one replica uses the `s3` driver against a real object store. See
-[configuration](configuration.md#the-filesystem-driver).
+```ini
+[Unit]
+Description=Graphit Broker Rust
 
-## OIDC
+[Service]
+Type=simple
+ExecStart=%h/.graphit-rust/bin/graphit-broker --config %h/.graphit-rust/broker/config.json
+Restart=on-failure
 
-The Broker has two distinct OIDC roles that share one deployment configuration:
+[Install]
+WantedBy=default.target
+```
 
-1. It is the OpenID Provider consumed by Graphit Code. Its issuer is `server.public_url`; it
-   publishes standard discovery, authorization, token, JWKS, userinfo, revocation, introspection,
-   and end-session endpoints. The configured `authentication.local.tokens.cli_client_id` is a
-   public/native client using Authorization Code, PKCE S256, state, nonce, and a dynamic loopback
-   redirect whose path is `cli_redirect_path`.
-2. It may be an OIDC client of multiple upstream organization IdPs. Browser-client fields on each
-   `authentication.oidc` entry enable a named method and use the exact public
-   `/oauth/oidc/callback`. The same issuer entries validate consumer bearer tokens; there is no
-   administration-specific OIDC block.
+The configuration filename is an operator choice; its contents still follow the
+[native configuration contract](rust-broker-server.md#supply-configuration-and-key-files).
+Retain the existing SQLite database, keys, issuer, accounts, grants and listener.
+The service manager runs the server directly and delivers its normal shutdown
+signals. The Code `daemon install` command manages Code's daemon and has no
+Broker service installation mode.
 
-Graphit Code first reads `/.well-known/graphit-broker`, then uses only the standard OpenID Provider
-metadata and endpoints. The Broker-owned authorization page offers local login and every named
-upstream OIDC provider that is configured, shows only local when that is the sole method, and
-redirects immediately only when exactly one upstream provider is the sole method. An upstream token
-is never returned to Graphit Code: after successful
-authentication, the Broker issues its own EdDSA ID/access JWTs and an opaque rotating refresh token.
-The access JWT is audience-bound and verifiable through the Broker JWKS; offline validators accept
-an already issued token until `exp`, even after Broker-side revocation.
+Validate a staged unit and the stable executable before the coordinated cutover.
+The relative staging path below is resolved from the operator's workspace:
 
-Grant only required upstream scopes and map stable claims. Claim mappings accept exact top-level
-keys or RFC 9535 JSONPath. If `authentication.oidc[].role_claim` is enabled, its additional roles
-replace SQL assignments for that canonical identity; every authenticated principal still receives
-`user`. Bootstrap a new database with `--bootstrap-admin` after configuring the single
-`authentication.token_pepper` when OIDC does not already provide an administrator.
+```sh
+systemd-analyze --user verify .build/activation-broker-service/graphit-broker-rust.service
+"$HOME/.graphit-rust/bin/graphit-broker" --config "$HOME/.graphit-rust/broker/config.json" --check-config
+```
 
-Changing the pepper is not a routine signing-key rollover. It changes the Broker signing and
-encryption keys and derived subjects, invalidates all local passwords/tokens/sessions/flows, and
-requires a coordinated whole-deployment recovery. This development version has no migration or
-compatibility reader for prior database/authentication schemas.
+Run verification from the user's manager session with its real
+`XDG_RUNTIME_DIR`. `--check-config` opens no SQL pool or listening socket.
+These checks do not install or start the unit, or qualify startup at login or
+after reboot.
 
-## Rollout
+The operator coordinates the consumer stop and the old Broker's SIGTERM/join
+before installing and starting the unit. After that handoff, the existing OS
+commands are:
 
-1. Back up the database and deployment secrets.
-2. Validate the new config with `--check-config`.
-3. Start one instance and wait for `/readyz`.
-4. Inspect discovery and its authorization revision.
-5. Verify both discovery documents and JWKS; test every enabled login method through a complete
-   Graphit Code Authorization Code exchange and refresh rotation. Also test anonymous denial, one
-   allowed user, one denied user, Hub discovery, S3 read/write as applicable, embeddings, rerank,
-   and admin login.
-6. Add remote-database replicas only after the single instance is healthy.
+```sh
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+mkdir -p "$unit_dir"
+install -m 600 .build/activation-broker-service/graphit-broker-rust.service "$unit_dir/graphit-broker-rust.service"
+systemctl --user daemon-reload
+systemctl --user enable --now graphit-broker-rust.service
+env -u GRAPHIT_BROKER_CONFIG "$HOME/.graphit-rust/bin/graphit-broker" --healthcheck http://127.0.0.1:34461/readyz
+```
 
-Configuration changes require a deployment update and broker restart. Grant changes are
-independent SQL transactions and apply on the next consumer operation.
+The probe uses the existing readiness route and avoids the CLI conflict with an
+inherited configuration environment variable. A successful configuration or unit
+check does not substitute for this real startup/readiness observation. Qualify
+login and reboot behavior separately. Any ordering dependency for a Code daemon
+using this local Broker belongs to that installation's OS configuration; a Code
+installation may instead use a remote Broker.
 
-## Kubernetes outline
+## Operator hooks
 
-Use a Deployment with a Secret-backed environment, read-only ConfigMap mount, non-root security
-context, readiness/liveness HTTP probes, NetworkPolicies, and PostgreSQL/MySQL for multiple
-replicas. SQLite, and a storage route using the `filesystem` driver, should instead use one replica
-and a ReadWriteOnce persistent volume. Protect
-`/admin/` at the same TLS boundary as the consumer API; do not rely on an ingress login page as a
-replacement for the broker's own OIDC/RBAC.
+Mount hooks read-only at `/docker-entrypoint.d`, outside the data volume.
+`init.d` runs before directory/config checks; `pre-start.d` runs after checks,
+immediately before the executable. Files run in filename order as UID/GID10001.
+Readable regular `.sh` files use `/bin/sh`; other regular files need execute
+permission and an available interpreter. Missing/empty directories do nothing.
+Invalid types/permissions or a nonzero exit stop startup and preserve failure status.
+
+Hooks run on every entrypoint invocation, including version/config-check commands;
+make them repeatable. Child exports cannot change the parent environment.
+Use mounted files or container environment for persistent values. Keeping hooks
+outside the data volume preserves them when data is replaced.
+
+## Verify the actual container
+
+```text
+cargo test --locked --offline -j4 -p broker-server --test container -- --ignored --exact broker_native_container_contract --test-threads=1
+```
+
+This existing xtask pre-push phase builds the real Dockerfile in an owned temporary
+context and runs its actual executable with the maintained PostgreSQL TLS
+NOSUPERUSER fixture, native config and keys. It checks UID/volumes, missing config,
+health/readiness/actual image probe, hooks/order/failures, blocked directories,
+PID1, SIGTERM/SIGINT, restart and cleanup of owned resources. There is no synthetic
+health service or weakened SQL trust. The test is not compiled away on other
+platforms: missing Linux-image/host-network support fails the actual fixture
+rather than reporting an empty successful qualification. Only Linux execution
+is recorded here.
+
+Set `GRAPHIT_BROKER_CONTAINER_IMAGE` to validate an already built image with the
+same command. The Linux publisher does that before registry login/push; local tests
+never publish. The same xtask gate retains every SQL/HTTP/STS/revocation phase.
+CI also runs formatting, strict Clippy, checksum-verified actionlint and the maintained frontend check.
+Workflow syntax is also checked by the active pre-commit hook.
+
+## CI source and release provenance
+
+Configure `GRAPHIT_CODE_REPOSITORY` and `GRAPHIT_CODE_REF` with an accessible source containing
+the current `graphit-ai`, `graphit-http` and `graphit-core` crates and their locked Cargo dependencies. Reusable/manual CI also accepts
+`code_repository` and `code_ref`. Missing values stop the job before checkout/build; no repository
+or branch is silently selected. Values must be nonempty and have no surrounding whitespace. A private source may use `GRAPHIT_CODE_READ_TOKEN` with read access.
+Checkout credentials are not persisted.
+
+Each Cargo job uses sibling `graphit-broker`/`graphit-code` checkouts. Before Cargo, the source guard requires the manifests of `graphit-ai`, `graphit-http` and `graphit-core`, plus `crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE`. Use the complete Code checkout at the configured revision.
+Linux builds its CUDA backend through the same locked Cargo dependency and the `broker-server/cuda` feature.
+Its CI job provisions the CUDA compiler and development libraries, then the native
+Cargo builder compiles the same engine with CUDA enabled. It does not install a host NVIDIA driver or claim GPU
+execution on a runner without GPU hardware. The real GGUF consumer gate requires
+explicit provisioned model bundles. Configuration/model files remain explicit at
+service runtime.
+
+The Linux artifact `graphit-broker-linux-amd64-ci` carries the executable,
+`code-source.txt` and installer pair under `installer-package/`. Linux CI resolves
+the actual Code/Broker commits; the container and native Darwin/Windows package jobs
+reuse those exact commits. Records include platform and the actual executable
+version. The container verifies its record/checksum and tag/version before the
+existing image/lifecycle check; Docker's context remains the Broker root.
+
+The tag workflow also prepares the [automatic installer asset producer](binary.md#release-assets-and-partial-recovery).
+An existing stable tag must match the native versions and qualified Broker
+commit. Linux amd64, Darwin arm64 and Windows amd64 pairs are required and independently
+verified before any Release mutation. The archive validator requires the executable
+and six native notices as regular nonempty files, Linux library provenance or the
+native macOS/Windows runtime manifest and its exact library digests. Unknown paths, duplicate entries, links, unexpected modes
+and platform prefixes are rejected. The Darwin producer runs on the documented
+native `macos-15` ARM64 host; its manifest records the actual Mach-O minimum OS version.
+The Windows producer uses `windows-2022`, MSVC's release CRT redistributable directory,
+the Cargo native engine and the same qualified Code/Broker commits. Both jobs exercise the
+installed package and SQLite/configuration consumers. Their source is prepared but
+native execution remains unqualified until those jobs actually run.
+Release absence is classified only from a complete HTTP404 response. Creation
+uses the existing tag, tag title and generated notes. Existing Releases retain
+their title/body/draft/prerelease state; uploads never overwrite or delete assets.
+Conflicts fail. Partial upload recovery preserves verified existing files and
+manually sends only absent names, as described in that runbook.
+
+Code CI's reverse dependency separately requires an explicit compatible
+`GRAPHIT_BROKER_REF`. Neither direction can use an invented remote ref for
+unpublished local changes. A real accessible Rust Code revision remains necessary for hosted composition;
+its Cargo lock selects the maintained forks from the published Libs revision. No hosted build, native Darwin
+execution, asset upload/download, registry push or release publication was
+executed in this workflow preparation. Linux process/container results do not
+establish other-platform runtime or full Broker parity.
+
+
+Native release executables use Cargo Release with Thin LTO, one codegen unit and
+`strip = "symbols"`; static symbol/name tables and debug information are omitted
+from the distributed executable. Dynamic exports and native library linkage are
+preserved. `xtask build` uses Release unless `--debug` is explicitly selected;
+release CI uses the default optimized path.
+
+The native container gate consumes the same real installer archive as Docker.
+`GRAPHIT_BROKER_CONTAINER_PACKAGE` selects an explicit existing Linux package;
+`GRAPHIT_BROKER_CONTAINER_IMAGE` selects an already-built image. Without either,
+`xtask` packages the `graphit-broker` binary produced by the preceding build into
+an owned temporary directory, passes that archive to the container test, and
+removes the temporary package after the check. It does not rebuild the executable
+for packaging. A direct container-test invocation defaults to
+`installer-package/graphit-broker-linux-amd64.tar.gz` and reports a missing package
+before attempting the image build.

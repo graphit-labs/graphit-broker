@@ -1,3 +1,9 @@
+---
+title: Resource authorization
+references:
+  - target: {type: task, id: tsk-ea46, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+---
 # Resource authorization
 
 Resource grants are the sole project-capability authorization source for consumer operations.
@@ -23,6 +29,42 @@ organization, and teams are attributes from the verified token only. An invalid 
 RBAC is system-wide and orthogonal to grants. Every authenticated principal has the default `user`
 role; SQL assignments or an authoritative OIDC role claim can add roles such as `admin`. Those
 roles select broker/UI actions but do not make a resource grant match.
+
+## Native rerank SQL admission
+
+The native PostgreSQL and SQLite control stores expose separate `rerank_admissions`
+readers. They validate the configured audience/scopes and real LOCAL, Broker JWT or
+upstream identity, read the current SQL grant snapshot, and match the `rerank`
+capability. A grant for `embeddings` alone does not grant rerank. Anonymous access
+still needs a matching anonymous or global rule.
+
+The returned `RerankAdmission` retains its genuine authentication and original
+deadline. Its checks do not renew either boundary. The HTTP adapter reads genuine
+SQL identity and grants again after inference and before response/cache publication;
+revocation during computation prevents publication. It retains both admissions and
+the initial authentication cutoff, so reauthorization cannot renew the request.
+Local GGUF keeps its existing per-batch cancellation/expiry context and physical
+job custody; it does not add a callback for each CPU operation.
+
+A later request reads current
+identity and grants again, including when a response cache already contains the
+result. SQL failure remains an authorization error; it is not converted into a
+successful grant or ordinary denial.
+
+Its opaque cache scope separates canonical issuer/subject and organization, and
+distinguishes anonymous access. This value is cache data, not reusable authority.
+It contains no serialized identity and cannot replace a fresh admission. A
+response-cache namespace must also bind the configured model/provider, revision
+and request data.
+
+The focused control tests use real PostgreSQL TLS with a NOSUPERUSER owner and
+private SQLite stores:
+
+```text
+cargo test --locked --offline -j4 -p broker-control --test rerank_admission -- --include-ignored --test-threads=1
+```
+
+These tests cover grant separation, current revocation, human/service cache isolation, deadlines and SQL failure. HTTP/server/provider and consumer integration have separate test targets.
 
 ## Grant shape
 
@@ -57,6 +99,32 @@ roles select broker/UI actions but do not make a resource grant match.
 
 Grants are additive. No match means deny. If matching S3 grants select different routes, the
 request is rejected instead of guessing.
+
+## Native Rust storage contracts
+
+The current Rust [PROJECT](rust-project-corpus-storage-admission.md) and
+[USER Memory](rust-user-memory-storage-admission.md) SQL contracts use fixed `v1`
+roots, actual authenticated identity and current whole SQL policy. The
+[global Hub SQL library](rust-global-hub-storage-admission.md) requires an
+effective nonPROJECT capability matching literal `hub`, plus contributing S3
+operations/prefixes. Hub and S3 may come from independent applicable rules with
+`projects=[]` or `*`; an exact PROJECT rule, discovery selector or `global`
+project alias cannot confer global authority. Valid `{project}` templates have
+no contribution without a project, while invalid whole policy still fails.
+The two Global roots are exactly `v1/hub/global/registry` and `v1/hub/global/rules`.
+
+The [Rust HTTP route](rust-user-memory-storage-credentials-http.md) currently
+accepts PROJECT five modules/twelve response fields and USER Memory's required
+canonical installation/thirteen fields. [Global Hub HTTP](rust-global-hub-storage-credentials-http.md)
+accepts exactly `{"scope":"hub","module":"hub"}` and returns twelve fields with
+project_id empty and no installation_id after current nonPROJECT Hub plus S3
+admission. [PROJECT Hub metadata/events](rust-project-hub-metadata-events-storage.md)
+retain the PROJECT Hub body and S3 authority, with exact four roots: registry,
+artifacts, hub/metadata and hub/events beneath `v1/projects/{id}`. No broad
+project or Hub wildcard root is admitted; metadata-only excludes events and
+registry/artifacts. The older broader protocol/`v2` descriptions below do not qualify
+native Rust routes, codecs, datasets or client integrations and are not a Rust
+compatibility/import path. Rust has no `dream` module or `global` ProjectId alias.
 
 ## How S3 grants become an STS policy
 

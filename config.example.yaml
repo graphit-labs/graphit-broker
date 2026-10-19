@@ -1,240 +1,64 @@
-database:
-  # sqlite (default), postgres, or mysql. This config chooses the environment variable name;
-  # an empty BROKER_DATABASE_DSN uses the YAML-owned fallback after portable ~ expansion.
-  driver: "sqlite"
-  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
-  # Optional timeout for the initial database connection (default: 15s).
-  # connect_timeout: 15s
-  max_open_conns: 1
-  max_idle_conns: 1
-  conn_max_lifetime: 3m
-
+# Native Rust schema. Values below are operator choices, not implicit defaults.
+# Supply PostgreSQL CA, signing PKCS8 key and deployment secrets before use.
+# See docs/configuration.md and docs/rust-broker-server.md.
 server:
-  address: ":8080"
-  # Browser origins allowed to call the OAuth/OIDC endpoints. Empty emits no CORS headers at all.
-  # Only a browser-based MCP client needs this; server-side agent runtimes are unaffected.
-  cors:
-    allowed_origins: []
-  # HTTP is allowed only on localhost/loopback; also set administration.cookie_secure: false.
-  public_url: "https://broker.example.com"
-  read_timeout: 15s
-  write_timeout: 60s
-  idle_timeout: 120s
-  shutdown_timeout: 15s
-  max_request_bytes: 4194304
-
-authentication:
-  # One deployment pepper protects local password preprocessing, browser sessions/upstream flows,
-  # OIDC subject/signing/encryption domains, local tokens, and service credentials with distinct domains.
-  # It is never stored in SQL.
-  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes from a secret manager}"
-  # SQL-backed human login is enabled by default when administration is enabled. Set false for
-  # an upstream-OIDC-only broker, or set true explicitly when Broker OIDC login is needed without administration.
-  local:
-    login:
-      enabled: true
-    # Failed local-password checks are limited per username. At most max_concurrent expensive
-    # Argon2id checks run at once per broker process. Up to max_concurrent * saturation_multiplier
-    # calls (running plus waiting) are admitted; calls beyond that return HTTP 429 with Retry-After.
-    # Successful and saturation-rejected checks do not consume the failure quota.
-    rate_limit:
-      max_failures: 5
-      window: 1m
-      lockout: 5m
-      max_concurrent: 2
-      saturation_multiplier: 4
-    # Optional adaptive bot protection for the first local-password step. Select `turnstile`
-    # (Cloudflare managed widget) or `recaptcha` (Google reCAPTCHA v2 Checkbox). The attempt that
-    # raises per-process admission to max(1, ceil(max_concurrent * trigger_multiplier)) must pass
-    # the provider before Argon2id. Use 0 to require CAPTCHA from the first attempt, or a positive
-    # fraction to start before max_concurrent. Provider failures fail closed only while required.
-    # server.public_url is mandatory when enabled and its hostname is checked on every proof.
-    captcha:
-      enabled: false
-      provider: "turnstile" # or "recaptcha"
-      site_key: "${BROKER_LOCAL_CAPTCHA_SITE_KEY}"
-      secret_key: "${BROKER_LOCAL_CAPTCHA_SECRET_KEY}"
-      trigger_multiplier: 1.5
-      verification_timeout: 3s
-    # Human local users must enroll a Google Authenticator-compatible TOTP factor by default.
-    # Enrollment and verification challenges are short-lived and bound to the login flow.
-    mfa:
-      required: true
-      issuer: "Graphit Broker"
-      challenge_ttl: 10m
-    # Local human passwords are accepted only by browser/device login. The Broker acts as the
-    # OpenID Provider and issues signed ID/access JWTs plus opaque rotating refresh credentials. Desktop callbacks use the
-    # configured path on an explicit 127.0.0.1 or ::1 ephemeral port.
-    tokens:
-      audience: "graphit-broker"
-      cli_client_id: "graphit-cli"
-      cli_redirect_path: "/oauth/callback"
-      access_ttl: 10m
-      refresh_ttl: 720h
-      authorization_code_ttl: 1m
-      device_code_ttl: 10m
-      device_poll_interval: 5s
-      service_credential_max_ttl: 8760h
-      # RFC 7591 client registration at POST /oauth/register, advertised as registration_endpoint.
-      # Off unless set: enabling it lets anyone who can reach the broker create a client, which is
-      # the deliberate trade for letting a hosted MCP agent connect without manual provisioning.
-      # Only public clients are ever created; confidential metadata is rejected.
-      dynamic_registration: false
-      # Canonical URIs of the Graphit MCP endpoints this deployment serves. Validates the RFC 8707
-      # resource indicator and is published in /.well-known/graphit-broker so each Graphit daemon
-      # learns which resource it is. Each grant accepts one listed absolute URI without a fragment;
-      # a token request may omit it or repeat that exact grant value. Empty accepts no indicator.
-      mcp_resources: []
-  oidc:
-    # Defaults to true; false disables this upstream issuer for bearer and browser login.
-    # Required environment references are still checked even when disabled.
-    - enabled: true
-      # Shown as this provider's button label on Broker and administration login screens.
-      display_name: "Corporate SSO"
-      issuer: "https://identity.example.com"
-      audiences: ["graphit-broker"]
-      # Optional and empty by default. The broker asks this issuer for no scope of its own; list
-      # one here only if your own authorization policy wants it, using a scope your IdP already
-      # mints. A token's reach is decided by its audience.
-      required_scopes: []
-      # This issuer validates consumer bearers and supplies the optional upstream browser method
-      # used by both Broker-managed Graphit Code login and administration login.
-      client_id: "graphit-broker"
-      client_secret: "${BROKER_OIDC_CLIENT_SECRET:?set the confidential client secret}"
-      redirect_url: "https://broker.example.com/oauth/oidc/callback"
-      scopes: ["openid", "profile", "email"]
-      # Defaults to true. Set false only for Authorization Code providers that cannot return the
-      # request nonce in the ID token. State, browser binding, PKCE, and all other token validation
-      # remain on.
-      require_nonce: true
-      # Browser login reads mapped claims from id_token (default), a verified JWT access_token,
-      # or the discovered userinfo endpoint. This setting applies only to browser login.
-      claims_source: id_token
-      subject_claim: "sub"
-      name_claim: "name"
-      email_claim: "email"
-      username_claim: "preferred_username"
-      organization_claim: "$.organization.id"
-      teams_claim: "$.groups[*].name"
-      # Additional token roles are authoritative when configured; every authenticated principal
-      # still receives the built-in default role user.
-      role_claim: "$.realm_access.roles[*]"
-
-# Local users are stored in SQL and managed from /admin/. On a new database, create the first
-# local administrator with `graphit-broker --config config.yaml --bootstrap-admin` (or the explicit
-# stdin variant for automation). The command accepts only a password and creates username admin.
-
-# Configuration is deployment-owned and changes require a restart. The administration API exposes
-# a redacted read-only view. Resource grants, roles, assignments, flows, and sessions remain in SQL.
-administration:
+  address: 127.0.0.1:8080
+  public_url: https://broker.example.test
+database:
+  backend: postgres
+  host: postgres.example.test
+  port: 5432
+  database: graphit
+  username: graphit_owner
+  password: "${BROKER_DATABASE_PASSWORD:?required}"
+  ca_file: postgres-ca.pem
+  text_bytes: 256
+  ca_bytes: 8192
+  pool:
+    max_connections: 2
+    min_connections: 0
+    statement_cache_capacity: 0
+    connect_timeout: 8s
+    acquire_timeout: 5s
+    operation_timeout: 8s
+    startup_timeout: 15s
+    shutdown_timeout: 2s
+    max_lifetime: 60s
+    idle_timeout: 30s
+    statement_timeout: 10s
+    lock_timeout: 10s
+    idle_transaction_timeout: 15s
+  flows:
+    provider_bytes: 128
+    request_bytes: 128
+    continuation_bytes: 512
+auth:
+  issuer: https://broker.example.test
+  audience: storage-api
+  kid: configured-key
+  resource: https://broker.example.test/v1
+  pkcs8_file: signing.pk8
+  key_bytes: 8192
+  pepper: "${BROKER_PEPPER:?required}"
+  digest:
+    pepper_bytes: 256
+    token_bytes: 8192
+    binding_bytes: 256
+    subject_bytes: 256
+    recovery_bytes: 256
+storage:
   enabled: true
-  session_ttl: 8h
-  # Disable only for an explicit local HTTP development deployment.
-  cookie_secure: true
-  # Public/native Graphit CLI client used only to render exact provider/login snippets in the UI.
-  cli:
-    provider_name: "organization-broker"
-    profile_name: "organization-broker"
-
-# Resource grants are not accepted in YAML. A new database starts deny-by-default. Sign in at
-# /admin/, then create grants in Resource grants or through /admin/api/v1/grants.
-
-services:
-  embeddings:
-    enabled: true
-    # HTTP providers: OpenAI-compatible, Cohere, Voyage, or Google.
-    # For local execution replace upstream with protocol: onnx, model: coderankembed (CPU by default).
-    # Set device: auto to try GPU with CPU fallback, or device: cuda to require NVIDIA GPU.
-    # Omit dimensions to infer the ONNX width, or set 768 for coderankembed.
-    # See examples/local-models.yaml; ONNX upstreams do not accept HTTP options.
-    # Embedding compatibility revision published to Graphit.
-    # HTTP: change when the model or vector generation changes, then rebuild embeddings.
-    # ONNX: optional readable prefix; the resolved model identity is appended automatically.
-    revision: "embedding-route-2026-09-07.1"
-    dimensions: 1536
-    max_batch: 256
-    max_input_bytes: 1048576
-    upstream:
-      protocol: "openai-embeddings-v1"
-      url: "https://api.openai.com/v1/embeddings"
-      model: "text-embedding-3-small"
-      api_key: "${OPENAI_API_KEY:?set the broker-owned OpenAI API key}"
-      api_key_header: "Authorization"
-      api_key_scheme: "Bearer"
-      send_dimensions: false
-      timeout: 45s
-    cache:
-      ttl: 10m
-      max_entries: 10000
-
-  rerank:
-    enabled: true
-    # Native upstream rerank: Cohere, Voyage, Jina, or Graphit-compatible.
-    # For local execution use protocol: onnx and model: bge-reranker-base in upstream.
-    # Embedding-simulated rerank: OpenAI/OpenAI-compatible or Google Gemini.
-    # HTTP: change when the rerank model or scoring behavior changes.
-    # ONNX: optional readable prefix; the resolved model identity is appended automatically.
-    revision: "rerank-route-2026-09-07.1"
-    max_documents: 1000
-    max_document_bytes: 1048576
-    upstream:
-      protocol: "cohere-v2"
-      url: "https://api.cohere.com/v2/rerank"
-      model: "rerank-v4.0-fast"
-      api_key: "${COHERE_API_KEY:?set the broker-owned Cohere API key}"
-      api_key_header: "Authorization"
-      api_key_scheme: "Bearer"
-      timeout: 45s
-      # For simulated rerank, set url/model to the provider's embedding endpoint/model instead.
-    cache:
-      ttl: 5m
-      max_entries: 10000
-
-  s3:
-    enabled: true
-    # Each route picks a driver: "s3" reaches an external S3 service and mints credentials
-    # through STS, while "filesystem" keeps the objects on a volume this broker serves itself.
-    # Clients see the same contract either way.
-    default_route: "primary"
-    routes:
-      primary:
-        driver: "s3"
-        region: "us-east-1"
-        endpoint: ""
-        bucket: "graphit-artifacts"
-        base_prefix: "graphit"
-        # Omit both keys to use the AWS SDK default credential chain and its supported providers.
-        # access_key_id: "${PRIMARY_S3_ACCESS_KEY_ID}"
-        # secret_access_key: "${PRIMARY_S3_SECRET_ACCESS_KEY}"
-        # Required target role. The resolved credential above only signs AssumeRole; the target
-        # role is the S3 permission ceiling and the per-project policy narrows each session.
-        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-s3-access-role"
-        sts_endpoint: "" # Defaults to endpoint for S3-compatible storage; empty uses AWS STS.
-        sts_session_name: "graphit-broker"
-        sts_duration: 1h
-      public:
-        # S3-compatible services commonly use an explicit static signing credential.
-        driver: "s3"
-        region: "us-east-1"
-        endpoint: "https://minio.example.com"
-        bucket: "graphit-public"
-        base_prefix: "catalog"
-        access_key_id: "${PUBLIC_S3_ACCESS_KEY_ID:?set the public S3 access key}"
-        secret_access_key: "${PUBLIC_S3_SECRET_ACCESS_KEY:?set the public S3 secret key}"
-        sts_role_arn: "arn:aws:iam::123456789012:role/graphit-public"
-        sts_endpoint: "https://minio.example.com"
-        sts_session_name: "graphit-broker"
-        sts_duration: 1h
-      # A deployment with no object store: the broker keeps Hub objects on a mounted volume and
-      # serves them at https://<public_url>/<bucket>/<key> with Signature Version 4, so the
-      # engine's httpfs extension and the AWS SDK reach them exactly as they reach a bucket.
-      # Select it by making it the default_route or by naming it in a resource grant.
-      local:
-        driver: "filesystem"
-        region: "us-east-1"
-        bucket: "graphit-local" # Also the URL path segment; must not shadow a broker route.
-        base_prefix: "graphit"
-        directory: "/var/lib/graphit/hub" # Mount a volume here and back it up.
-        endpoint: "" # Defaults to server.public_url, which is where clients reach the gateway.
-        session_duration: 1h
-        max_object_bytes: 5368709120
+  required_scopes: []
+  request_timeout: 10s
+  sts_timeout: 5s
+  identity_json_bytes: 8192
+  grants_json_bytes: 65536
+  head_bytes: 16384
+  token_bytes: 8192
+  metadata_bytes: 65536
+  routes:
+    native-fs:
+      driver: filesystem
+      bucket: native-storage
+      base_prefix: graphit
+      directory: volumes/native-storage

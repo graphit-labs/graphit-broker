@@ -1,81 +1,57 @@
-.PHONY: build install fmt vet lint golangci-lint-version test check docker-build docker-check release-linux release-darwin release-windows
+.PHONY: build install fmt vet lint test check docker-build docker-check
 
-include native-deps.env
-
-VERSION ?= dev
-BUILD_DIR ?= .build
-GOLANGCI_LINT_VERSION ?= v2.12.2
+ifeq ($(OS),Windows_NT)
+SHELL := sh
+PREFIX ?= $(LOCALAPPDATA)/Programs/graphit-broker
+else
 PREFIX ?= /usr/local/bin
-HOST_PLATFORM := $(shell go env GOOS)-$(shell go env GOARCH)
-HOST_BINARY := graphit-broker$(if $(filter windows-%,$(HOST_PLATFORM)),.exe,)
+endif
+HOST_BINARY := graphit-broker$(if $(filter Windows_NT,$(OS)),.exe,)
 
 build:
-	./scripts/build-embedded.sh "$(HOST_PLATFORM)" "$(HOST_BINARY)" "$(VERSION)"
+	cargo run --locked --quiet -p xtask -- build --output "$(HOST_BINARY)"
 
 install: build
-	mkdir -p "$(PREFIX)"
-	@if [ -w "$(PREFIX)" ]; then \
-		cp "$(HOST_BINARY)" "$(PREFIX)/$(HOST_BINARY)"; \
+	@set -eu; \
+	context=$$(mktemp -d); \
+	trap 'rm -rf "$$context"' EXIT HUP INT TERM; \
+	cargo run --release --locked --offline --quiet -p xtask -- package \
+	  --binary "./$(HOST_BINARY)" --output "$$context/installer-package"; \
+	set -- "$$context"/installer-package/*.tar.gz; \
+	[ "$$#" -eq 1 ] && [ -f "$$1" ]; \
+	archive=$$1; \
+	mkdir -p "$(PREFIX)"; \
+	if [ "$(OS)" = Windows_NT ]; then \
+	  powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Archive "$$archive" -Dir "$(PREFIX)"; \
+	elif [ -w "$(PREFIX)" ]; then \
+	  sh install.sh --archive "$$archive" --dir "$(PREFIX)"; \
 	else \
-		sudo cp "$(HOST_BINARY)" "$(PREFIX)/$(HOST_BINARY)"; \
+	  sudo sh install.sh --archive "$$archive" --dir "$(PREFIX)"; \
 	fi
-	@echo "  ✓ Installed to $(PREFIX)/$(HOST_BINARY)"
-	@case ":$$PATH:" in \
-		*":$(PREFIX):"*) ;; \
-		*) echo "  ⚠ $(PREFIX) is not in your PATH. Add it: export PATH=\"\$$PATH:$(PREFIX)\"" ;; \
-	esac
 
 fmt:
-	gofmt -w cmd internal
+	cargo fmt --all
 
 vet:
-	go vet ./...
+	cargo clippy --locked --workspace --all-targets -- -D warnings
 
-lint:
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		echo "  ! golangci-lint not found. Install it with:"; \
-		echo "      go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)"; \
-		exit 1; \
-	}
-	golangci-lint run ./...
-
-# Single source of truth for the pinned linter; CI installs what this prints.
-golangci-lint-version:
-	@echo "$(GOLANGCI_LINT_VERSION)"
+lint: vet
 
 test:
-	go test ./...
+	cargo test --locked --workspace --all-targets
 
 check:
-	go vet ./...
-	go test ./...
+	cargo run --locked --quiet -p xtask -- hook pre-commit
+	cargo run --locked --quiet -p xtask -- hook pre-push
 
 docker-build: build
-	docker build -t graphit-broker:dev .
+	@set -eu; \
+	context=$$(mktemp -d); \
+	trap 'rm -rf "$$context"' EXIT HUP INT TERM; \
+	cp Dockerfile .dockerignore docker-entrypoint.sh "$$context/"; \
+	cargo run --release --locked --offline --quiet -p xtask -- package \
+	  --binary "./$(HOST_BINARY)" --output "$$context/installer-package"; \
+	docker build -t graphit-broker:dev "$$context"
 
-docker-check: docker-build
-	./scripts/container-smoke.sh graphit-broker:dev
-
-release-linux:
-	rm -rf "$(BUILD_DIR)/graphit-broker-linux-amd64" "$(BUILD_DIR)/graphit-broker-linux-amd64.tar.gz" "$(BUILD_DIR)/graphit-broker-linux-amd64.sha256"
-	mkdir -p "$(BUILD_DIR)/graphit-broker-linux-amd64"
-	./scripts/build-embedded.sh linux-amd64 "$(BUILD_DIR)/graphit-broker-linux-amd64/graphit-broker" "$(VERSION)"
-	cp config.example.yaml "$(BUILD_DIR)/graphit-broker-linux-amd64/config.example.yaml"
-	tar -C "$(BUILD_DIR)" -czf "$(BUILD_DIR)/graphit-broker-linux-amd64.tar.gz" graphit-broker-linux-amd64
-	cd "$(BUILD_DIR)" && sha256sum graphit-broker-linux-amd64.tar.gz > graphit-broker-linux-amd64.sha256
-
-release-darwin:
-	rm -rf "$(BUILD_DIR)/graphit-broker-darwin-arm64" "$(BUILD_DIR)/graphit-broker-darwin-arm64.tar.gz" "$(BUILD_DIR)/graphit-broker-darwin-arm64.sha256"
-	mkdir -p "$(BUILD_DIR)/graphit-broker-darwin-arm64"
-	./scripts/build-embedded.sh darwin-arm64 "$(BUILD_DIR)/graphit-broker-darwin-arm64/graphit-broker" "$(VERSION)"
-	cp config.example.yaml "$(BUILD_DIR)/graphit-broker-darwin-arm64/config.example.yaml"
-	tar -C "$(BUILD_DIR)" -czf "$(BUILD_DIR)/graphit-broker-darwin-arm64.tar.gz" graphit-broker-darwin-arm64
-	cd "$(BUILD_DIR)" && shasum -a 256 graphit-broker-darwin-arm64.tar.gz > graphit-broker-darwin-arm64.sha256
-
-release-windows:
-	rm -rf "$(BUILD_DIR)/graphit-broker-windows-amd64" "$(BUILD_DIR)/graphit-broker-windows-amd64.tar.gz" "$(BUILD_DIR)/graphit-broker-windows-amd64.sha256"
-	mkdir -p "$(BUILD_DIR)/graphit-broker-windows-amd64"
-	./scripts/build-embedded.sh windows-amd64 "$(BUILD_DIR)/graphit-broker-windows-amd64/graphit-broker.exe" "$(VERSION)"
-	cp config.example.yaml "$(BUILD_DIR)/graphit-broker-windows-amd64/config.example.yaml"
-	tar -C "$(BUILD_DIR)" -czf "$(BUILD_DIR)/graphit-broker-windows-amd64.tar.gz" graphit-broker-windows-amd64
-	cd "$(BUILD_DIR)" && sha256sum graphit-broker-windows-amd64.tar.gz > graphit-broker-windows-amd64.sha256
+docker-check:
+	cargo test --locked --offline -j4 -p broker-server --test container -- --ignored --exact broker_native_container_contract --test-threads=1

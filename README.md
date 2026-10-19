@@ -54,6 +54,12 @@ Graphit may instead exchange the MCP token for a short-lived broker-audience tok
 validates the final token independently in both modes; exchange failure never downgrades to relay
 or anonymous access.
 
+The current native Rust artifact serves [PostgreSQL or private SQLite](docs/rust-broker-server.md).
+Its [embeddings composition](docs/rust-broker-server.md#native-embeddings) combines current SQL capability admission, four mature HTTP provider families or verified GGUF inference, durable cache and service discovery.
+Its [build, container and CI](docs/deployment.md) qualify the composed native paths;
+Full platform release parity and remaining consumer integration remain migration
+work. The capability catalog also records those remaining product contracts.
+
 ## The governance workspace
 
 In **Project access**, choose who gets access, which projects it covers and what people can do.
@@ -63,6 +69,10 @@ storage settings stay available for specialized rules. Administration roles rema
 
 See the [administration guide](docs/administration.md#the-governance-workspace) for identity and
 policy workflows, or explore [Code and Broker together](https://graphit-labs.github.io/graphit-code/#workspace-demo).
+
+The native OIDC server exposes [explicit UserInfo profile retrieval](docs/rust-oidc-userinfo.md) [Bearer-authorized token introspection](docs/rust-oidc-introspection.md) and [ID-hint end-session](docs/rust-oidc-end-session.md); JWT consumers continue local verification until expiry.
+
+The native [Device flow](docs/rust-device-authorization.md) composes LOCAL browser sign-in, explicit consent and atomic JWT redemption with empty effective scope. Nonempty scope requests are rejected; API/PROJECT permissions are separate. Device discovery requires OIDC and LOCAL. Focused HTTP/browser contracts are qualified locally on Linux; client integration remains a separate delivery.
 
 ## Persistence and authorization
 
@@ -79,19 +89,17 @@ therefore denies every consumer operation.
 There is deliberately no migration, compatibility loader, dual read/write, or fallback path in
 this development version. Recreate the database when the schema version changes.
 
-Local identities live in SQL. Set `authentication.token_pepper` from a secret manager, then run
-`graphit-broker --config config.yaml --bootstrap-admin` (or `--bootstrap-admin-stdin`) once on an
-empty database. The command reads only a temporary password, creates the fixed first username `admin`, and
-refuses to overwrite any existing local user. Passwords require at least 15 Unicode characters;
-the user must replace the temporary password and enroll TOTP MFA at first login. The QR code works
-with Google Authenticator and compatible applications; administrative MFA reset forces safe
-reenrollment after a lost device. Failed checks are rate-limited per username, and concurrent
-Argon2id work plus its bounded admission
-queue are configurable. Optional adaptive CAPTCHA can use Cloudflare Turnstile or Google reCAPTCHA
-v2 Checkbox when concurrent local authentication reaches a configured multiple of the Argon2id
-worker limit; a zero multiplier protects every attempt and positive fractions can start earlier. It
-is disabled by default. See [configuration](docs/configuration.md) and
-[administration bootstrap](docs/administration.md).
+Local identities live in SQL. For the native server, configure `auth.pepper`, explicit LOCAL
+password/MFA policy and administrative cookie sessions, then run
+`graphit-broker --config config.yaml --bootstrap-admin-stdin` with the temporary password supplied
+only through a non-terminal stdin stream. The command creates the fixed first username and subject
+`admin` atomically with its database `admin` role and refuses creation when any local user already
+exists. Passwords need at least 15 Unicode characters and at most 4096 UTF-8 bytes. The user must
+replace the temporary password at first login; TOTP enrollment follows when the configured
+`auth.local.mfa.required` is true. No listener, storage volume, session or token is created by bootstrap.
+See [first local administrator](docs/administration.md#first-local-administrator) for the stdin
+format and prerequisites, and [native LOCAL login](docs/rust-admin-local-login.md) for bounded
+password admission, rate limits and optional adaptive CAPTCHA.
 
 Passwords are accepted only at browser/device login and are never reusable API Bearers. Desktop
 CLI login uses the Broker as a standard OpenID Provider with Authorization Code, PKCE, nonce and
@@ -108,109 +116,30 @@ the independent, deny-by-default authorization layer for project capabilities:
 
 ## Quick start with Docker
 
-Requirements: Docker 24+, the unified OIDC client when browser login is used, an
-`authentication.token_pepper` of at least 32 bytes when administration/local users are enabled,
-a bootstrapped local administrator (or an OIDC role/assignment yielding `admin`), and credentials for
-any enabled upstream services. Local AI does not need provider credentials.
+Build the productive native Rust executable and Linux container:
 
-```bash
-cp .env.example .env
-cp config.example.yaml config.yaml
-# Fill the local, uncommitted environment file and edit config.yaml.
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml create broker
-docker compose -f docker-compose.yml cp config.yaml broker:/home/graphit/.graphit/broker/config.yaml
-docker compose -f docker-compose.yml up -d
-curl --fail http://127.0.0.1:8080/healthz
-curl --fail http://127.0.0.1:8080/readyz
-curl --fail http://127.0.0.1:8080/.well-known/graphit-broker
+```text
+cargo run --locked -p xtask -- build --debug
+make docker-build
 ```
 
-The image intentionally contains no operational configuration. The entrypoint requires a regular,
-readable file at `/home/graphit/.graphit/broker/config.yaml` by default and refuses to start when it
-is absent. Compose persists that whole broker directory—including configuration, the default SQLite
-database, downloaded models, and the embedded runtime—in the `broker-global` named volume.
+Provision the [native SQL YAML, Ed25519 key and PostgreSQL CA when selected](docs/rust-broker-server.md)
+and follow [container deployment](docs/deployment.md) for UID10001, volumes,
+health/readiness, hooks and shutdown. This server uses real configured SQL.
+The earlier Go health-only configuration is not accepted by the native artifact.
+Other API/CLI/backend integration and platform release gaps remain migration obligations; this does
+not establish full parity.
 
-When an enabled service has `upstream.protocol: onnx`, startup downloads and initializes only that service's
-model. CPU is the default even on a GPU host. To opt in to acceleration, set `device: auto` in
-each local service's `upstream` and expose GPUs through the same Compose file on a host with the
-NVIDIA Container Toolkit. The same image is used in both modes; `auto` falls back to CPU:
-
-```bash
-GRAPHIT_BROKER_CONTAINER_RUNTIME=nvidia docker compose up -d
-```
-
-Local ONNX models use manifest bundles under `broker/models` in the persistent `broker-global`
-volume. Each service’s
-`upstream.model` selects a preset or custom ID; each manifest controls verified
-`on_demand`, explicit `setup`, or installed-only `never` acquisition and the complete inference
-semantics. See the [local model catalog](docs/models.md) for all fields and examples.
-
-Native releases for Linux amd64, macOS arm64, and Windows amd64 are single self-contained
-executables. Linux and Windows embed the ONNX core plus shared/CUDA providers; macOS embeds the
-CoreML-capable ONNX dylib. They extract atomically under
-`${GRAPHIT_GLOBAL_DIR:-~/.graphit}/broker/runtime/onnxruntime` on first execution; subsequent starts use a
-small completion marker and file metadata only. The default `device: cpu` uses CPU on every host.
-Set `device: auto` explicitly to prefer CoreML on macOS or CUDA on Linux/Windows when visible,
-with CPU fallback.
-
-The native executable resolves its default configuration and embedded runtime beneath
-`.graphit/broker` in the current user's home directory. Database and model paths come only from
-YAML. The example config chooses `BROKER_DATABASE_DSN` with a
-`~/.graphit/broker/broker.db` fallback; another config can choose another name or no environment
-reference. Configured `~/` paths are expanded with the host operating system's native path rules.
-
-Install a native release on Linux amd64 or macOS arm64:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.sh | sh
-```
-
-On Windows amd64, use PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.ps1 | iex
-```
-
-If you cloned the repository, run the local script instead. Review the remote script's source
-before using a one-line installer. The installers verify the release archive checksum and install
-only the executable (by default in `$HOME/.local/bin` or `$env:LOCALAPPDATA\Graphit\bin`); they do
-not set up configuration, a database, or a service. For a pinned release or another destination, see
-[native installation and configuration](docs/binary.md). A tagged installation supports
-`graphit-broker self-update`; restart an active broker service afterward.
-
-Open `https://YOUR-BROKER/admin/`, sign in, and create the first resource grants. Until then,
-consumer endpoints correctly return `403`.
-
-Validate a configuration without starting the service:
-
-```bash
-make build VERSION=dev
-docker build -t graphit-broker:local .
-docker run --rm --env-file .env \
-  -e GRAPHIT_BROKER_CONFIG=/config.yaml \
-  -v "$PWD/config.yaml:/config.yaml:ro" \
-  graphit-broker:local --check-config
-```
-
-For a harmless health-only smoke test:
-
-```bash
-docker pull ghcr.io/graphit-labs/graphit-broker:latest
-docker run --rm -d --name graphit-broker-smoke -p 18080:8080 \
-  --tmpfs /tmp:size=16m,mode=1777 \
-  -e GRAPHIT_BROKER_CONFIG=/config.yaml \
-  -v "$PWD/examples/health-only.yaml:/config.yaml:ro" \
-  ghcr.io/graphit-labs/graphit-broker:latest
-curl --fail http://127.0.0.1:18080/readyz
-docker rm -f graphit-broker-smoke
-```
+CI validates the maintained Rust/SQL/HTTP/container gate. The tag workflow consumes
+its native Linux artifact and requires native macOS/Windows package jobs with complete
+runtime dependencies and installed configuration/SQLite checks. Those native jobs and
+hosted publication still require execution. See [binary scope](docs/binary.md).
 
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
-- [Local ONNX model catalog and examples](docs/models.md)
-- [Native binary installation and CPU/GPU operation](docs/binary.md)
+- [Local GGUF model catalog and examples](docs/models.md)
+- [Native binary build and qualification](docs/binary.md)
 - [Database backends](docs/database.md)
 - [OIDC integration](docs/oidc.md)
 - [Resource authorization](docs/authorization.md)
@@ -218,6 +147,12 @@ docker rm -f graphit-broker-smoke
 - [Consumer HTTP API](docs/api.md)
 - [Deployment](docs/deployment.md)
 - [Security model](docs/security.md)
+- [Rust server credential digest contract](docs/rust-credentials.md)
+- [Rust PostgreSQL control persistence](docs/rust-postgres-control.md)
+- [Rust SQLite flow persistence, qualified locally on Linux](docs/rust-sqlite-control.md)
+- [Rust PostgreSQL local identity and current SQL roles](docs/rust-postgres-identity.md)
+- [PostgreSQL role definitions](docs/rust-postgres-roles.md)
+- [MySQL role definitions](docs/rust-mysql-roles.md)
 - [Operations and troubleshooting](docs/operations.md)
 
 ## Development
@@ -230,12 +165,41 @@ make lint
 make build
 ```
 
-`make lint` runs the same golangci-lint gate as CI, configured by `.golangci.yml`. Install the
-pinned version once:
+Git hooks are declared in the root `githooks` object of `.graphit/project.json`.
+Run `graphit git sync` after changing the configured events. Graphit registers
+its dispatcher through Git's native `hook.<name>.event/command/enabled`
+configuration; it does not use `core.hooksPath`. Commands are read when the hook
+runs, so editing an existing event's commands needs no reinstall.
 
-```bash
-go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(make --no-print-directory golangci-lint-version)"
-```
+Pre-commit checks workflow syntax and keeps the staged-path checks for formatting,
+shell files and the admin UI. Pre-push runs formatting, strict Clippy and the xtask
+unit tests. During development, run the suites affected by each change and reuse
+valid results for unchanged code.
 
-The unit suite is hermetic. OIDC, AI upstreams, and storage are represented by in-process synthetic
-servers; tests do not contact real identity, model, database, or object-storage services.
+The complete integration gate remains available explicitly with
+`cargo run --locked -p xtask -- hook pre-push` (or `make check`) and in CI. It
+includes real PostgreSQL/MySQL/HTTP/STS and native container phases, requiring
+Docker and fetched dependencies. CI also runs actionlint and
+`node scripts/check-admin-ui.cjs`. Ordinary tests do not run ignored SQL/HTTP
+contracts. Native hosted validation requires its own executed evidence.
+CI resolves the Code and Broker commits once, then runs the Linux integration
+gate and the Windows/macOS package jobs independently against those same commits.
+Native packaging does not wait for the Linux integration gate; all checks remain
+required for the complete workflow to succeed.
+
+[Administrative session persistence in Rust](docs/rust-admin-sessions.md) provides PostgreSQL create/read/revoke contracts qualified on Linux; administrative HTTP login and current policy remain separate.
+
+The [typed SQL schema and declared MySQL reference](docs/rust-mysql-catalog.md)
+is qualified on Linux under `tsk-5ca4`, including real engines and hook counterproofs. It
+changes the Rust schema producer; the MySQL runtime is delivered separately below,
+while full server migration remains in progress.
+
+The [Rust MySQL control implementation](docs/rust-mysql-control.md) provides native control persistence. Server backend selection is described separately in the [native server guide](docs/rust-broker-server.md).
+
+The [MySQL administrative session source](docs/rust-mysql-sessions.md) adds creation, consistent reading and revocation using the existing control store.
+
+The [Rust MySQL local identity and SQL role read](docs/rust-mysql-identity.md) revalidates an already authenticated local caller and reads current SQL roles. Credential authentication, upstream policy and resource grants remain separate.
+
+The [PostgreSQL local identity and SQL role read](docs/rust-postgres-identity.md) uses the existing control pool and shared identity data types. Authentication, identity mutations and resource grants remain separate.
+
+The [PostgreSQL role definition replacement](docs/rust-postgres-roles.md) preserves fixed built-ins, serializes writers of one role, and makes committed permissions visible to the next current RBAC read. Administrative HTTP authority remains separate.

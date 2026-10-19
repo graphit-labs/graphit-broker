@@ -1,3 +1,8 @@
+---
+references:
+  - target: {type: task, id: tsk-ea46, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+---
 # Security model
 
 ## Trust boundaries
@@ -19,7 +24,7 @@ claim selectors; canonical identity is `issuer|subject`. Subject is stable and d
 mutable username. Invalid credentials return `401` and are not treated as anonymous.
 
 SQL-backed local passwords are HMAC-prehashed with the single external
-`authentication.token_pepper` and then verified against salted Argon2id PHC verifiers. The pepper
+`auth.pepper` and then verified against salted Argon2id PHC verifiers. The pepper
 is not embedded in SQL or the PHC. Password verification occurs only at the local administrative,
 Authorization Code, or Device Authorization login boundary and performs at most one expensive KDF.
 A password is never accepted by the API Bearer authenticator. System-generated upstream OIDC state,
@@ -60,7 +65,7 @@ short-lived, one-time SQL challenge bound by HMAC to the exact administration, B
 device flow; it does
 not create a session, authorization code, or device approval. A temporary password must be changed
 before MFA. The TOTP secret is encrypted at rest with AES-256-GCM using a domain-separated key
-derived from `authentication.token_pepper` and subject-bound authenticated data. Recovery codes are
+derived from `auth.pepper` and subject-bound authenticated data. Recovery codes are
 random, shown once, and stored only as subject-bound HMAC-SHA-256 values. Accepted TOTP time steps
 are persisted to reject replay, and MFA failures use an independent per-username limiter.
 
@@ -73,9 +78,7 @@ quota.
 
 The Broker's public/native OpenID Connect client registration requires Authorization Code with PKCE S256,
 unpredictable state and nonce, and an exact loopback callback path with a nonzero dynamic port.
-The mature ZITADEL Go OIDC provider library owns protocol parsing, discovery, authorization, token,
-JWKS, userinfo, introspection, revocation, and end-session behavior. Request objects are disabled,
-CORS is disabled, and ID/access tokens are signed with an Ed25519 key derived in a dedicated pepper domain.
+The native Rust server composes the oxide-auth OAuth state machine, durable Control owners and mature JWT/cryptographic libraries with the documented discovery, authorization, token, JWKS, UserInfo, introspection, revocation and end-session adapters. Only configured supported flows are advertised. Browser CORS follows its explicit native policy. ID/access tokens use the supplied Ed25519 PKCS8 key and key ID, independently of `auth.pepper`.
 The stable Broker `sub` is an HMAC-derived identifier over the canonical underlying issuer/subject,
 so local and upstream identities cannot collide and username changes do not change authorization identity.
 The Broker issuer is `server.public_url`. [Graphit Code](https://github.com/graphit-labs/graphit-code) bootstraps its public client settings from

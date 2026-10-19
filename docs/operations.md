@@ -2,8 +2,7 @@
 
 ## Observability
 
-`/healthz` reports process liveness and `/readyz` reports readiness. Every request receives an
-`X-Request-ID`; provide one for cross-service tracing. AI responses expose cache hit/miss and
+`/healthz` reports process liveness and `/readyz` reports readiness. Protected service adapters expose request identifiers for cross-service tracing; retain the identifier returned by the affected endpoint. AI responses expose cache hit/miss and
 effective revision. Discovery, Hub resolution, and S3 responses expose the current authorization
 revision.
 
@@ -15,8 +14,8 @@ credentials, bodies, or upstream secrets.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| startup rejects schema | database belongs to another development build | recreate the development database; schema migrations and compatibility paths are intentionally unsupported |
-| startup cannot connect | driver/DSN/TLS/network/credentials | YAML `database.driver`/`database.dsn` and their explicit ENV references, database policy, CA |
+| startup rejects schema | database belongs to another development build | stop writers, preserve a backup and select the matching build/schema; no automatic migration or reset |
+| startup cannot connect | backend/path/TLS/network/credentials | explicit `database.backend` mapping and ENV references, database policy, CA |
 | every consumer gets 403 | empty/mismatched resource grants | Project access UI, exact project, capability, access scope |
 | valid user gets 401 | issuer/audience/signature/expiry/scope mismatch | OIDC discovery, API audience, clocks |
 | UI identity gets 403 | default `user` or assigned/claimed roles do not permit the action | unified OIDC `role_claim`, canonical-subject assignments |
@@ -28,12 +27,13 @@ credentials, bodies, or upstream secrets.
 | token exchange fails | IdP lacks RFC 8693 or target/client unauthorized | provider strategy, endpoint, audience/resource |
 | embedding index mismatch | broker embedding revision/dimensions changed | deploy a new revision and re-embed/namespace |
 | embedding cache misses unexpectedly | provider endpoint, model, revision, dimensions, or input type changed | compare the active embedding configuration and effective local-model identity; these changes intentionally create a new cache namespace |
-| startup is slow with local AI | first-time model download and ONNX session initialization | broker logs, model-volume free space, artifact egress |
-| local AI cannot download | artifact egress, cache permissions, disk space, or digest mismatch | `broker/models` in the `broker-global` volume and broker error response |
-| GPU is visible but local ONNX uses CPU | `upstream.device` was omitted (CPU is the default) or set to `cpu` | set `upstream.device: auto` to try GPU with CPU fallback, or `cuda` to require it |
+| startup is slow with local AI | explicit artifact validation or GGUF model initialization | configured GGUF bundle, disk access and lifecycle budget; no automatic download |
+| local AI configuration fails before readiness | missing/invalid bounded manifest or declaration | explicit model ID, bundle/manifest paths and integrity; provision outside the Broker |
+| GPU is visible but local GGUF uses CPU | `upstream.device` was omitted (CPU is the default) or set to `cpu` | set `upstream.device: auto` to try GPU with CPU fallback, or `cuda` to require it |
 | `device: cuda` fails | GPU not exposed, driver/toolkit mismatch, or invalid device ID | NVIDIA runtime selected in the same Compose file, `nvidia-smi`, `upstream.device_id` |
-| `device: coreml` fails | non-macOS host, unsupported model graph, or CoreML initialization failure | macOS version, broker platform, startup provider error |
-| `device: auto` uses CPU | CoreML/CUDA unavailable, provider initialization failed, or an inference exhausted accelerator memory | provider/recovery warning, macOS support, NVIDIA runtime selection, GPU memory pressure |
+| `device: metal` fails | non-macOS host, unsupported model graph, or Metal initialization failure | macOS version, broker platform, startup provider error |
+| local AI fails on first uncached use | missing/corrupt artifacts or unavailable requested device | provision the declared bundle and inspect the typed failure |
+| `device: auto` uses CPU | Metal/CUDA unavailable, provider initialization failed, or no supported accelerator was registered | registered device/fallback metadata, macOS support, NVIDIA runtime selection, GPU memory pressure |
 
 ## Backup
 
@@ -42,7 +42,7 @@ manager definitions. SQL does not contain expanded configuration secrets, but it
 session metadata; encrypt and restrict backups.
 
 - SQLite: stop the writer or use an online SQLite backup that captures WAL consistently.
-- PostgreSQL/MySQL: use the platform's transactionally consistent backup tooling and verify restore.
+- PostgreSQL: use transactionally consistent backup tooling and verify restore. MySQL library users follow their separately configured owner.
 
 Restore into the exact schema-compatible broker build. Start one replica, verify admin and consumer
 flows, then scale.
@@ -58,18 +58,14 @@ only distinct missing inputs to the provider.
 ## Rotation
 
 - Upstream OIDC validation keys follow the upstream issuer's JWKS rotation.
-- The Broker OpenID Provider's Ed25519 signing key, internal protocol key, and stable-subject
-  derivation are separate keys derived from `authentication.token_pepper`. The current development
-  implementation publishes one signing key and has no online key ring: changing the pepper rotates
-  all three at restart and deliberately invalidates every Broker-issued token, local credential,
-  administration session, pending flow, and derived Broker subject.
+- Supply the native Ed25519 signing key through `auth.pkcs8_file` and its configured key ID, independently of `auth.pepper`. There is no online key-ring rotation command. Coordinate configured trust, restart and token/session recovery with consumers.
 - Upstream OIDC issuer/browser-client changes should be updated in unified authentication
   configuration and tested before removing old IdP values.
 - S3 route keys/roles can be rotated by updating the route; already issued STS credentials remain
   valid until their short expiry unless revoked by the storage platform.
 - AI API keys are rotated at the provider/secret manager, followed by a deployment restart.
 - Local passwords use SQL Argon2id verifiers and the deployment-wide
-  `authentication.token_pepper`. Change individual passwords in the Local users UI. Pepper rotation
+  `auth.pepper`. Change individual passwords in the Local users UI. Pepper rotation
   invalidates every local password, administration session, local access/refresh token, and service
   credential and requires a coordinated recovery.
 - Grant revocation is reflected in the next credential issuance and increments the revision.

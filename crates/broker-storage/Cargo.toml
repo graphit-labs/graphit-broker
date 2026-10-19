@@ -1,0 +1,54 @@
+[package]
+name = "broker-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+s3s = { version = "=0.17.0", default-features = false }
+async-trait = "=0.1.92"
+bytes = "=1.12.1"
+hyper = { version = "=1.12.0", default-features = false, features = ["server", "http1"] }
+http-body-util = "=0.1.5"
+http-body = "=1.1.0"
+futures-util = { version = "=0.3.34", default-features = false, features = ["std", "async-await"] }
+object_store = { version = "=0.14.2", default-features = false, features = ["aws"] }
+cap-std = "=4.0.2"
+cap-fs-ext = "=4.0.2"
+cap-tempfile = "=4.0.2"
+mime_guess = { version = "=2.0.5", default-features = false }
+http = "=1.5.0"
+tokio-util = { version = "=0.7.19", default-features = false, features = ["rt", "io", "io-util"] }
+parking_lot = "=0.12.5"
+hmac = { version = "=0.13.0", default-features = false, features = ["zeroize"] }
+base64 = "=0.22.1"
+getrandom = "=0.4.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+broker-control = { path = "../broker-control" }
+aws-sdk-sts = { version = "=1.119.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = { version = "=1.12.0", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
+zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
+serde_json = "=1.0.151"
+sha2 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+url = "=2.5.8"
+tokio = { version = "=1.53.2", default-features = false, features = ["time", "sync", "rt", "io-util", "macros"] }
+
+[dev-dependencies]
+s3s-sigv4 = { version = "=0.17.0", default-features = false }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"] }
+aws-sigv4 = { version = "=1.6.0", default-features = false, features = ["sign-http", "http1"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["stream"] }
+getrandom = "=0.4.3"
+broker-security = { path = "../broker-security" }
+base64 = "=0.22.1"
+jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["aws_lc_rs"] }
+rcgen = "=0.14.10"
+serde = { version = "=1.0.229", features = ["derive"] }
+sqlx-core = { version = "=0.9.0", default-features = false, features = ["json", "_rt-tokio", "_tls-rustls-ring-webpki"] }
+sqlx-postgres = { version = "=0.9.0", default-features = false, features = ["json"] }
+tokio = { version = "=1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "net", "io-util", "process"] }
+tempfile = "=3.27.0"

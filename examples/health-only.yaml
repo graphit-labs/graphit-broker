@@ -1,17 +1,40 @@
-database:
-  driver: sqlite
-  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
-  max_open_conns: 1
-  max_idle_conns: 1
-  conn_max_lifetime: 3m
-
+# Native health/readiness and issuer keys; no user, grant, AI or storage provisioning.
+# Paths resolve relative to this file. Supply required values explicitly.
 server:
-  address: ":8080"
-
-services:
-  embeddings:
-    enabled: false
-  rerank:
-    enabled: false
-  s3:
-    enabled: false
+  address: 127.0.0.1:8080
+  public_url: https://broker.example.test
+database:
+  backend: sqlite
+  path: "${BROKER_DATABASE_PATH:?supply a private SQLite file path}"
+  startup_timeout: 10s
+  operation_timeout: 4s
+  shutdown_timeout: 3s
+  flows:
+    provider_bytes: 128
+    request_bytes: 1024
+    continuation_bytes: 4096
+auth:
+  issuer: https://broker.example.test
+  audience: storage-api
+  kid: configured-key
+  resource: https://broker.example.test/v1
+  pkcs8_file: "${BROKER_SIGNING_KEY:?supply an Ed25519 PKCS8 signing-key file}"
+  key_bytes: 8192
+  pepper: "${BROKER_PEPPER:?required}"
+  digest:
+    pepper_bytes: 256
+    token_bytes: 8192
+    binding_bytes: 256
+    subject_bytes: 256
+    recovery_bytes: 256
+storage:
+  enabled: false
+  required_scopes: []
+  request_timeout: 10s
+  sts_timeout: 5s
+  identity_json_bytes: 8192
+  grants_json_bytes: 65536
+  head_bytes: 16384
+  token_bytes: 8192
+  metadata_bytes: 65536
+  routes: {}

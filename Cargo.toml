@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/broker-store", "crates/broker-security", "crates/broker-control", "crates/broker-presence", "crates/broker-now-wire", "crates/broker-storage", "crates/broker-server", "xtask"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0
+strip = "debuginfo"

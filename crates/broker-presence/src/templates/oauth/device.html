@@ -1,0 +1,12 @@
+{% if user_code %}<p>Check that this code matches the one on your device:</p><p><strong><code>{{ user_code }}</code></strong></p>{% endif %}
+{% if stage == "entry" %}
+{% if error %}<div id="form-error" class="error" role="alert">{{ error }}</div>{% endif %}
+<p>Enter the code shown by the Graphit application on your device.</p>
+<form method="get" action="/oauth/device"><label for="user-code">Device code</label><input id="user-code" name="user_code" autocomplete="off" spellcheck="false" {% if error %}aria-invalid="true" aria-describedby="form-error"{% endif %} required><button type="submit">Continue</button></form>
+{% elif stage == "consent" %}
+{% if codes %}<section aria-labelledby="recovery-title"><h2 id="recovery-title">Save your recovery codes</h2><p>Save these codes somewhere private before allowing sign-in. Each code can be used once if you lose your authenticator. They are shown only on this page.</p><ul class="codes" aria-label="Recovery codes">{% for code in codes %}<li><code>{{ code }}</code></li>{% endfor %}</ul></section>{% endif %}
+<section aria-labelledby="review-title"><h2 id="review-title">Allow this device to sign in?</h2><p>Application: <strong>{{ client }}</strong></p><p>Allow only if you started sign-in on this device and the displayed codes match. If you did not request it, deny sign-in.</p>
+<form method="post" action="{{ action }}"><input type="hidden" name="client_id" value="{{ client }}"><input type="hidden" name="consent_secret" value="{{ consent_secret }}"><button type="submit" name="decision" value="allow">Allow sign-in</button> <button type="submit" name="decision" value="deny">Deny sign-in</button></form></section>
+{% elif stage == "decided" %}<p>{% if allowed %}Return to your device to finish signing in.{% else %}This request was denied. Return to your device to start a new request if needed.{% endif %}</p>
+{% elif stage == "error" %}<div class="error" role="alert">{{ error }}</div><p>Return to your device to start a new request.</p><a class="continue" href="/oauth/device">Enter a new device code</a>
+{% else %}

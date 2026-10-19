@@ -1,47 +1,110 @@
-database:
-  driver: sqlite
-  dsn: "${BROKER_DATABASE_DSN:-~/.graphit/broker/broker.db}"
-  max_open_conns: 1
-  max_idle_conns: 1
-  conn_max_lifetime: 3m
-
+# Native explicit local models; provision artifacts before startup. No preset or downloader.
+# The embedding dimensions assertion below must match the selected manifest; change it if needed.
 server:
-  address: ":8080"
-
-authentication:
-  token_pepper: "${BROKER_AUTH_TOKEN_PEPPER:?set at least 32 random bytes before bootstrapping local users}"
-
+  address: 127.0.0.1:8080
+  public_url: https://broker.example.test
+database:
+  backend: sqlite
+  path: "${BROKER_DATABASE_PATH:?supply a private SQLite file path}"
+  startup_timeout: 60s
+  operation_timeout: 4s
+  shutdown_timeout: 3s
+  flows:
+    provider_bytes: 128
+    request_bytes: 1024
+    continuation_bytes: 4096
+auth:
+  issuer: https://broker.example.test
+  audience: storage-api
+  kid: configured-key
+  resource: https://broker.example.test/v1
+  pkcs8_file: "${BROKER_SIGNING_KEY:?supply an Ed25519 PKCS8 signing-key file}"
+  key_bytes: 8192
+  pepper: "${BROKER_PEPPER:?required}"
+  digest:
+    pepper_bytes: 256
+    token_bytes: 8192
+    binding_bytes: 256
+    subject_bytes: 256
+    recovery_bytes: 256
+storage:
+  enabled: false
+  required_scopes: []
+  request_timeout: 10s
+  sts_timeout: 5s
+  identity_json_bytes: 8192
+  grants_json_bytes: 65536
+  head_bytes: 16384
+  token_bytes: 8192
+  metadata_bytes: 65536
+  routes: {}
 services:
   embeddings:
     enabled: true
-    revision: coderankembed
+    revision: local-embeddings
+    max_batch: 16
+    request_timeout: 45s
+    required_scopes: []
+    request_body_bytes: 2097152
+    response_body_bytes: 1048576
+    identity_json_bytes: 8192
+    grants_json_bytes: 1048576
     dimensions: 768
-    max_batch: 256
     max_input_bytes: 1048576
+    vector_json_bytes: 1048576
+    metadata_bytes: 65536
     upstream:
-      protocol: onnx
-      model: coderankembed
-      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
+      protocol: gguf-embeddinggemma2
+      model: "${BROKER_EMBEDDING_MODEL:?supply the exact typed manifest ID}"
+      directory: "${BROKER_EMBEDDING_BUNDLE:?supply a provisioned bundle directory}"
+      manifest_file: "${BROKER_EMBEDDING_MANIFEST:?supply the typed manifest file}"
+      max_artifact_bytes: 1200000000
+      threads: 2
+      queue_capacity: 8
+      idle_timeout_seconds: 300
       device: cpu
       device_id: 0
-    cache:
-      ttl: 10m
-      max_entries: 10000
-
+      manifest_limits:
+        max_manifest_bytes: 1048576
+        max_artifacts: 32
+        max_role_bytes: 128
+        max_relative_path_bytes: 4096
+        max_id_bytes: 256
+        max_revision_bytes: 256
+        max_dimension: 65536
+        max_tokens: 8192
   rerank:
     enabled: true
-    revision: bge-reranker-base
+    revision: local-rerank
+    max_batch: 16
+    request_timeout: 45s
+    required_scopes: []
+    request_body_bytes: 2097152
+    response_body_bytes: 1048576
+    identity_json_bytes: 8192
+    grants_json_bytes: 1048576
     max_documents: 1000
     max_document_bytes: 1048576
-    upstream:
-      protocol: onnx
-      model: bge-reranker-base
-      directory: "${BROKER_MODELS_DIRECTORY:-~/.graphit/broker/models}"
-      device: cpu
-      device_id: 0
     cache:
       ttl: 5m
-      max_entries: 10000
-
-  s3:
-    enabled: false
+      max_entries: 1000
+    upstream:
+      protocol: gguf-bge-reranker-v2-m3
+      model: "${BROKER_RERANK_MODEL:?supply the exact typed manifest ID}"
+      directory: "${BROKER_RERANK_BUNDLE:?supply a provisioned bundle directory}"
+      manifest_file: "${BROKER_RERANK_MANIFEST:?supply the typed manifest file}"
+      max_artifact_bytes: 1200000000
+      threads: 2
+      queue_capacity: 8
+      idle_timeout_seconds: 300
+      device: cpu
+      device_id: 0
+      manifest_limits:
+        max_manifest_bytes: 1048576
+        max_artifacts: 32
+        max_role_bytes: 128
+        max_relative_path_bytes: 4096
+        max_id_bytes: 256
+        max_revision_bytes: 256
+        max_dimension: 65536
+        max_tokens: 8192

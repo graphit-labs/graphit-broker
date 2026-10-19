@@ -10,14 +10,11 @@
   ],
   "hooks": {
     "pre-commit": [
-      "sh -n docker-entrypoint.sh scripts/container-smoke.sh",
-      "node scripts/check-admin-ui.cjs",
-      "go test ./internal/broker -run TestAdminOIDCLoginSessionCSRFAndLogout -count=1"
+      "actionlint",
+      "cargo run --locked --quiet -p xtask -- hook pre-commit"
     ],
     "pre-push": [
-      "go vet ./...",
-      "go test ./...",
-      "make docker-check"
+      "cargo run --locked --quiet -p xtask -- hook pre-push"
     ]
   },
   "artifacts": {}

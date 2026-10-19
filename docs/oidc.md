@@ -1,4 +1,49 @@
+---
+references:
+  - target: {type: task, id: tsk-2080, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: corrects
+  - target: {type: task, id: tsk-50e3, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: relates_to
+  - target: {type: task, id: tsk-64c6, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: relates_to
+  - target: {type: task, id: tsk-f63f, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+  - target: {type: task, id: tsk-b289, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+  - target: {type: task, id: tsk-0a57, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: derived_from
+  - target: {type: task, id: tsk-4645, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+  - target: {type: task, id: tsk-e4cf, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+  - target: {type: task, id: tsk-f903, scope: project, scope_id: 01KSH1CRFFG8Z74B5ZS78WW808}
+    relation: implements
+---
+
 # OIDC integration
+
+The [native Device flow](rust-device-authorization.md) keeps code TTL, polling and access TTL separate, requires LOCAL-bound consent, and emits an access JWT through the common signer. Its HTTP/browser composition uses explicit one-use consent after LOCAL authentication and is announced only with OIDC and LOCAL operational; focused HTTP/browser contracts are qualified locally on Linux. Device grants effective scope empty and rejects every nonempty scope request before SQL. Existing Code-grant scopes and refresh rotation remain unchanged. APIs requiring nonempty scopes reject Device tokens; current PROJECT/RBAC policy is separate.
+
+The [native PostgreSQL server](rust-broker-server.md) has a separate clean YAML
+[`oidc` code-exchange section](rust-oidc-token-exchange.md). It consumes genuine
+LOCAL/P2b or [genuine federated codes](rust-oidc-federated-grants.md), signs access/ID tokens with the configured shared key and supports
+[native refresh rotation](rust-oidc-refresh.md) and [explicit token revocation](rust-oidc-revocation.md). Public clients can also use
+[native dynamic registration](rust-oidc-registration.md) when the same OIDC
+section explicitly enables it. The server also publishes [native discovery](rust-oidc-discovery.md)
+for its configured public issuer and productive endpoints. Registration commits client metadata;
+a browser sign-in still requires the genuine authorization/login journey. The native library also has a
+[genuine upstream browser producer](rust-upstream-browser-login.md) sharing the
+[federated bearer provider](rust-admin-upstream-session.md), plus a [federated cookie consumer](rust-admin-federated-cookie.md).
+The [native administrative browser adapter](rust-admin-upstream-login.md) connects
+their real begin/callback and cookie chain to the existing HTML. The
+[shared native callback](rust-oidc-browser-callback.md) also consumes protected OAuth
+continuations and renders query, fragment and form_post responses without an
+administrative session owner. The [public authorize/login transport](rust-oidc-browser-authorization.md) composes
+LOCAL stages, recovery and upstream selection. Discovery describes those delivered endpoints;
+remaining OP operations retain separate native deliveries. The release integration below
+retains its own existing schema and supported routes. In the native producer,
+UserInfo supplements only missing profile attributes and never subject or roles;
+its strict ID-token audience trust is documented in that producer reference.
 
 OIDC is configured once under `authentication.oidc`. The broker uses the same trusted issuer,
 claim selectors, and role semantics for consumer bearer tokens, direct administration bearer
@@ -116,8 +161,10 @@ Broker subject, client, scopes, preferred username, and non-empty optional organ
 claims. A token requested for a configured MCP resource also includes that exact resource in
 `aud`; a Broker API token without the resource is not valid for MCP. This is the Broker's own
 access-token format, not the optional RFC 9068 JWT access-token profile. Refresh tokens remain
-opaque and rotate on every use. Broker-side revocation is immediate
-for Broker endpoints; offline JWKS validators accept an already issued access token until `exp`.
+opaque and rotate on every use. [SQL family revocation](rust-oidc-refresh.md#atomic-rotation-and-reuse)
+prevents further refresh and grant operations. Already issued access JWTs remain locally verifiable
+until `exp`; resource authorization reads current SQL policy for each consequential operation.
+Revoking a refresh family does not introduce an access-token blacklist or change its lifetime.
 Both flow and session cookies are `Secure` by default. An explicit
 `administration.cookie_secure: false` is available only for loopback HTTP development.
 
@@ -137,35 +184,36 @@ runs Authorization Code with S256 PKCE while passing the MCP endpoint's canonica
 rejects an omitted or changed resource. The Broker issues a **public** client only, so no secret is minted, stored, or returned;
 see [configuration](configuration.md) for both keys and their exact validation rules.
 
-Revocation reaches those clients differently from a pure offline validator. A Graphit daemon
-revalidates every inbound MCP access token against `/oauth/userinfo`, so a revoked token stops
-working on the next MCP request rather than at `exp`.
+Graphit validates the access JWT locally until `exp`; MCP authentication does not require a
+UserInfo or introspection request. Current resource grants remain a separate authorization check
+for each consequential operation. The native Broker exposes [explicit revocation](rust-oidc-revocation.md), [UserInfo profile retrieval](rust-oidc-userinfo.md) and [Bearer-authorized introspection](rust-oidc-introspection.md), announced by [discovery](rust-oidc-discovery.md#follow-the-productive-endpoints). Introspection inspects only the caller's client/subject grants. [Native end-session](rust-oidc-end-session.md) disposes every SQL OIDC grant of the signed subject/client pair using a required ID hint, including expired hints or removed DCR clients, and returns204 without redirects. These operations do not become
+a mandatory network gate for JWT consumers.
 
 ## Graphit Code web UI clients
 
 When Graphit Code enables browser login, it registers a separate public client with an exact
 `/api/auth/callback` redirect. This uses the Broker's own OpenID Provider, regardless of how the
 Broker authenticates the person upstream. The client requests `<broker issuer>/v1` as its single
-RFC 8707 `resource` on authorization, code exchange and refresh. The Broker accepts that canonical
-API resource in addition to operator configured MCP resources, binds it to the grant, and includes
-it and the Broker API audience in the access JWT. The web client cannot change the resource during
-exchange or refresh; an MCP client still needs its endpoint's configured MCP resource. Dynamic
+RFC 8707 `resource` on authorization, code exchange and refresh. In the native server, the operator
+must explicitly include this exact resource in `oidc.accepted_resources`, alongside any desired MCP
+resources; neither discovery nor authorization adds it implicitly. The Broker binds the accepted
+resource to the grant and includes it and the Broker API audience in the access JWT. The web client
+cannot change the resource during exchange or refresh; an MCP client still needs its endpoint's configured MCP resource. Dynamic
 registration must be enabled for Graphit Code to create the web client. The Code server verifies
 the signed ID and access JWTs and keeps the browser session in an encrypted HttpOnly cookie.
 
-The two token types revoke different amounts on purpose. Revoking a **refresh token** ends the
-whole authorization grant: that token, every access token minted from it, and any further
-renewal, which is what RFC 7009 section 2.1 asks of a server that can revoke access tokens. This
-is the call to make when someone's access has to stop. Revoking an **access token** ends only
-that token and leaves its refresh token usable, which the same section leaves as a MAY; use it to
-retire one leaked credential without forcing the client to authenticate again.
+The [native explicit revocation API](rust-oidc-revocation.md) has different SQL effects for the two token types: a
+**refresh token** revokes its whole family, including stored access rows and future renewal; an
+**access token** revokes only that stored row and leaves its refresh usable. These SQL effects
+do not invalidate an already issued JWT
+for local verification before `exp`; current resource policy is checked independently.
 
 ## Graphit request bearer forwarding
 
 For HTTP MCP, Graphit forwards the caller's Broker-issued access JWT unchanged. The JWT carries both
 the exact MCP resource audience and the Broker API audience. The MCP listener validates the former;
-Broker APIs validate the latter and the caller's registered client grant. An invalid token is rejected
-without anonymous fallback.
+Broker APIs validate the latter and apply the current authorization policy for the requested
+operation. An invalid token is rejected without anonymous fallback.
 
 ## Failure behavior
 
@@ -212,3 +260,9 @@ After a change, start a fresh browser login and confirm that the sign-in screen 
 failure and no new correlated log entry is written. A valid identity without administration access
 returns to the same sign-in screen with an authorization-specific message; that is authorization,
 not `invalid_identity`.
+
+In the native federated OAuth grant backend, role claims are a protected snapshot
+plus implicit `user`; absence of a selector does not use administrative SQL-role
+fallback. Subject/username preserve H1 bytes and the signed Broker subject uses
+domain-15 framed issuer/subject HMAC. See [native federated grants](rust-oidc-federated-grants.md)
+for trust changes, time, LOCAL isolation and the separate browser-integration boundary.

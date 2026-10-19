@@ -1,4 +1,4 @@
-name: Release
+name: Native installer assets and Linux container
 
 on:
   push:
@@ -9,284 +9,110 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: CI gate
-    runs-on: ubuntu-22.04
+  stable-tag:
+    name: Require an existing stable version tag
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Set up tag checker
+        uses: actions/setup-node@v4
         with:
-          go-version-file: go.mod
-          cache: true
-      - name: Validate workflows
+          node-version: "22"
+      - name: Require stable release tag
         run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-          actionlint
-      - name: Lint
-        run: |
-          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(make --no-print-directory golangci-lint-version)"
-          make lint
-      - name: Test and vet
-        run: make check
+          node -e '
+            const tag = process.env.GITHUB_REF_NAME || "";
+            if (process.env.GITHUB_REF_TYPE !== "tag" || !/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag)) {
+              console.error("::error::Release requires an existing stable vMAJOR.MINOR.PATCH tag matching the actual native version.");
+              process.exit(1);
+            }
+          '
 
-  build-linux:
-    name: Build Linux amd64
-    needs: ci
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Cache ONNX Runtime
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/graphit-broker/native
-          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
-      - name: Build release archive
-        run: make release-linux VERSION="${{ github.ref_name }}"
-      - name: Smoke-test embedded runtime extraction
-        run: |
-          runtime_root=$(mktemp -d)
-          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-linux-amd64/graphit-broker --version
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime.so.1.29.0
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_shared.so
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/linux-amd64"/*/libonnxruntime_providers_cuda.so
-          test ! -e "$runtime_root/runtime/onnxruntime"
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-linux-amd64
-          path: |
-            .build/graphit-broker-linux-amd64.tar.gz
-            .build/graphit-broker-linux-amd64.sha256
-          retention-days: 1
+  native-ci:
+    needs: stable-tag
+    uses: ./.github/workflows/ci.yml
+    with:
+      code_repository: ${{ vars.GRAPHIT_CODE_REPOSITORY }}
+      code_ref: ${{ vars.GRAPHIT_CODE_REF }}
+    secrets:
+      GRAPHIT_CODE_READ_TOKEN: ${{ secrets.GRAPHIT_CODE_READ_TOKEN }}
 
-  build-darwin:
-    name: Build macOS arm64
-    needs: ci
-    runs-on: macos-14
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Cache ONNX Runtime
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/graphit-broker/native
-          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
-      - name: Build release archive
-        run: make release-darwin VERSION="${{ github.ref_name }}"
-      - name: Smoke-test embedded runtime extraction
-        run: |
-          runtime_root=$(mktemp -d)
-          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-darwin-arm64/graphit-broker --version
-          runtime_library=$(find "$runtime_root/broker/runtime/onnxruntime/1.29.0/darwin-arm64" -type f -name 'libonnxruntime.1.29.0.dylib' -print -quit)
-          test -s "$runtime_library"
-          test ! -e "$runtime_root/runtime/onnxruntime"
-          ort_go_dir=$(go list -m -f '{{.Dir}}' github.com/yalue/onnxruntime_go)
-          cp "$ort_go_dir/test_data/example ż 大 김.onnx" .build/coreml-smoke.onnx
-          ONNXRUNTIME_SHARED_LIBRARY_PATH="$runtime_library" \
-            GRAPHIT_BROKER_COREML_INTEGRATION=1 \
-            GRAPHIT_BROKER_COREML_SMOKE_MODEL="$PWD/.build/coreml-smoke.onnx" \
-            go test ./internal/broker -run '^TestLocalCoreMLRuntimeIntegration$' -v
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-darwin-arm64
-          path: |
-            .build/graphit-broker-darwin-arm64.tar.gz
-            .build/graphit-broker-darwin-arm64.sha256
-          retention-days: 1
-
-  build-windows:
-    name: Build Windows amd64
-    needs: ci
-    runs-on: windows-2022
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Set up MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          path-type: inherit
-          install: >-
-            mingw-w64-x86_64-gcc
-            make
-            curl
-            unzip
-            tar
-            gzip
-      - name: Validate PowerShell installer syntax
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$tokens, [ref]$parseErrors) | Out-Null
-          if ($parseErrors.Count -gt 0) { $parseErrors | Write-Error; exit 1 }
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Cache ONNX Runtime
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/graphit-broker/native
-          key: broker-onnxruntime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('native-deps.env') }}
-      - name: Build release archive
-        run: make release-windows VERSION="${{ github.ref_name }}"
-      - name: Smoke-test embedded runtime extraction
-        run: |
-          runtime_root=$(mktemp -d)
-          GRAPHIT_GLOBAL_DIR="$runtime_root" .build/graphit-broker-windows-amd64/graphit-broker.exe --version
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime.dll
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_shared.dll
-          test -s "$runtime_root/broker/runtime/onnxruntime/1.29.0/windows-amd64"/*/onnxruntime_providers_cuda.dll
-          test ! -e "$runtime_root/runtime/onnxruntime"
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-windows-amd64
-          path: |
-            .build/graphit-broker-windows-amd64.tar.gz
-            .build/graphit-broker-windows-amd64.sha256
-          retention-days: 1
-
-  publish:
-    name: Publish GitHub release
-    needs: [build-linux, build-darwin, build-windows]
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Download release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: downloaded-assets
-      - name: Flatten release artifacts
-        run: |
-          mkdir -p release-assets
-          find downloaded-assets -type f -exec cp {} release-assets/ \;
-      - name: Generate combined checksums
-        run: cat release-assets/graphit-broker-*.sha256 > release-assets/checksums.sha256
-      - name: Extract changelog
-        id: changelog
-        run: |
-          release_tag="${{ github.ref_name }}"
-          previous_tag=$(git tag --sort=-version:refname | grep -v "^${release_tag}$" | head -1 || true)
-          if [ -n "$previous_tag" ]; then
-            changes=$(git log --pretty=format:'- %s (%h)' "${previous_tag}..HEAD")
-          else
-            changes=$(git log --pretty=format:'- %s (%h)' | head -20)
-          fi
-          {
-            echo "version=${release_tag#v}"
-            echo 'changes<<EOF'
-            echo "$changes"
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Graphit Broker ${{ github.ref_name }}
-          body: |
-            ## What's Changed
-
-            ${{ steps.changelog.outputs.changes }}
-
-            ## Installation
-
-            Linux amd64 / macOS arm64:
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.sh | sh
-            ```
-
-            Windows amd64 (PowerShell):
-            ```powershell
-            irm https://raw.githubusercontent.com/graphit-labs/graphit-broker/main/install.ps1 | iex
-            ```
-
-            The scripts verify the release archive SHA-256. To pin a release or choose a
-            destination, download the script and pass `--version` / `--dir` (Unix) or
-            `-Version` / `-Dir` (PowerShell).
-            Existing tagged installations can run `graphit-broker self-update` and restart
-            their broker service afterward. Review downloaded scripts before running them.
-
-            ## Self-contained binaries
-
-            Linux amd64 and Windows amd64 archives embed the ONNX Runtime core, shared provider,
-            and CUDA provider. macOS arm64 embeds the ONNX Runtime core with integrated CoreML.
-            Every archive also contains `config.example.yaml`; no adjacent ONNX library is
-            required. Model weights remain separate and download only for enabled local backends.
-
-            ```bash
-            sha256sum -c graphit-broker-linux-amd64.sha256
-            tar -xzf graphit-broker-linux-amd64.tar.gz
-            ./graphit-broker-linux-amd64/graphit-broker --version
-            ```
-
-            ## Container image
-
-            The same Linux amd64 binary is published to GitHub Container Registry with SemVer
-            aliases that omit the Git tag's `v` prefix:
-
-            ```bash
-            docker pull ghcr.io/graphit-labs/graphit-broker:${{ steps.changelog.outputs.version }}
-            ```
-          files: |
-            release-assets/graphit-broker-*.tar.gz
-            release-assets/graphit-broker-*.sha256
-            release-assets/checksums.sha256
-          fail_on_unmatched_files: true
-          make_latest: true
-          generate_release_notes: false
-
+  # Container validation consumes the same qualified Linux executable.
   publish-container:
-    name: Publish container image
-    needs: [publish, build-linux]
-    runs-on: ubuntu-22.04
+    name: Validate and publish native Linux container
+    needs: native-ci
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
+    defaults:
+      run:
+        working-directory: graphit-broker
+    env:
+      CODE_REPOSITORY: ${{ needs.native-ci.outputs.code_repository }}
+      CODE_REF: ${{ needs.native-ci.outputs.code_commit }}
+      CARGO_BUILD_JOBS: 4
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
     steps:
-      - name: Checkout
+      - name: Checkout qualified Broker source
         uses: actions/checkout@v4
-      - name: Download Linux release artifact
+        with:
+          ref: ${{ needs.native-ci.outputs.broker_commit }}
+          path: graphit-broker
+          persist-credentials: false
+      - name: Require qualified Code source
+        run: |
+          if [ -z "$CODE_REPOSITORY" ] || [ -z "$CODE_REF" ]; then
+            echo "::error::Native CI did not provide a qualified Code source."
+            exit 1
+          fi
+      - name: Checkout qualified Code commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPOSITORY }}
+          ref: ${{ env.CODE_REF }}
+          path: graphit-code
+          persist-credentials: false
+          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
+      - name: Verify qualified Code inputs
+        run: |
+          if [ "$(git -C ../graphit-code rev-parse --verify HEAD)" != "$CODE_REF" ]; then
+            echo "::error::Code checkout does not match the commit qualified by native CI."
+            exit 1
+          fi
+          test -s .cargo/config.toml
+          for input in .cargo/config.toml crates/graphit-ai/Cargo.toml crates/graphit-http/Cargo.toml crates/graphit-core/Cargo.toml crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE; do
+            if [ ! -s "../graphit-code/$input" ]; then
+              echo "::error::Qualified Code source is missing required input: $input"
+              exit 1
+            fi
+          done
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config
+      - name: Download native Linux artifact
         uses: actions/download-artifact@v4
         with:
-          name: graphit-broker-linux-amd64
-          path: container-artifact
-      - name: Prepare container binary
+          name: graphit-broker-linux-amd64-ci
+          path: graphit-broker
+      - name: Prepare native executable
         run: |
-          tar -xzf container-artifact/graphit-broker-linux-amd64.tar.gz
-          cp graphit-broker-linux-amd64/graphit-broker ./graphit-broker
+          grep -Fx -- "code_repository=$CODE_REPOSITORY" code-source.txt
+          grep -Fx -- "code_commit=$CODE_REF" code-source.txt
+          grep -Fx -- "broker_commit=$(git rev-parse --verify HEAD)" code-source.txt
           chmod 0755 graphit-broker
+          version="$(./graphit-broker --version)"
+          if [ "$GITHUB_REF_NAME" != "v${version#graphit-broker }" ]; then
+            echo "::error::Release tag does not match the qualified native Broker version."
+            exit 1
+          fi
+          (cd installer-package && sha256sum -c graphit-broker-linux-amd64.sha256)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Generate container metadata
         id: metadata
         uses: docker/metadata-action@v5
@@ -298,21 +124,206 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest
-      - name: Build image for validation
+      - name: Build native image for validation
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: graphit-broker
           load: true
           push: false
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke-test image
+      - name: Validate actual image with native SQL and lifecycle
         env:
-          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.metadata.outputs.version }}
-        run: ./scripts/container-smoke.sh "$IMAGE"
-      - name: Publish validated tags
+          GRAPHIT_BROKER_CONTAINER_IMAGE: ghcr.io/${{ github.repository }}:${{ steps.metadata.outputs.version }}
+        run: |
+          cargo fetch --locked
+          cargo test --locked --offline -j4 -p broker-server --test container -- --ignored --exact broker_native_container_contract --test-threads=1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish validated native tags
         env:
           IMAGE_NAME: ghcr.io/${{ github.repository }}
         run: docker push --all-tags "$IMAGE_NAME"
+
+  publish-assets:
+    name: Publish all verified native installer pairs
+    needs: native-ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      CODE_REPOSITORY: ${{ needs.native-ci.outputs.code_repository }}
+      CODE_COMMIT: ${{ needs.native-ci.outputs.code_commit }}
+      BROKER_COMMIT: ${{ needs.native-ci.outputs.broker_commit }}
+    steps:
+      - name: Checkout existing release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.ref_name }}
+          path: graphit-broker
+          persist-credentials: false
+      - name: Verify release tag commit
+        working-directory: graphit-broker
+        run: |
+          if [ "$(git rev-parse --verify HEAD)" != "$BROKER_COMMIT" ]; then
+            echo "::error::Release tag no longer points to the Broker commit qualified by native CI."
+            exit 1
+          fi
+      - name: Download qualified Linux pair
+        uses: actions/download-artifact@v4
+        with:
+          name: graphit-broker-linux-amd64-ci
+          path: release-assets/linux-amd64
+      - name: Download qualified Darwin pair
+        uses: actions/download-artifact@v4
+        with:
+          name: graphit-broker-darwin-arm64-ci
+          path: release-assets/darwin-arm64
+      - name: Download qualified Windows pair
+        uses: actions/download-artifact@v4
+        with:
+          name: graphit-broker-windows-amd64-ci
+          path: release-assets/windows-amd64
+      - name: Verify every native pair before release mutation
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import tarfile
+          import re
+          import json
+
+          for platform in ("linux-amd64", "darwin-arm64", "windows-amd64"):
+              root = pathlib.Path("release-assets") / platform
+              lines = (root / "code-source.txt").read_text().splitlines()
+              record = dict(line.split("=", 1) for line in lines)
+              expected = {
+                  "broker_commit": os.environ["BROKER_COMMIT"],
+                  "code_repository": os.environ["CODE_REPOSITORY"],
+                  "code_commit": os.environ["CODE_COMMIT"],
+                  "platform": platform,
+                  "version": os.environ["GITHUB_REF_NAME"].removeprefix("v"),
+              }
+              if len(lines) != len(record) or set(record) != set(expected) | {"code_ref"}:
+                  raise SystemExit(f"Invalid or duplicate source record: {platform}")
+              if not record["code_ref"] or any(not value or record[key] != value for key, value in expected.items()):
+                  raise SystemExit(f"Source, version or platform mismatch: {platform}")
+              package = root / "installer-package"
+              archive_name = f"graphit-broker-{platform}.tar.gz"
+              archive = package / archive_name
+              with archive.open("rb") as payload:
+                  digest = hashlib.file_digest(payload, "sha256").hexdigest()
+              checksum = (package / f"graphit-broker-{platform}.sha256").read_bytes()
+              if checksum != f"{digest}  {archive_name}\n".encode():
+                  raise SystemExit(f"Archive checksum mismatch: {platform}")
+              prefix = f"graphit-broker-{platform}/"
+              executable = "graphit-broker.exe" if platform == "windows-amd64" else "graphit-broker"
+              required = {prefix + name for name in (
+                  executable, "graphit-runtime/licenses/broker/LICENSE",
+                  "graphit-runtime/licenses/broker/ggml/LICENSE", "graphit-runtime/licenses/broker/ggml/LICENSE-MIT", "graphit-runtime/licenses/broker/ggml/LICENSE-APACHE", "graphit-runtime/licenses/broker/nvidia/LICENSE",
+                  "graphit-runtime/licenses/broker/ggml/licenses/LICENSE-jsonhpp",
+              )}
+              if platform == "linux-amd64":
+                  required.add(prefix + "graphit-runtime/broker/linux-libraries.json")
+              platform_manifest = None
+              if platform != "linux-amd64":
+                  platform_manifest = prefix + "graphit-runtime/broker/" + ("macos" if platform == "darwin-arm64" else "windows") + "-libraries.json"
+                  required.add(platform_manifest)
+              seen = set()
+              seen_keys = set()
+              digests = {}
+              runtime_manifest = None
+              linux_libraries = set()
+              with tarfile.open(archive, "r:gz") as contents:
+                  for member in contents:
+                      mode = 0o755 if member.name == prefix + executable else 0o644
+                      runtime = member.name.removeprefix(prefix)
+                      library = re.fullmatch(r"graphit-runtime/broker/lib/(lib[A-Za-z0-9._+-]+\.so(?:\.[A-Za-z0-9._+-]+)?)", runtime)
+                      notice = re.fullmatch(r"graphit-runtime/licenses/broker/linux/(?:GPL-3|lib[A-Za-z0-9._+-]+\.copyright)", runtime)
+                      linux_asset = platform == "linux-amd64" and (library or notice)
+                      if library:
+                          linux_libraries.add(library[1])
+                      mac_asset = platform == "darwin-arm64" and (re.fullmatch(r"graphit-runtime/broker/lib/lib[A-Za-z0-9._+-]+\.dylib", runtime) or runtime == "graphit-runtime/broker/licenses/darwin-arm64/OpenSSL-LICENSE.txt")
+                      windows_asset = platform == "windows-amd64" and (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.dll", runtime) or re.fullmatch(r"graphit-runtime/broker/licenses/windows-amd64/[A-Za-z0-9][A-Za-z0-9_.+-]*\.txt", runtime))
+                      key = member.name.casefold() if platform == "windows-amd64" else member.name
+                      if (member.name not in required and not (linux_asset or mac_asset or windows_asset)) or key in seen_keys or not member.isfile() or member.mode != mode or member.size == 0:
+                          raise SystemExit(f"Unexpected installer archive entry: {platform}")
+                      seen.add(member.name)
+                      seen_keys.add(key)
+                      if platform_manifest:
+                          with contents.extractfile(member) as source:
+                              if member.name == platform_manifest:
+                                  data = source.read()
+                                  runtime_manifest = json.loads(data)
+                                  digests[member.name] = hashlib.sha256(data).hexdigest()
+                              else:
+                                  digests[member.name] = hashlib.file_digest(source, "sha256").hexdigest()
+              if not required <= seen:
+                  raise SystemExit(f"Required installer files missing: {platform}")
+              for library in linux_libraries:
+                  if re.fullmatch(r"lib(?:llama|ggml(?:-base|-cpu|-cuda)?)\.so|lib(?:cudart|cublas|cublasLt)\.so\.12", library):
+                      continue  # Covered by the required Cargo/NVIDIA notices above.
+                  if prefix + "graphit-runtime/licenses/broker/linux/" + library + ".copyright" not in seen or prefix + "graphit-runtime/licenses/broker/linux/GPL-3" not in seen:
+                      raise SystemExit(f"Linux runtime notice missing: {platform}")
+              if platform_manifest:
+                  if runtime_manifest["platform"] != platform or {entry["file"] for entry in runtime_manifest["executables"]} != {executable}:
+                      raise SystemExit(f"Native runtime identity mismatch: {platform}")
+                  for entry in runtime_manifest["executables"] + runtime_manifest["libraries"]:
+                      if digests.get(prefix + entry["file"]) != entry["sha256"]:
+                          raise SystemExit(f"Native runtime integrity mismatch: {platform}")
+                  libraries = {entry["file"] for entry in runtime_manifest["libraries"]}
+                  actual = {name.removeprefix(prefix) for name in seen if name.endswith(".dll") or name.endswith(".dylib")}
+                  if libraries != actual:
+                      raise SystemExit(f"Native runtime library set mismatch: {platform}")
+                  if platform == "darwin-arm64" and libraries and prefix + "graphit-runtime/broker/licenses/darwin-arm64/OpenSSL-LICENSE.txt" not in seen:
+                      raise SystemExit("OpenSSL notice missing from Darwin package")
+                  if platform == "windows-amd64":
+                      for library in libraries:
+                          notice = None
+                          if re.match(r"(?:msvcp140|vcruntime140|concrt140)", library, re.I): notice = "Microsoft-VC-REDIST-NOTICE.txt"
+                          if re.match(r"lib(?:ssl|crypto)-3-x64\.dll$", library, re.I): notice = "OpenSSL-LICENSE.txt"
+                          if notice and prefix + "graphit-runtime/broker/licenses/windows-amd64/" + notice not in seen:
+                              raise SystemExit("Windows runtime notice missing")
+          PY
+      - name: Append assets or create release for the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          assets=(
+            release-assets/linux-amd64/installer-package/graphit-broker-linux-amd64.tar.gz
+            release-assets/linux-amd64/installer-package/graphit-broker-linux-amd64.sha256
+            release-assets/darwin-arm64/installer-package/graphit-broker-darwin-arm64.tar.gz
+            release-assets/darwin-arm64/installer-package/graphit-broker-darwin-arm64.sha256
+            release-assets/windows-amd64/installer-package/graphit-broker-windows-amd64.tar.gz
+            release-assets/windows-amd64/installer-package/graphit-broker-windows-amd64.sha256
+          )
+          if gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" > "$response"; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+          elif python3 - "$response" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          try:
+              headers, body = pathlib.Path(sys.argv[1]).read_text().split("\n\n", 1)
+              valid = re.fullmatch(r"HTTP/[0-9.]+ 404(?: [^\n]*)?", headers.splitlines()[0]) and json.loads(body).get("message") == "Not Found"
+          except (ValueError, IndexError, AttributeError):
+              valid = False
+          sys.exit(0 if valid else 1)
+          PY
+          then
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          else
+            echo "::error::Cannot determine whether the release exists; no release mutation attempted."
+            exit 1
+          fi

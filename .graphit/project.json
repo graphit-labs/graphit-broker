@@ -1,0 +1,17 @@
+{
+  "id": "01M1YEAE1WYMWG9KJKV1XQC4T4",
+  "name": "graphit-broker",
+  "ephemeral": false,
+  "githooks": {
+    "pre-commit": [
+      "actionlint",
+      "cargo run --locked --quiet -p xtask -- hook pre-commit"
+    ],
+    "pre-push": [
+      "cargo fmt --all --check",
+      "cargo clippy --locked --workspace --all-targets -- -D warnings",
+      "cargo test --locked -p xtask --lib"
+    ]
+  },
+  "settings": {}
+}

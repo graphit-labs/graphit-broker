@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+
+[dependencies]
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+serde_json = { version = "=1.0.151", default-features = false, features = ["std"] }
+sha2 = "=0.10.9"
+tar = { version = "=0.4.46", default-features = false }
+tempfile = "=3.27.0"
