@@ -186,8 +186,9 @@ CI resolves the Code and Broker commits once, then runs the Linux integration
 gate and the Windows/macOS package jobs independently against those same commits.
 Native packaging does not wait for the Linux integration gate; all checks remain
 required for the complete workflow to succeed.
-The native installation consumers use `cargo test --release` to reuse compatible
-Release build artifacts instead of compiling a second debug profile.
+The native installation consumers use `cargo test --release --target host-tuple`,
+matching the package producer's profile and target so Cargo can reuse compatible
+build artifacts instead of compiling another profile or target directory.
 
 For Windows source builds, enable [Git long-path support](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
 with `git config --global core.longpaths true` before `cargo fetch --locked`.

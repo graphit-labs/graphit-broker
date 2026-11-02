@@ -327,8 +327,8 @@ jobs:
           env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH PATH=/usr/bin:/bin:/usr/sbin:/sbin '.build/relocated α/graphit-broker' --version
           codesign --verify --strict '.build/relocated α/graphit-broker'
           export GRAPHIT_TEST_BROKER_BINARY="$PWD/.build/relocated α/graphit-broker"
-          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
-          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
+          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
+          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
       - name: Upload native Darwin artifact
         uses: actions/upload-artifact@v4
         with:
@@ -430,9 +430,9 @@ jobs:
             $env:OPENSSL_LIB_DIR = $builderOpenSSLLibDir
             Set-Location -LiteralPath $checkout
           }
-          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
+          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
           if ($LASTEXITCODE -ne 0) { throw 'Installed config validation failed.' }
-          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
+          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
           if ($LASTEXITCODE -ne 0) { throw 'Installed SQLite lifecycle failed.' }
       - name: Upload native Windows artifact
         uses: actions/upload-artifact@v4
