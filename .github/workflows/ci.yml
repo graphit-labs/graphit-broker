@@ -327,8 +327,8 @@ jobs:
           env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH PATH=/usr/bin:/bin:/usr/sbin:/sbin '.build/relocated α/graphit-broker' --version
           codesign --verify --strict '.build/relocated α/graphit-broker'
           export GRAPHIT_TEST_BROKER_BINARY="$PWD/.build/relocated α/graphit-broker"
-          cargo test --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
-          cargo test --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
+          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
+          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
       - name: Upload native Darwin artifact
         uses: actions/upload-artifact@v4
         with:
@@ -379,6 +379,8 @@ jobs:
       - name: Verify native host, source and native dependencies
         run: |
           if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or (git rev-parse --verify HEAD) -cne $env:BROKER_COMMIT -or (git -C ../graphit-code rev-parse --verify HEAD) -cne $env:CODE_REF) { throw 'Wrong host or unqualified source commit.' }
+          git config --global core.longpaths true
+          if ($LASTEXITCODE -ne 0) { throw 'Git long-path configuration failed.' }
           if (-not (Test-Path -LiteralPath .cargo/config.toml -PathType Leaf)) { throw 'Broker Cargo build configuration missing.' }
           foreach ($file in @('.cargo/config.toml', 'scripts/package-platform-runtime.mjs', 'crates/graphit-ai/Cargo.toml', 'crates/graphit-http/Cargo.toml', 'crates/graphit-core/Cargo.toml', 'crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE')) {
             if (-not (Test-Path -LiteralPath (Join-Path ../graphit-code $file) -PathType Leaf)) { throw "Code source input missing: $file" }
@@ -428,9 +430,9 @@ jobs:
             $env:OPENSSL_LIB_DIR = $builderOpenSSLLibDir
             Set-Location -LiteralPath $checkout
           }
-          cargo test --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
+          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
           if ($LASTEXITCODE -ne 0) { throw 'Installed config validation failed.' }
-          cargo test --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
+          cargo test --release --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
           if ($LASTEXITCODE -ne 0) { throw 'Installed SQLite lifecycle failed.' }
       - name: Upload native Windows artifact
         uses: actions/upload-artifact@v4
