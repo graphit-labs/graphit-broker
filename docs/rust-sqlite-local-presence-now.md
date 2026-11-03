@@ -112,8 +112,9 @@ existing `closed` / Close 1000 path. See the protocol reference for other errors
 
 The business methods share the caller's Original deadline and the actual SQLite
 executor. They do not wrap a COMMIT in a second outer timeout or manufacture an
-ACK. Even candidate EOF requires the committed read's observed ACK. Corruption
-and byte-cap failures remain errors rather than empty inventories.
+ACK. A candidate read uses a deferred, read-only snapshot and checks the
+original deadline before returning data or EOF. Corruption and byte-cap
+failures remain errors rather than empty inventories.
 
 For 401, obtain a current credential through its owner and check configured
 audience/scopes. For 403, check the current same-rule capability/project ACL.

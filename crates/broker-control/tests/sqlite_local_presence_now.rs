@@ -11,7 +11,7 @@ use broker_control::{
 };
 use fixture::{Fixture, end, n};
 use rusqlite::{Connection, params};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 const A: &str = "01D39ZY06FGSCTVN4T2V9PKHFZ";
 const B: &str = "01D39ZY06FGSCTVN4T2V9PKHG0";
 fn scopes() -> Vec<String> {
@@ -414,66 +414,22 @@ async fn sqlite_local_presence_reauthenticates_current_human_service_state() {
     f.store.shutdown(end()).await.unwrap();
 }
 
-struct CommitDelivery {
-    armed: std::sync::atomic::AtomicBool,
-    seen: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-impl tracing::Subscriber for CommitDelivery {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.target() == "broker_control::sqlite::commit_confirmed"
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {
-        if self.armed.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            self.seen.send(()).unwrap();
-            self.release
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap();
-        }
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real SQLite candidate EOF after committed read without acknowledgement"]
-async fn sqlite_local_candidates_eof_without_ack_is_uncertain() {
-    let (seen, committed) = std::sync::mpsc::sync_channel(1);
-    let (release, withheld) = std::sync::mpsc::sync_channel(1);
-    let subscriber = std::sync::Arc::new(CommitDelivery {
-        armed: std::sync::atomic::AtomicBool::new(false),
-        seen,
-        release: std::sync::Mutex::new(withheld),
-    });
-    tracing::subscriber::set_global_default(subscriber.clone()).unwrap();
+#[tokio::test]
+#[ignore = "real SQLite candidate snapshot while another connection owns the write lock"]
+async fn sqlite_local_candidates_read_without_a_write_lock() {
     let f = Fixture::new().await;
     prepare(&f);
-    let store = f.store.clone();
-    subscriber
-        .armed
-        .store(true, std::sync::atomic::Ordering::Release);
-    let task = tokio::spawn(async move {
-        store
+    let db = f.db();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(
+        f.store
             .instance_inventory_candidates(n(65536))
             .unwrap()
-            .read_next(None, Instant::now() + Duration::from_millis(500))
+            .read_next(None, end())
             .await
-            .map(|_| ())
-    });
-    tokio::task::spawn_blocking(move || committed.recv_timeout(Duration::from_secs(2)).unwrap())
-        .await
-        .unwrap();
-    assert!(matches!(
-        task.await.unwrap(),
-        Err(InstanceReadError::Control(ControlError::OutcomeUncertain))
-    ));
-    release.send(()).unwrap();
+            .unwrap()
+            .is_none()
+    );
+    db.execute_batch("ROLLBACK").unwrap();
     f.store.shutdown(end()).await.unwrap();
 }

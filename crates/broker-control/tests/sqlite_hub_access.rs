@@ -258,72 +258,19 @@ async fn sqlite_hub_reopen_caps_corruption_deadline_and_closed() {
     reopened.shutdown(end()).await.unwrap();
 }
 
-// Withhold delivery at the real executor's post-COMMIT event. This observes an
-// actual SQLite transaction; it does not inject a result or simulate network loss.
-struct CommitDelivery {
-    armed: std::sync::atomic::AtomicBool,
-    seen: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-impl tracing::Subscriber for CommitDelivery {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        metadata.target() == "broker_control::sqlite::commit_confirmed"
-    }
-    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-    fn event(&self, _: &tracing::Event<'_>) {
-        if self.armed.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            self.seen.send(()).unwrap();
-            self.release
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap();
-        }
-    }
-    fn enter(&self, _: &tracing::span::Id) {}
-    fn exit(&self, _: &tracing::span::Id) {}
-}
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "real SQLite COMMIT with retained owner and withheld caller acknowledgement"]
-async fn sqlite_hub_commit_without_ack_never_emits_resolution() {
-    let (seen, committed) = std::sync::mpsc::sync_channel(1);
-    let (release, withheld) = std::sync::mpsc::sync_channel(1);
-    let subscriber = std::sync::Arc::new(CommitDelivery {
-        armed: std::sync::atomic::AtomicBool::new(false),
-        seen,
-        release: std::sync::Mutex::new(withheld),
-    });
-    tracing::subscriber::set_global_default(subscriber.clone()).unwrap();
+#[tokio::test]
+#[ignore = "real SQLite Hub snapshot while another connection owns the write lock"]
+async fn sqlite_hub_reads_current_grants_without_a_write_lock() {
     let f = Fixture::new().await;
     let db = f.db();
     clear(&db);
     grant(&db, "a", "global", "", &["hub"], &[A]);
     let verifier = Signer::new().verifier(None);
-    subscriber
-        .armed
-        .store(true, std::sync::atomic::Ordering::Release);
-    let store = f.store.clone();
-    let task = tokio::spawn(async move {
-        store
-            .broker_hub_access_resolver(&verifier, n(65536))
-            .unwrap()
-            .resolve(None, Instant::now() + Duration::from_millis(500))
-            .await
-            .map(|_| ())
-    });
-    tokio::task::spawn_blocking(move || committed.recv_timeout(Duration::from_secs(2)).unwrap())
-        .await
-        .unwrap();
-    assert!(matches!(
-        task.await.unwrap(),
-        Err(Error::Grants(ResourceGrantReadError::Control(
-            ControlError::OutcomeUncertain
-        )))
-    ));
-    release.send(()).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert_eq!(
+        native(&f.store, &verifier, None, end()).await.unwrap()["selectors"],
+        json!([{"id":A}])
+    );
+    db.execute_batch("ROLLBACK").unwrap();
     f.store.shutdown(end()).await.unwrap();
 }

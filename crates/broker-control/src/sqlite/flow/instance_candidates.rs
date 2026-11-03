@@ -57,7 +57,7 @@ impl SqliteControlStore {
 }
 impl SqliteInstanceInventoryCandidates<'_> {
     /// Least binary ID strictly after the optional canonical key, whether present or not.
-    /// EOF is emitted only after the actual executor confirms the read COMMIT.
+    /// EOF is emitted only after the executor closes the read snapshot.
     pub async fn read_next(
         &self,
         after: Option<&str>,
@@ -77,7 +77,7 @@ impl SqliteInstanceInventoryCandidates<'_> {
             .executor
             .execute(end, move |owner, work| {
                 Ok((|| -> Result<_, Error> {
-                    let tx = owner.begin(work).map_err(ControlError::from)?;
+                    let tx = owner.begin_read(work).map_err(ControlError::from)?;
                     let row = tx
                         .query_row(SELECT_CANDIDATE, params![after, cap], |row| {
                             Ok((
@@ -111,7 +111,7 @@ impl SqliteInstanceInventoryCandidates<'_> {
                     } else {
                         None
                     };
-                    work.commit(tx).map_err(ControlError::from)?;
+                    work.finish_read(tx).map_err(ControlError::from)?;
                     Ok(result)
                 })())
             })
