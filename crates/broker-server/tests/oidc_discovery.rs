@@ -195,6 +195,10 @@ async fn document(client: &reqwest::Client, origin: &str, path: &str) -> Value {
     assert!(head.bytes().await.unwrap().is_empty());
     serde_json::from_slice(&bytes).unwrap()
 }
+fn storage_service() -> Value {
+    json!({"s3_credentials":{"protocol":"graphit-s3-credentials-v3","path":"/v1/s3/credentials"}})
+}
+
 fn metadata(
     graphit: &Value,
     openid: &Value,
@@ -208,7 +212,7 @@ fn metadata(
         &json!({"version":"1","issuer":issuer,"authentication":{
         "type":"oidc","issuer":issuer,"client_id":"discovery-cli","scopes":SCOPES,
         "audiences":[AUDIENCE],"access_token_audience":AUDIENCE,"redirect_uri_path":"/discovery/callback",
-        "mcp_resources":resources}})
+        "mcp_resources":resources},"services":storage_service()})
     );
     let base = issuer.trim_end_matches('/');
     assert_eq!(openid["issuer"], issuer);
@@ -557,18 +561,21 @@ async fn discovery_native_capability_profiles() {
                     .any(|(k, v)| k == "error" && v == "invalid_target")
             );
         } else {
-            for path in [GRAPHIT, OPENID] {
-                for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
-                    assert_eq!(
-                        client
-                            .request(method, format!("{origin}{path}"))
-                            .send()
-                            .await
-                            .unwrap()
-                            .status(),
-                        404
-                    );
-                }
+            let graphit = document(&client, &origin, GRAPHIT).await;
+            assert_eq!(
+                graphit,
+                json!({"version":"1","issuer":origin,"services":storage_service()})
+            );
+            for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+                assert_eq!(
+                    client
+                        .request(method, format!("{origin}{OPENID}"))
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    404
+                );
             }
             let keys = document(&client, &origin, "/v1/oidc/keys").await;
             assert_eq!(keys, serde_json::to_value(signer.jwks()).unwrap());

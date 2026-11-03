@@ -26,9 +26,14 @@ no separate discovery switch, signing key or SQL store is created.
 
 | Route | OIDC enabled | OIDC absent/disabled |
 |---|---|---|
-| GET/HEAD `/.well-known/graphit-broker` | Public Graphit JSON | 404 |
+| GET/HEAD `/.well-known/graphit-broker` | Public Graphit JSON | Services-only Graphit JSON when a service is enabled, otherwise 404 |
 | GET/HEAD `/.well-known/openid-configuration` | Public OpenID JSON | 404 |
 | GET/HEAD `/v1/oidc/keys` | Existing public verification keys | Existing public verification keys |
+
+Graphit discovery advertises enabled embeddings, rerank and S3 credential services
+independently of OIDC. With OIDC disabled, its JSON uses the configured public URL as
+`issuer` and omits `authentication`. Enabled storage advertises STSv3 at
+`/v1/s3/credentials`. The endpoint still requires authentication and authorization.
 
 Both discovery responses use the static JSON GET behavior: HEAD200 has matching headers
 and no body. Equality covers application headers, including Content-Type/CORS and any cache
@@ -150,6 +155,5 @@ test or saved gate authorizes a push.
 When the native OIDC and LOCAL login runtimes are operational, OpenID discovery also
 publishes `device_authorization_endpoint` as the configured absolute `/oauth/device/authorize`
 URL and includes `urn:ietf:params:oauth:grant-type:device_code` in `grant_types_supported`.
-LOCAL disabled omits both while preserving Code and refresh. OIDC disabled omits these
-discovery routes entirely. See [Device sign-in](rust-device-authorization.md) for empty scope,
+LOCAL disabled omits both while preserving Code and refresh. Disabling OIDC removes OpenID discovery and device authorization. See [Device sign-in](rust-device-authorization.md) for empty scope,
 explicit consent, access-only tokens and qualification status.
