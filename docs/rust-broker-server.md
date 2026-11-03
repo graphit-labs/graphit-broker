@@ -236,6 +236,8 @@ URL and `max_object_bytes` to 5368709120. Bucket names must be distinct and cann
 collide with reserved API roots. Token bytes must fit the configured head bound.
 AWS role, STS endpoint, key pair, session name, `conditional_delete` and loopback-transport fields are
 invalid on filesystem routes.
+If opening the volume fails with an I/O error, startup reports the error kind and
+operating-system code when available, without exposing the configured path.
 
 For S3 routes, `conditional_delete` is a boolean with a safe default of false.
 Set it to true only when the backend atomically enforces `If-Match` on DELETE;

@@ -13,7 +13,7 @@ use broker_presence::{
     local_realtime_router, oidc_browser_router, oidc_registration_router, oidc_revocation_router,
     oidc_token_router, oidc_userinfo_router, storage_credentials_router, upstream_login_router,
 };
-use broker_storage::{FilesystemGatewayConfig, FilesystemStore};
+use broker_storage::{FilesystemGatewayConfig, FilesystemStore, FilesystemStoreError};
 use hyper::server::conn::http1;
 use hyper_util::{
     rt::{TokioIo, TokioTimer},
@@ -376,7 +376,7 @@ async fn serve_inner(
     for config in configs {
         match FilesystemStore::open(config) {
             Ok(volume) => stores.push(Arc::new(volume)),
-            Err(_) => {
+            Err(error) => {
                 close_partial(
                     &store,
                     server.shutdown_timeout(),
@@ -390,7 +390,13 @@ async fn serve_inner(
                 if let Some(backend) = rerank_backend.as_ref() {
                     backend.stop();
                 }
-                return Err(ServerError::Storage);
+                return Err(match error {
+                    FilesystemStoreError::Io(error) => ServerError::StorageIo {
+                        kind: error.kind(),
+                        code: error.raw_os_error(),
+                    },
+                    _ => ServerError::Storage,
+                });
             }
         }
     }

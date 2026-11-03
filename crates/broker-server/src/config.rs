@@ -58,6 +58,10 @@ pub enum ServerError {
     Database,
     SqliteDatabase(broker_control::SqliteControlError),
     Storage,
+    StorageIo {
+        kind: std::io::ErrorKind,
+        code: Option<i32>,
+    },
     Bind,
     Startup,
     Listener,
@@ -80,6 +84,13 @@ impl fmt::Display for ServerError {
             Self::Database => "PostgreSQL startup failed",
             Self::SqliteDatabase(error) => return write!(f, "SQLite startup failed: {error}"),
             Self::Storage => "storage startup failed",
+            Self::StorageIo { kind, code } => {
+                write!(f, "storage startup failed: {kind:?}")?;
+                if let Some(code) = code {
+                    write!(f, " (OS error {code})")?;
+                }
+                return Ok(());
+            }
             Self::Bind => "listener bind failed",
             Self::Startup => "server startup deadline",
             Self::Listener => "listener failed",

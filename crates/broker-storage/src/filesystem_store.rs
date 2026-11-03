@@ -201,7 +201,18 @@ pub(crate) fn owned_dir(parent: &Dir, name: &str) -> Result<Dir, FilesystemStore
 }
 pub(crate) fn sync_dir(dir: &Dir) -> Result<(), FilesystemStoreError> {
     // Capability directory handles may be O_PATH: reopen this held directory for IO.
-    dir.open_with(".", &options(true, false))?
+    #[cfg(unix)]
+    let open = options(true, false);
+    #[cfg(windows)]
+    let open = {
+        use cap_fs_ext::OpenOptionsMaybeDirExt;
+
+        // FlushFileBuffers requires GENERIC_WRITE on Windows.
+        let mut open = options(true, false);
+        open.maybe_dir(true).write(true);
+        open
+    };
+    dir.open_with(".", &open)?
         .sync_all()
         .map_err(FilesystemStoreError::Io)
 }
