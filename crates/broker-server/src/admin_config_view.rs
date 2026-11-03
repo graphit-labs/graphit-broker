@@ -376,6 +376,7 @@ struct UpstreamView {
     ca_file: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ca_bytes: Option<NonZeroUsize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     browser_clients: Vec<BrowserView>,
 }
 #[derive(Serialize)]
