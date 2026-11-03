@@ -1066,7 +1066,14 @@ async fn broker_device_code_cli_login_account_and_logout() {
         "Code CLI login failed: {remaining_diagnostic}"
     );
     assert_eq!(login.stdout, b"Applied\n");
-    assert!(remaining_diagnostic.is_empty());
+    let expected_link = format!(
+        "Authorize native Broker login: {issuer}{}\n",
+        browser_path(&prompt)
+    );
+    assert!(
+        remaining_diagnostic == expected_link,
+        "Code CLI must emit exactly the public verification link after the instructions"
+    );
 
     let stored: Value =
         serde_json::from_slice(&std::fs::read(installation.join("auth.json")).unwrap()).unwrap();
@@ -1091,7 +1098,11 @@ async fn broker_device_code_cli_login_account_and_logout() {
     assert_eq!(claims["token_use"], "access");
     assert_eq!(claims["scope"], "");
     assert!(tokens["expires_at"].as_i64().unwrap() <= claims["exp"].as_i64().unwrap());
-    for text in [&instructions, &String::from_utf8(login.stdout).unwrap()] {
+    for text in [
+        &instructions,
+        &remaining_diagnostic,
+        &String::from_utf8(login.stdout).unwrap(),
+    ] {
         assert!(!text.contains(access));
         assert!(!text.contains("gb_dc_"));
         assert!(!text.contains(PASSWORD));
