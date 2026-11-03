@@ -179,7 +179,8 @@ valid results for unchanged code.
 The complete integration gate remains available explicitly with
 `cargo run --locked -p xtask -- hook pre-push` (or `make check`) and in CI. It
 includes real PostgreSQL/MySQL/HTTP/STS and native container phases, requiring
-Docker and fetched dependencies. CI also runs actionlint and
+Docker, fetched dependencies and the [pinned S3 test tools](docs/rust-hub-storage-fixture.md#build-and-prerequisites)
+on `PATH`. CI also runs actionlint and
 `node scripts/check-admin-ui.cjs`. Ordinary tests do not run ignored SQL/HTTP
 contracts. Native hosted validation requires its own executed evidence.
 CI resolves the Code and Broker commits once, then runs the Linux integration

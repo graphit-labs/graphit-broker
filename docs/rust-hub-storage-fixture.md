@@ -64,14 +64,21 @@ private fixture namespace is shortened. Earlier bases `tenant/{project_id}` and
 
 ## Build and prerequisites
 
-Restore the upstream MinIO and mc dependencies qualified by `tsk-6488` under
-`.build/rust-hub-sts-fixture-refinement/bin/{minio,mc}`. MinIO is pinned to
-`github.com/minio/minio@v0.0.0-20251015172955-9e49d5e7a648`, with module checksum
-`h1:6TdolSCLSs2nwm8i0PpWDqf9iX2Ty9WQK8wmr7dCnUM=`; mc is pinned to commit
-`cf909e1063a9`. These are external upstream validation dependencies. Record
-the resolved version and newly observed binary hashes after reconstruction;
-the historical MinIO binary hash does not establish reproducibility.
-Docker must provide the PostgreSQL image pinned by the existing SQL support.
+The S3 integration tests run MinIO and its `mc` client on loopback. Prepare the
+pinned upstream revisions with Go 1.25.9, from the Broker checkout:
+
+```sh
+GOBIN="$PWD/.build/s3-test-tools" sh scripts/prepare-s3-test-tools.sh
+export PATH="$PWD/.build/s3-test-tools:$PATH"
+```
+
+The script installs MinIO at `v0.0.0-20251015172955-9e49d5e7a648` and `mc` at
+`v0.0.0-20250313080218-cf909e1063a9` using normal Go module verification. The
+fixture resolves both executables from `PATH`. Broker and Code CI prepare the
+same tools before running their real S3 contracts. Go and these binaries are
+test dependencies only; they are not required to build, install or run the
+Broker product. Docker must provide the PostgreSQL image pinned by the existing
+SQL support.
 
 The Code consumer requires libclang and the workspace native build tools.
 From the Code checkout, use `cargo xtask cargo build/test ...`: xtask prepares

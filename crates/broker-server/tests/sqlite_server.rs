@@ -79,6 +79,7 @@ fn end() -> Instant {
 }
 fn block(doc: &str) -> &str {
     doc.split_once("\x60\x60\x60yaml\n")
+        .or_else(|| doc.split_once("\x60\x60\x60yaml\r\n"))
         .unwrap()
         .1
         .split_once("\x60\x60\x60")
@@ -108,16 +109,15 @@ fn config(root: &Path, addr: SocketAddr) -> Value {
         &root.join("signing.pk8"),
         &Zeroizing::new(key.serialize_der()),
     );
-    let mut value: Value =
-        serde_saphyr::from_str(block(include_str!("../../../docs/rust-broker-server.md"))).unwrap();
+    let guide = include_str!("../../../docs/rust-broker-server.md");
+    let mut value: Value = serde_saphyr::from_str(block(guide)).unwrap();
     value["server"]["address"] = json!(addr.to_string());
     value["server"]["public_url"] = json!(format!("http://{addr}"));
     value["server"]["shutdown_timeout"] = json!("3s");
-    let sqlite_example = include_str!("../../../docs/rust-broker-server.md")
-        .split_once("## Select private SQLite")
-        .unwrap()
-        .1
+    let sqlite_section = guide.split_once("## Select private SQLite").unwrap().1;
+    let sqlite_example = sqlite_section
         .split_once("~~~yaml\n")
+        .or_else(|| sqlite_section.split_once("~~~yaml\r\n"))
         .unwrap()
         .1
         .split_once("~~~")

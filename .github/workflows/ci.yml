@@ -223,6 +223,16 @@ jobs:
             exit 1
           fi
           printf 'platform=linux-amd64\nversion=%s\n' "${version#graphit-broker }" >> code-source.txt
+      - name: Set up compiler for external S3 test tools
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.9'
+          cache: false
+      - name: Prepare pinned S3 test tools
+        run: |
+          tools="$RUNNER_TEMP/broker-s3-test-tools"
+          GOBIN="$tools" sh scripts/prepare-s3-test-tools.sh
+          echo "$tools" >> "$GITHUB_PATH"
       - name: Run maintained real integration gate
         run: cargo run --locked --offline -p xtask -- hook pre-push
       - name: Upload qualified native Linux artifact

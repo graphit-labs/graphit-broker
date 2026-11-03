@@ -1,6 +1,5 @@
 use std::{
     net::TcpListener,
-    path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -16,7 +15,6 @@ pub struct Minio {
     pub caller_secret: Zeroizing<String>,
     pub endpoint: String,
     pub bucket: String,
-    mc: PathBuf,
 }
 fn random(prefix: &str) -> Zeroizing<String> {
     let mut bytes = Zeroizing::new([0u8; 24]);
@@ -42,12 +40,6 @@ impl Minio {
             .prefix("owned-broker-sts-")
             .tempdir()
             .unwrap();
-        let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.build/rust-hub-sts-fixture-refinement/bin");
-        assert!(
-            binaries.join("minio").is_file() && binaries.join("mc").is_file(),
-            "qualified fixture6488 binaries required"
-        );
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -57,7 +49,7 @@ impl Minio {
         let caller_key = random("caller");
         let caller_secret = random("caller-secret");
         let bucket = format!("graphit-sts-{}", &caller_key[6..18]);
-        let child = Command::new(binaries.join("minio"))
+        let child = Command::new("minio")
             .arg("server")
             .arg(folder.path().join("data"))
             .args([
@@ -73,7 +65,7 @@ impl Minio {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .unwrap();
+            .expect("start MinIO test tool (minio must be on PATH)");
         let mut fixture = Self {
             child,
             folder,
@@ -83,7 +75,6 @@ impl Minio {
             caller_secret,
             endpoint,
             bucket,
-            mc: binaries.join("mc"),
         };
         let ready = Instant::now() + Duration::from_secs(60);
         loop {
@@ -129,7 +120,7 @@ impl Minio {
         fixture
     }
     fn mc(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.mc);
+        let mut command = Command::new("mc");
         let host = self.endpoint.replacen(
             "http://",
             &format!(
@@ -150,7 +141,10 @@ impl Minio {
         command
     }
     fn run(&self, args: &[&str]) -> bool {
-        let mut child = self.mc(args).spawn().unwrap();
+        let mut child = self
+            .mc(args)
+            .spawn()
+            .expect("start MinIO test client (mc must be on PATH)");
         let end = Instant::now() + Duration::from_secs(30);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
