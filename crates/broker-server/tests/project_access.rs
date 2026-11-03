@@ -40,11 +40,12 @@ fn block(doc: &str) -> &str {
         .0
 }
 fn base_yaml(address: SocketAddr, pg: u16) -> String {
+    // The listener is local while the configured HTTPS issuer models the public origin.
     let base = block(include_str!("../../../docs/rust-broker-server.md"))
         .replace("127.0.0.1:8080", &address.to_string())
         .replace(
             "  public_url: https://broker.example.test",
-            &format!("  public_url: http://{address}"),
+            &format!("  public_url: {ISSUER}"),
         )
         .replace("  host: postgres.example.test", "  host: 127.0.0.1")
         .replace("  port: 5432", &format!("  port: {pg}"))

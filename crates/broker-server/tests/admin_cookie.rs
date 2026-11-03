@@ -41,7 +41,6 @@ use tokio::{
     process::{Child, Command},
 };
 use zeroize::Zeroizing;
-const ISSUER: &str = "https://broker.example";
 const AUDIENCE: &str = "storage-api";
 const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 fn block(doc: &str) -> &str {
@@ -96,7 +95,7 @@ fn yaml(address: SocketAddr, pg: u16, op: &upstream::UpstreamFixture) -> String 
         .replace("postgres-ca.pem", "ca.pem")
         .replace(
             "  issuer: https://broker.example.test",
-            &format!("  issuer: {ISSUER}"),
+            &format!("  issuer: http://{address}"),
         )
         .replace("  resource: https://broker.example.test/v1\n", "")
         .replace("\"${BROKER_PEPPER:?required}\"", cookie::PEPPER);
@@ -343,14 +342,15 @@ async fn broker_admin_cookie_http_contract() {
     private_file(&root.path().join("issuer-ca.pem"), &op.ca);
     let config = yaml(addr, f.fixture.port, &op);
     let path = write(root.path(), &config);
+    let checked = command()
+        .args(["--config", path.to_str().unwrap(), "--check-config"])
+        .output()
+        .await
+        .unwrap();
     assert!(
-        command()
-            .args(["--config", path.to_str().unwrap(), "--check-config"])
-            .output()
-            .await
-            .unwrap()
-            .status
-            .success()
+        checked.status.success(),
+        "native Broker rejected the fixture configuration: {}",
+        String::from_utf8_lossy(&checked.stderr)
     );
     assert_eq!(op.hits(), 0);
     for bad in [
