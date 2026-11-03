@@ -36,12 +36,12 @@ fn block(doc: &str) -> &str {
         .unwrap()
         .0
 }
-fn yaml(address: SocketAddr, pg: u16) -> String {
+fn yaml(address: SocketAddr, pg: u16, issuer: &str) -> String {
     let base = block(include_str!("../../../docs/rust-broker-server.md"))
         .replace("127.0.0.1:8080", &address.to_string())
         .replace(
             "  public_url: https://broker.example.test",
-            &format!("  public_url: http://{address}"),
+            &format!("  public_url: {issuer}"),
         )
         .replace("  host: postgres.example.test", "  host: 127.0.0.1")
         .replace("  port: 5432", &format!("  port: {pg}"))
@@ -54,7 +54,7 @@ fn yaml(address: SocketAddr, pg: u16) -> String {
         .replace("postgres-ca.pem", "ca.pem")
         .replace(
             "  issuer: https://broker.example.test",
-            &format!("  issuer: {ISSUER}"),
+            &format!("  issuer: {issuer}"),
         )
         .replace(
             "  audience: storage-api",
@@ -82,12 +82,12 @@ fn address() -> SocketAddr {
         .local_addr()
         .unwrap()
 }
-fn files(root: &Path, ca: &[u8]) -> BrokerAccessIssuer {
+fn files(root: &Path, ca: &[u8], issuer: &str) -> BrokerAccessIssuer {
     let key = KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let der = Zeroizing::new(key.serialize_der());
     std::fs::write(root.join("signing.pk8"), &der).unwrap();
     std::fs::write(root.join("ca.pem"), ca).unwrap();
-    BrokerAccessIssuer::new(ISSUER, AUDIENCE, "configured-key", &der).unwrap()
+    BrokerAccessIssuer::new(issuer, AUDIENCE, "configured-key", &der).unwrap()
 }
 fn write(root: &Path, yaml: &str) -> PathBuf {
     let path = root.join("config.yaml");
@@ -196,18 +196,20 @@ async fn broker_admin_session_http_contract() {
     let mut f = OidcFixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let addr = address();
-    let issuer = files(root.path(), &f.fixture.ca);
-    let config = yaml(addr, f.fixture.port);
+    let origin = format!("http://{addr}");
+    let issuer = files(root.path(), &f.fixture.ca, &origin);
+    let config = yaml(addr, f.fixture.port, &origin);
     let path = write(root.path(), &config);
     // Validate the actual CLI before any pool, socket or filesystem volume effect.
+    let checked = command()
+        .args(["--config", path.to_str().unwrap(), "--check-config"])
+        .output()
+        .await
+        .unwrap();
     assert!(
-        command()
-            .args(["--config", path.to_str().unwrap(), "--check-config"])
-            .output()
-            .await
-            .unwrap()
-            .status
-            .success()
+        checked.status.success(),
+        "native Broker rejected the fixture configuration: {}",
+        String::from_utf8_lossy(&checked.stderr)
     );
     for bad in [
         config.replace("  profile_json_bytes: 8192\n", ""),
@@ -345,7 +347,7 @@ async fn broker_admin_session_http_contract() {
     .await;
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.set_audience(&[AUDIENCE]);
-    validation.set_issuer(&[ISSUER]);
+    validation.set_issuer(&[&origin]);
     let claims = decode::<Value>(
         &access,
         &DecodingKey::from_jwk(&issuer.jwks().keys[0]).unwrap(),
@@ -443,7 +445,7 @@ async fn broker_admin_session_http_contract() {
     );
     assert_eq!(admin(addr, &access).await.status(), 200);
     let verifier =
-        BrokerAccessVerifier::new(ISSUER, AUDIENCE, None, issuer.jwks(), n(8192)).unwrap();
+        BrokerAccessVerifier::new(&origin, AUDIENCE, None, issuer.jwks(), n(8192)).unwrap();
     let proof = verifier
         .verify(&access, &[], Instant::now() + Duration::from_secs(120))
         .unwrap();
@@ -489,8 +491,9 @@ async fn broker_admin_local_bearer_http_contract() {
     let mut f = OidcFixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let addr = address();
-    let _issuer = files(root.path(), &f.fixture.ca);
-    let config = yaml(addr, f.fixture.port).replace(
+    let origin = format!("http://{addr}");
+    files(root.path(), &f.fixture.ca, &origin);
+    let config = yaml(addr, f.fixture.port, &origin).replace(
         block(include_str!("../../../docs/rust-admin-session-http.md")),
         block(include_str!(
             "../../../docs/rust-admin-local-bearer-session.md"
@@ -761,13 +764,14 @@ async fn broker_admin_upstream_bearer_http_contract() {
     op.replace_keys(keys);
     let root = tempfile::tempdir().unwrap();
     let addr = address();
-    files(root.path(), &f.fixture.ca);
+    let origin = format!("http://{addr}");
+    files(root.path(), &f.fixture.ca, &origin);
     std::fs::write(root.path().join("issuer-ca.pem"), &op.ca).unwrap();
     let upstream = block(include_str!("../../../docs/rust-admin-upstream-session.md"))
         .strip_prefix("auth:\n")
         .unwrap()
         .replace("https://issuer.example.test", &op.issuer);
-    let config = yaml(addr, f.fixture.port)
+    let config = yaml(addr, f.fixture.port, &origin)
         .replace("storage:\n", &format!("{upstream}storage:\n"))
         .replace(
             block(include_str!("../../../docs/rust-admin-session-http.md")),
@@ -803,7 +807,7 @@ async fn broker_admin_upstream_bearer_http_contract() {
         config.replace("      issuer: ", "      unknown_issuer: "),
         config.replace("      ca_bytes: 8192\n", ""),
         config.replace("      cache_max_age: 5m", "      cache_max_age: 10ms"),
-        config.replace(&op.issuer, ISSUER),
+        config.replace(&op.issuer, &origin),
     ] {
         write(root.path(), &bad);
         let out = command()
