@@ -81,7 +81,7 @@ cargo test --locked -p broker-control --test mysql_control mysql_role_ -- --igno
 
 The three cases reuse the existing pinned MySQL 8.4.11 TLS fixture and ordinary account: definitions/current RBAC; real SQL rollback, concurrency and row locks; permission denial, deadline, abort, observed COMMIT uncertainty and shutdown. The existing MYSQL_CONTROL gate already includes this file. Ignored native cases in the fast command do not count as executed passes.
 
-On 2026-10-10, all three native cases passed on Linux with MySQL 8.4.11 in 111.10 seconds. The affected fast control tests passed (36), documentation tests passed (11), and xtask tests passed (6), including the real formatter-failure guardrail. Formatting, strict Clippy and whitespace checks passed. The lock observer uses actual requesting records from `performance_schema.data_lock_waits` correlated to the ordinary writer and the roles table. Linux results do not establish other platforms or full server integration. This producer creates no importer or conversion of legacy Go schemas, data, configuration or formats. HTTP/OIDC, identity mutations, STS and full Broker integration remain separate deliveries.
+On 2026-10-10, all three native cases passed on Linux with MySQL 8.4.11 in 111.10 seconds. The affected fast control tests passed (36), documentation tests passed (11), and xtask tests passed (6), including the real formatter-failure guardrail. Formatting, strict Clippy and whitespace checks passed. The lock observer uses actual requesting records from `performance_schema.data_lock_waits` correlated to the ordinary writer and the roles table. Linux results do not establish other platforms or full server integration.
 
 ## Role assignments
 

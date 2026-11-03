@@ -110,7 +110,7 @@ cargo test --locked -j1 -p broker-presence --example project_authorization_fixtu
 
 The public IPC procedure remains the [fixture procedure](rust-broker-project-authorization-fixture.md).
 A completed signing library or fixture does not qualify the complete provider,
-client integration, server startup or Rust migration. Platform and integration
+client integration or server startup. Platform and integration
 results are recorded separately from the contracts above.
 
 ## Qualified native scope

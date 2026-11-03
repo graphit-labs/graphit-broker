@@ -39,7 +39,7 @@ references:
 ---
 # Run the Rust Broker server
 
-For operators and server integrators working on the Rust migration. Build the
+For operators and server integrators. Build the
 `broker-server` package to produce the native `graphit-broker` executable:
 
 ```text
@@ -87,15 +87,14 @@ PUT/own GET/HEAD and realtime, or `local_opaque` for SQL access/service credenti
 and the existing partial inventory LIST as well. Both modes use the same configured
 SQL store and one owned realtime runtime; the server never guesses the mode.
 Presence and PROJECT section Read grants remain independent.
-Explicit PostgreSQL and private SQLite selection are implemented in this executable. First-administrator onboarding uses the explicit stdin command below. MySQL selection, model-setup and update commands remain outside this executable. Coordinated integration and release qualification remain separate migration work. The [native container and CI](deployment.md) now consume
+Explicit PostgreSQL and private SQLite selection are implemented in this executable. First-administrator onboarding uses the explicit stdin command below. MySQL selection, model-setup and update commands remain outside this executable. The [native container and CI](deployment.md) now consume
 this same executable; hosted publication and other platforms require their own evidence.
 
 The native OIDC server exposes [explicit UserInfo profile retrieval](rust-oidc-userinfo.md) [Bearer-authorized token introspection](rust-oidc-introspection.md) and [ID-hint end-session](rust-oidc-end-session.md); JWT consumers continue local verification until expiry.
 
 ## Supply configuration and key files
 
-Use the clean Rust YAML schema below. The earlier Go release schema is not
-accepted or imported. Unknown fields, duplicate keys, extra YAML documents,
+Use the YAML schema below. Unknown fields, duplicate keys, extra YAML documents,
 invalid durations and unsupported backends/drivers fail configuration. The
 config file and expanded text each have a 4 MiB bound. Owned config text,
 private-key bytes, pepper, password and static credential fields use zeroizing
@@ -104,7 +103,7 @@ storage; diagnostics report finite error categories and omit source values.
 `--config` takes precedence over `GRAPHIT_BROKER_CONFIG`. Otherwise the native
 home directory supplies `.graphit/broker/config.yaml`; `GRAPHIT_GLOBAL_DIR`
 relocates that root. Key, CA and volume paths are relative to the YAML's parent;
-absolute paths and `~/` are supported. Paths must be nonempty. Environment
+prefer relative paths or environment variables in shared templates. Absolute paths and `~/` refer to the local installation. Paths must be nonempty. Environment
 expressions `${NAME}`, `${NAME:-fallback}` and `${NAME:?message}` expand before
 typed YAML decoding. Unset/empty values use the documented fallback or cause
 failure. The required-expression message is not echoed, because it may contain
@@ -113,7 +112,7 @@ sensitive text. Expanded YAML is never written into SQL.
 Provide an Ed25519 PKCS8 **DER** file at `auth.pkcs8_file`, with operator-supplied
 issuer, audience and key ID. The actual issuer SDK validates the bytes and
 produces the public JWK used by the verifier. There is no generated product key,
-pepper-derived signing key, Go fallback or per-request JWK network lookup. The
+pepper-derived signing key or per-request JWK network lookup. The
 private signer is discarded after deriving configured verification trust when
 OIDC exchange is absent/disabled. Enabled [code exchange](rust-oidc-token-exchange.md)
 retains that same owner to sign access and ID tokens; there is no second key or

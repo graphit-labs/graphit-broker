@@ -21,7 +21,7 @@ references:
 The explicit [SQLite H1 composition](rust-sqlite-oidc-federated.md) uses the same
 protected proof and SDK over matching physical SQLite flow consumption. It does not select SQLite in Server or provide SQLite Admin upstream login.
 
-For server integrators using `broker-control` during the Broker Rust migration.
+For server integrators using `broker-control`.
 This library authenticates an upstream browser identity through a real OIDC
 code exchange and a matching one-use PostgreSQL flow. Its private proof is the
 input for the [federated cookie consumer](rust-admin-federated-cookie.md). The current native executable

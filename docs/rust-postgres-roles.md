@@ -58,4 +58,4 @@ cargo test --locked -p broker-control --test postgres_roles -- --ignored --test-
 
 The existing prepush PostgreSQL phase also includes `postgres_roles`; it remains one phase. Native cases verify definition replacement, fixed built-ins and fresh RBAC reads, SQL rollback and concurrent writers, real SQL permission denial, cancellation, COMMIT uncertainty and shutdown. On 2026-10-10, all three native cases passed in 98.78 seconds. The affected fast control suite passed 36 tests, documentation passed 11 tests, xtask passed six tests, and strict Clippy passed. Linux results do not establish other platforms or full server integration.
 
-This producer introduces no migration, importer or conversion of legacy Go data, schemas, configuration or formats. It uses the Rust store and its current data contracts. OP, HTTP authority, identity mutations, STS and the full Broker migration remain their own deliveries.
+This producer uses the Broker control store and its current data contracts. See the server guide for HTTP authority, identity mutations and STS.
