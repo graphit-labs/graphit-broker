@@ -225,10 +225,26 @@ impl Executor {
                 .pragma_update(None, "trusted_schema", "OFF")
                 .map_err(|error| task_work.sql(error))?;
             schema::initialize(&mut connection, &task_work)?;
-            task_work.check()?;
-            let mode: String = connection
-                .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
-                .map_err(|error| task_work.sql(error))?;
+            let mode: String = loop {
+                task_work.check()?;
+                match connection
+                    .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))
+                {
+                    Ok(mode) => break mode,
+                    // Simultaneous starters can contend for the journal-mode
+                    // lock even after the schema transaction has committed.
+                    // Retry this idempotent pragma only, never the transaction.
+                    Err(error)
+                        if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) =>
+                    {
+                        std::thread::sleep(
+                            end.saturating_duration_since(Instant::now())
+                                .min(std::time::Duration::from_millis(10)),
+                        );
+                    }
+                    Err(error) => return Err(task_work.sql(error)),
+                }
+            };
             let fk: i64 = connection
                 .pragma_query_value(None, "foreign_keys", |row| row.get(0))
                 .map_err(|error| task_work.sql(error))?;

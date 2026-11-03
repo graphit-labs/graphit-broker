@@ -1,8 +1,12 @@
 use super::{Result, SqliteControlError};
+#[cfg(windows)]
 use graphit_fs::{
-    create_private_database_file, create_private_directory, verify_private_directory,
-    verify_private_file,
+    create_private_database_directory as create_private_directory,
+    verify_private_database_directory as verify_private_directory,
 };
+use graphit_fs::{create_private_database_file, verify_private_file};
+#[cfg(not(windows))]
+use graphit_fs::{create_private_directory, verify_private_directory};
 use std::{
     ffi::OsString,
     fs::{self, File},
@@ -100,7 +104,7 @@ impl PrivateDatabase {
             let inspected = graphit_fs::write_relative::open_private_database_file_relative(
                 &self.directory,
                 &sidecar,
-                sidecar.as_encoded_bytes().len(),
+                windows_component_bytes(&sidecar),
                 &mut || Ok(()),
             )
             .map(|_| ());
@@ -166,7 +170,7 @@ fn open_private(parent: &File, name: &std::ffi::OsStr) -> Result<File> {
     graphit_fs::write_relative::open_private_database_file_relative(
         parent,
         name,
-        name.as_encoded_bytes().len(),
+        windows_component_bytes(name),
         &mut || Ok(()),
     )
     .map_err(|_| SqliteControlError::PrivateFile)
@@ -180,9 +184,15 @@ fn private_directory(path: &Path) -> io::Result<File> {
     graphit_fs::write_relative::open_private_directory_relative(
         &ancestor,
         name,
-        name.as_encoded_bytes().len(),
+        windows_component_bytes(name),
         &mut || Ok(()),
     )
+}
+
+#[cfg(windows)]
+fn windows_component_bytes(name: &std::ffi::OsStr) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    name.encode_wide().count() * std::mem::size_of::<u16>()
 }
 
 #[cfg(not(windows))]

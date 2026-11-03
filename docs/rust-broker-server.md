@@ -325,6 +325,8 @@ listener.
 
 The [SQLite owner](rust-sqlite-control.md) creates private directories/files and
 checks existing parent, database and sidecars without repairing permissions.
+On Windows an existing database directory must grant private access to the
+current user and inherit that same access for files created by SQLite.
 Use a local filesystem with correct locking and one deployment-owned database.
 Its exact format is rust-broker-v1 epoch 2; an incompatible database fails startup
 without import, reset or schema conversion. Stop all owners and preserve backups

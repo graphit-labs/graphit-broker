@@ -172,7 +172,7 @@ pub async fn bootstrap_local_administrator(
                     if error == broker_control::SqliteControlError::Deadline {
                         ServerError::Startup
                     } else {
-                        ServerError::SqliteDatabase
+                        ServerError::SqliteDatabase(error)
                     }
                 })
         }
@@ -357,7 +357,7 @@ async fn serve_inner(
         PreparedDatabase::Sqlite(database) => SqliteControlStore::open(database, digester, startup)
             .await
             .map(|store| OwnedDatabase::Sqlite(Arc::new(store)))
-            .map_err(|_| ServerError::SqliteDatabase),
+            .map_err(ServerError::SqliteDatabase),
     };
     let store = match opened {
         Ok(store) => store,

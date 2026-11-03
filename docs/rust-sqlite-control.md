@@ -91,7 +91,13 @@ SqliteControlConfig::new accepts a PathBuf, positive startup/operation/shutdown 
 
 New parent directories and database files are private before content is written: 0700/0600 on Unix and the existing Graphit FS private-access policy on Windows. An existing immediate parent must already be private; an existing database must be a private regular single-link file. Insecure permissions, symlinks and hard links are rejected without chmod repair or adoption. Existing WAL, SHM and rollback journals are checked before driver open. The store retains its private directory and uses SQLite's NOFOLLOW flag. Unix revalidation inspects entries relative to that directory and compares the database's opaque identity, without opening or closing database/sidecar descriptors while SQLite is active. This preserves the driver's POSIX locks when another cooperative connection closes. A private process-local mutex covers prepare, new-file birth and birth-handle drop before SQLite opens; live SQL operations hold no such mutex. Windows retains its native handle, DACL and sharing checks. These cooperative checks do not establish confinement against hostile namespace replacement by another process running as the same user.
 
-SQLite uses the exact already-pinned rusqlite 0.40.2 bundled engine. It opens one physical owned connection and serializes operations. There is no accounting pool, idle timer, connection lifetime, importer, schema upgrade or Go fallback. FK enforcement is on, WAL mode is checked and busy_timeout is explicitly 5000 milliseconds.
+On Windows the database directory has a protected ACL with one file-inheritable
+allow entry for the current user. An existing directory must already meet that
+policy. SQLite's own journal, WAL and SHM files inherit this entry at creation;
+their handles are verified before reuse. The main database still requires an
+explicit protected private ACL.
+
+SQLite uses the exact already-pinned rusqlite 0.40.2 bundled engine. It opens one physical owned connection and serializes operations. There is no accounting pool, idle timer, connection lifetime, importer, schema upgrade or Go fallback. FK enforcement is on, WAL mode is checked and busy_timeout is explicitly 5000 milliseconds. If concurrent startup causes a busy WAL-mode transition after schema initialization, only the idempotent pragma is retried within the existing startup deadline; the transaction is not replayed.
 
 ## Startup and reopening
 
