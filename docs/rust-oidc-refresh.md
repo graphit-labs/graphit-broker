@@ -185,7 +185,7 @@ of the same pair rotates. Run the new focused contract with:
 cargo test --locked --offline -j4 -p broker-control --test postgres_oidc_refresh -- --ignored --exact postgres_native_oidc_shared_pair_contract --test-threads=1
 ```
 
-The maintained Rust pre-push runner already includes the refresh test binary;
+The maintained Rust qualification runner already includes the refresh test binary;
 [end-session](rust-oidc-end-session.md) uses the matching exclusive barrier to
 dispose all families of the signed pair.
 

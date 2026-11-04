@@ -168,7 +168,7 @@ cargo test --locked --offline -p broker-control --test postgres_oidc_authorizati
 
 They use the native executable, TLS PostgreSQL with a NOSUPERUSER application
 owner, current-client create/load and the existing TLS COMMIT-ACK relay.
-The recurring Rust pre-push plan includes the two DCR HTTP contracts before
+The recurring Rust qualification plan includes the two DCR HTTP contracts before
 audit. Focused runner fault tests verify that an actual failed DCR contract
 stops later phases. Command portability alone does not establish Windows/macOS execution.
 

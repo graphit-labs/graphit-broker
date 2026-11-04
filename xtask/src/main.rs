@@ -118,26 +118,31 @@ fn main() -> ExitCode {
             } else {
                 Vec::new()
             };
-            for check in xtask::checks(event, &paths) {
-                match xtask::execute(check) {
-                    Ok(status) if status.success() => {}
-                    Ok(_) => {
-                        eprintln!("broker check failed: {}", check.program);
-                        return ExitCode::FAILURE;
-                    }
-                    Err(_) => {
-                        eprintln!("cannot launch broker check: {}", check.program);
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-            ExitCode::SUCCESS
+            run_checks(xtask::checks(event, &paths))
         }
+        [command] if command == "qualify" => run_checks(xtask::qualification_checks()),
         _ => {
             eprintln!(
-                "usage: xtask build [--debug] [--output PATH] | package [--debug | --binary PATH [--cargo-artifacts PATH]] --output DIR | hook pre-commit|pre-push"
+                "usage: xtask build [--debug] [--output PATH] | package [--debug | --binary PATH [--cargo-artifacts PATH]] --output DIR | hook pre-commit|pre-push | qualify"
             );
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_checks(checks: Vec<xtask::Check>) -> ExitCode {
+    for check in checks {
+        match xtask::execute(check) {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                eprintln!("broker check failed: {} ({status})", check.program);
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("cannot launch broker check: {}: {error}", check.program);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }

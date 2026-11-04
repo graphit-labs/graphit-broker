@@ -198,38 +198,6 @@ binary and the full migration are separate outcomes.
 
 ## Recurring checks
 
-The existing Rust `xtask` hook runner includes
-`cargo test --locked -p broker-storage --all-targets` in its fast pre-commit plan,
-after formatting and clippy. The long pre-push plan includes the explicit ignored
-STS/S3 command above after workspace docs/ordinary tests. It requires the
-qualified PostgreSQL/MinIO fixture; absence or failure is not a skipped pass.
-Existing checks keep their relative order. The saved runner invocations are:
-
-```
-cargo run --locked --quiet -p xtask -- hook pre-commit
-cargo run --locked --quiet -p xtask -- hook pre-push
-```
-
-Adversarial isolated Cargo workspaces execute those exact invocations and prove
-that failing Storage ordinary/ignored commands stop the runner before its next
-check. These tests prove runner failure propagation; they do not substitute for
-the real SQL/STS/S3 qualification. The entire pre-push matrix remains final
-migration integration work. Commands are maintained as Rust argument arrays;
-this delivery executed Linux, not Windows or macOS. The operational fixture's
-pause/resume scenarios use Linux signals and do not claim cross-platform proof.
-
-
-The [Hub credentials HTTP route](rust-hub-storage-credentials-http.md) composes actual authentication, fresh storage admission and AWS issuance; its actual TCP qualification is tracked separately.
-
-The [global Hub SQL library](rust-global-hub-storage-admission.md) is a separate
-nonPROJECT admission contract for Registry/Rules, requiring effective Hub plus
-S3 authority. Its DATA constructor and empty project observer do not grant
-permission. The [Global HTTP extension](rust-global-hub-storage-credentials-http.md)
-consumes that actual grant before issuance; these existing PROJECT/USER contracts
-retain their roots and authority.
-
-The [PROJECT Hub metadata/events extension](rust-project-hub-metadata-events-storage.md)
-adds exact `/hub/metadata` and `/hub/events` roots while preserving registry/artifacts.
-The same issuer consumes actual grants and retains operation/list/prefix bounds.
-Its separate HTTP/SQL/STS/S3 fixture qualifies those server paths; this historical
-issuer qualification does not establish their native codecs, callers or event replay.
+Run `make check` for workspace tests, including the ordinary Storage targets.
+`make qualify` runs the ignored STS/S3 contract and requires the PostgreSQL
+and MinIO fixtures. The pause/resume scenarios use Linux signals.

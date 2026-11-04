@@ -157,16 +157,14 @@ it does not prove SQL application pools, private SQLite files or OP/runtime flow
 
 ## Active development guardrails
 
-`graphit.lock.json` and versioned `.githooks` dispatch the same portable runner:
+The `githooks` section in `.graphit/project.json` configures the Git checks.
+Run `graphit git sync` to register the configured events with Git. Pre-commit
+checks staged paths and workflow syntax. Use `make check` for formatting,
+strict workspace Clippy, documentation tests and ordinary workspace tests.
+Run `make qualify` for the native SQL, storage, rerank, packaging and container
+checks. A failing command stops the sequence.
 
-```text
-cargo run --locked --quiet -p xtask -- hook pre-commit
-cargo run --locked --quiet -p xtask -- hook pre-push
-```
-
-Git activation uses `core.hooksPath=.githooks`. Pre-commit checks staged whitespace and Rust formatting. Affected native Makefile, shell/container and Admin UI paths retain their selected checks. Pre-push runs strict workspace Clippy, Rustdocs and `cargo test --locked --workspace --all-targets`, which includes the ordinary Storage, Security, Control/Now and schema contracts without duplicate subset invocations. Native SQL, storage, rerank, packaging and container phases remain selected separately. The raw NUL-separated Git path inventory is classified without lossy UTF-8 decoding. Unknown events, missing commands and failing children are errors. Installing or running a hook never initiates a push; the complete pre-push pipeline is not required for each partial change.
-
-The specific PROJECT corpus HTTP/STS/S3 contract is also a long pre-push phase,
+The specific PROJECT corpus HTTP/STS/S3 contract is also a qualification phase,
 `PROJECT_CORPUS_HTTP_STS`, after the exact Hub AWS phase and before the audit:
 
 ~~~text
@@ -178,7 +176,7 @@ actual Native/opaque authentication, SQL, STS and signed S3. It does not qualify
 USER/global storage or a native caller/dataset; existing phases remain selected
 in their previous order around this added functional check.
 
-The existing PostgreSQL pre-push phase also runs the ignored real Hub,
+The existing PostgreSQL qualification phase also runs the ignored real Hub,
 PROJECT corpus and [USER Memory SQL admission](rust-user-memory-storage-admission.md)
 contracts. The USER target qualifies SQL admission separately from HTTP/STS/S3.
 Its exact saved invocation is:
@@ -192,12 +190,12 @@ CLI failure loop into a disposable Cargo fixture, omitting only earlier phases.
 A real ignored assertion failure in a storage target exits with failure
 before PostgreSQL sessions. The USER addition reuses this existing runner
 counterproof for its actual target. This qualifies the isolated runner, not a backend or
-the full pre-push pipeline.
+the full qualification suite.
 
 Both storage targets use actual PostgreSQL TLS and authenticated Native/opaque
 factories. The [corpus admission guide](rust-project-corpus-storage-admission.md)
 records the new module isolation contract; [Hub admission](rust-hub-storage-admission.md)
-retains registry/artifacts. This extends the existing long SQL phase; ordinary control tests run in the workspace pre-push phase and other phase selection/order is unchanged.
+retains registry/artifacts. This extends the existing long SQL phase; ordinary control tests run in `make check` and other phase selection/order is unchanged.
 
 Runner guardrails use disposable Git/Cargo fixtures to check that formatting and real test failures stop later phases, preserving staged changes and creating no commit. These validate runner failure handling; native service behavior has its own test targets. Identical commands and source portability do not establish Windows/macOS execution. Build output under `/target/` is ignored.
 
@@ -219,7 +217,7 @@ primary keys retain their lack of explicit `NOT NULL`: ordinary SQLite rowid tab
 permit null in these keys, while PostgreSQL and MySQL physically require non-null.
 The eight composite keys keep their explicitly non-null columns.
 
-The workspace all-target test phase includes the Store `schema_contract` target. The SQL-server pre-push phase uses `cargo test --locked -p broker-store --test sql_servers -- --ignored --test-threads=1`. A Linux execution does not establish Windows/macOS behavior or full MySQL runtime integration.
+The workspace all-target test phase includes the Store `schema_contract` target. The SQL-server qualification phase uses `cargo test --locked -p broker-store --test sql_servers -- --ignored --test-threads=1`. A Linux execution does not establish Windows/macOS behavior or full MySQL runtime integration.
 
 The same saved phase now also runs the actual
 [global Hub SQL contract](rust-global-hub-storage-admission.md), requiring current

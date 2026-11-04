@@ -147,7 +147,7 @@ cargo clippy --locked -j1 -p broker-control -p broker-storage -p broker-presence
 cargo fmt --all --check
 ~~~
 
-The existing long `POSTGRES` pre-push phase includes this real USER SQL target.
+The existing long `POSTGRES` qualification phase includes this real USER SQL target.
 The exact phase, assertion and [SQL gate documentation](rust-sql-schema.md) are
 maintained together, preserving all AWS/PROJECT HTTP phases, hooks and locks.
 Its isolated runner counterproof checks a real Rust assertion failure blocks

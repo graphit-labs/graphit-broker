@@ -29,12 +29,7 @@ jobs:
 
   native-ci:
     needs: stable-tag
-    uses: ./.github/workflows/ci.yml
-    with:
-      code_repository: ${{ vars.GRAPHIT_CODE_REPOSITORY }}
-      code_ref: ${{ vars.GRAPHIT_CODE_REF }}
-    secrets:
-      GRAPHIT_CODE_READ_TOKEN: ${{ secrets.GRAPHIT_CODE_READ_TOKEN }}
+    uses: ./.github/workflows/qualification.yml
 
   # Container validation consumes the same qualified Linux executable.
   publish-container:
@@ -61,39 +56,12 @@ jobs:
           ref: ${{ needs.native-ci.outputs.broker_commit }}
           path: graphit-broker
           persist-credentials: false
-      - name: Require qualified Code source
-        run: |
-          if [ -z "$CODE_REPOSITORY" ] || [ -z "$CODE_REF" ]; then
-            echo "::error::Native CI did not provide a qualified Code source."
-            exit 1
-          fi
-      - name: Checkout qualified Code commit
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CODE_REPOSITORY }}
-          ref: ${{ env.CODE_REF }}
-          path: graphit-code
-          persist-credentials: false
-          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
-      - name: Verify qualified Code inputs
-        run: |
-          if [ "$(git -C ../graphit-code rev-parse --verify HEAD)" != "$CODE_REF" ]; then
-            echo "::error::Code checkout does not match the commit qualified by native CI."
-            exit 1
-          fi
-          test -s .cargo/config.toml
-          for input in .cargo/config.toml crates/graphit-ai/Cargo.toml crates/graphit-http/Cargo.toml crates/graphit-core/Cargo.toml crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE; do
-            if [ ! -s "../graphit-code/$input" ]; then
-              echo "::error::Qualified Code source is missing required input: $input"
-              exit 1
-            fi
-          done
       - name: Set up Rust
         run: |
           rustup toolchain install 1.98.0 --profile minimal
           rustup default 1.98.0
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config
+          sudo apt-get install -y --no-install-recommends build-essential cmake libclang-dev pkg-config
       - name: Download native Linux artifact
         uses: actions/download-artifact@v4
         with:

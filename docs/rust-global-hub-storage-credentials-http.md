@@ -128,7 +128,7 @@ actually consume a binding remain separately qualified by their owner.
 `GLOBAL_HUB_HTTP_STS` follows `USER_MEMORY_HTTP_STS`; the
 [PROJECT Hub metadata/events phase](rust-project-hub-metadata-events-storage.md)
 follows Global and precedes Audit in the
-existing pre-push runner. All other phases, hooks, classifiers and targets remain.
+existing qualification runner. All other phases, hooks, classifiers and targets remain.
 The same exact command is usable on supported platforms:
 
 ~~~text

@@ -147,7 +147,7 @@ phases. Its saved cross-platform entry points remain:
 
 ```text
 cargo run --locked --quiet -p xtask -- hook pre-commit
-cargo run --locked --quiet -p xtask -- hook pre-push
+cargo run --locked --quiet -p xtask -- qualify
 ```
 
 ## Shared upstream browser producer

@@ -95,4 +95,5 @@ The fixture covers raw bytes, ownership/reopen, ranges, key/bucket denial, byte/
 
 Listing/COPY/batch fixture: `cargo test --locked --offline -p broker-storage --test filesystem_listing -- --ignored --exact filesystem_listing_postgres_contract --test-threads=1`. It uses real SQL admission and a production MAC session, checks ordered/delimited pages, bound cursors and URL output, COPY conditions/self-copy/opposite concurrent copies and one create winner, mixed permission/quiet batches and a real symlink. The long hook selects `FILESYSTEM_LISTING` immediately after objects and before audit. Neither component fixture establishes actual S3 wire/signature behavior.
 
-Current `.githooks` scripts and `graphit.lock.json` forward pre-commit/pre-push to the existing `cargo run --locked --quiet -p xtask -- hook <event>` commands. Recovered tsk-f7f9/check chk-5d5ee84ad3c1 records pre-push exit1 in1.19s at Rust FILESYSTEM_S3_GATEWAY, before Audit. That is historical fail-fast evidence, not a broad gate rerun for this unit; no new hook or push was performed.
+Run `make check` for ordinary workspace tests and `make qualify` for the
+explicit S3 gateway and SQL contracts. Qualification stops when a command fails.

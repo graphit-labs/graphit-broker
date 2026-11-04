@@ -1,4 +1,4 @@
-//! Reuse the native platform dependency producer from the paired Graphit AI source.
+//! Reuse the native platform dependency producer from the Graphit AI source selected by Cargo.
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -29,9 +29,12 @@ fn files(root: &Path, directory: &Path, binary: &str, output: &mut Vec<PathBuf>)
     Ok(())
 }
 
-pub(super) fn prepare(root: &Path, platform: &str, binary: &str) -> io::Result<Vec<PathBuf>> {
-    let producer = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../graphit-code/scripts/package-platform-runtime.mjs");
+pub(super) fn prepare(
+    producer: &Path,
+    root: &Path,
+    platform: &str,
+    binary: &str,
+) -> io::Result<Vec<PathBuf>> {
     let result = Command::new("node")
         .arg(producer)
         .args([platform])

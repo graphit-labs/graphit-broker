@@ -5,40 +5,7 @@ on:
     branches: [main, develop, "feature/**"]
   pull_request:
     branches: [main, develop]
-  workflow_call:
-    inputs:
-      code_repository:
-        description: Repository containing the qualified Rust Code source
-        required: true
-        type: string
-      code_ref:
-        description: Explicit Code ref to resolve and record
-        required: true
-        type: string
-    secrets:
-      GRAPHIT_CODE_READ_TOKEN:
-        description: Read access when the configured Code repository is private
-        required: false
-    outputs:
-      code_repository:
-        description: Qualified Code repository
-        value: ${{ jobs.verify.outputs.code_repository }}
-      code_commit:
-        description: Actual Code commit used for qualification
-        value: ${{ jobs.verify.outputs.code_commit }}
-      broker_commit:
-        description: Actual Broker commit used for qualification
-        value: ${{ jobs.verify.outputs.broker_commit }}
   workflow_dispatch:
-    inputs:
-      code_repository:
-        description: Repository containing the qualified Rust Code source
-        required: true
-        type: string
-      code_ref:
-        description: Explicit Code ref to resolve and record
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -53,418 +20,70 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  resolve-sources:
-    name: Resolve reproducible source revisions
+  admin-ui:
+    name: Administration UI syntax
     runs-on: ubuntu-24.04
-    env:
-      CODE_REPOSITORY: ${{ inputs.code_repository || vars.GRAPHIT_CODE_REPOSITORY }}
-      CODE_REF: ${{ inputs.code_ref || vars.GRAPHIT_CODE_REF }}
-    outputs:
-      code_repository: ${{ steps.sources.outputs.repository }}
-      code_commit: ${{ steps.sources.outputs.code_commit }}
-      broker_commit: ${{ steps.sources.outputs.broker_commit }}
-    defaults:
-      run:
-        working-directory: graphit-broker
     steps:
-      - name: Checkout Broker source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          path: graphit-broker
           persist-credentials: false
-      - name: Set up source validation
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Require explicit Code source
-        run: |
-          node -e '
-            for (const name of ["CODE_REPOSITORY", "CODE_REF"]) {
-              const value = process.env[name] || "";
-              if (!value || value !== value.trim()) {
-                console.error("::error::Configure explicit Code repository/ref without empty or surrounding whitespace values.");
-                process.exit(1);
-              }
-            }
-          '
-      - name: Checkout configured Code source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CODE_REPOSITORY }}
-          ref: ${{ env.CODE_REF }}
-          path: graphit-code
-          persist-credentials: false
-          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
-      - name: Record source revisions
-        id: sources
-        run: |
-          {
-            printf 'repository=%s\n' "$CODE_REPOSITORY"
-            printf 'code_commit=%s\n' "$(git -C ../graphit-code rev-parse --verify HEAD)"
-            printf 'broker_commit=%s\n' "$(git rev-parse --verify HEAD)"
-          } >> "$GITHUB_OUTPUT"
+      - run: node scripts/check-admin-ui.cjs
 
-  verify:
-    name: Rust, real SQL/HTTP, and native container
-    needs: resolve-sources
-    runs-on: ubuntu-24.04
-    env:
-      CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}
-      CODE_REF: ${{ needs.resolve-sources.outputs.code_commit }}
-    outputs:
-      code_repository: ${{ steps.code-source.outputs.repository }}
-      code_commit: ${{ steps.code-source.outputs.commit }}
-      broker_commit: ${{ steps.code-source.outputs.broker_commit }}
-    defaults:
-      run:
-        working-directory: graphit-broker
+  rust:
+    name: Rust and local tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-sources.outputs.broker_commit }}
-          path: graphit-broker
           persist-credentials: false
-      - name: Set up frontend syntax checker
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Set up installer and CUDA tooling
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Checkout resolved Code source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CODE_REPOSITORY }}
-          ref: ${{ env.CODE_REF }}
-          path: graphit-code
-          persist-credentials: false
-          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
-      - name: Verify Code inputs and record source
-        id: code-source
+      - name: Set up Rust
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+      - name: Set up Linux native build dependencies
+        if: runner.os == 'Linux'
         run: |
-          test -s .cargo/config.toml
-          for input in .cargo/config.toml scripts/package-platform-runtime.mjs crates/graphit-ai/Cargo.toml crates/graphit-http/Cargo.toml crates/graphit-core/Cargo.toml crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE; do
-            if [ ! -s "../graphit-code/$input" ]; then
-              echo "::error::Configured Code source is missing required input: $input"
-              exit 1
-            fi
-          done
-          code_commit="$(git -C ../graphit-code rev-parse --verify HEAD)"
-          broker_commit="$(git rev-parse --verify HEAD)"
-          {
-            printf 'repository=%s\n' "$CODE_REPOSITORY"
-            printf 'commit=%s\n' "$code_commit"
-            printf 'broker_commit=%s\n' "$broker_commit"
-          } >> "$GITHUB_OUTPUT"
-          {
-            printf 'broker_commit=%s\n' "$broker_commit"
-            printf 'code_repository=%s\n' "$CODE_REPOSITORY"
-            printf 'code_ref=%s\n' "$CODE_REF"
-            printf 'code_commit=%s\n' "$code_commit"
-          } > code-source.txt
-      - name: Set up native toolchain
-        run: |
-          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
-          rustup default 1.98.0
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential gcc-13 g++-13 cmake llvm libclang-dev libssl-dev pkg-config protobuf-compiler libprotobuf-dev patchelf
-          docker info
-      - name: Cache Rust dependencies and artifacts
+          sudo apt-get install -y --no-install-recommends build-essential cmake libclang-dev libssl-dev pkg-config
+      - name: Set up Darwin native build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake pkgconf llvm
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: '2022'
+      - name: Set up Windows native build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git config --global core.longpaths true
+          choco install llvm --yes --no-progress
+          "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> $env:GITHUB_ENV
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          & "$vcpkg/vcpkg.exe" install pkgconf:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw 'Native dependency installation failed.' }
+          "PKG_CONFIG=$vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe" >> $env:GITHUB_ENV
+      - name: Cache Cargo dependencies
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            graphit-broker/target
-          key: broker-rust-1.98-linux-${{ hashFiles('graphit-broker/Cargo.lock', 'graphit-broker/.cargo/config.toml', 'graphit-code/Cargo.lock', 'graphit-code/.cargo/config.toml') }}
-      - name: Install workflow and dependency auditors
-        run: |
-          mkdir -p .build/tools
-          curl --fail --location --silent --show-error https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o .build/tools/actionlint.tar.gz
-          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  .build/tools/actionlint.tar.gz" | sha256sum --check
-          tar -xzf .build/tools/actionlint.tar.gz -C .build/tools actionlint
-          cargo install --locked cargo-audit --version 0.22.2
-      - name: Validate workflows and frontend
-        run: |
-          .build/tools/actionlint
-          node scripts/check-admin-ui.cjs
-          sh -n docker-entrypoint.sh
-          sh -n install.sh
-          python3 scripts/test-install.py
+          key: broker-ci-1.98-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
       - name: Fetch locked dependencies
-        run: cargo fetch --locked
-      - name: Format and strict Rust lint
-        run: |
-          cargo fmt --all --check
-          cargo clippy --locked --offline --workspace --all-targets -- -D warnings
-      - name: Build the paired Code CLI for device login integration
-        working-directory: graphit-code
+        run: cargo +1.98.0 fetch --locked
+      - name: Run ordinary Rust checks
         env:
-          CC: gcc-13
-          CXX: g++-13
-          CARGO_INCREMENTAL: "0"
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          cargo xtask cargo build --locked -p graphit-app --bin graphit
-          cli="$RUNNER_TEMP/graphit-code-cli"
-          install -m 0755 target/debug/graphit "$cli"
-          "$cli" --version
-          cargo clean --locked
-          printf 'GRAPHIT_CODE_CLI=%s\n' "$cli" >> "$GITHUB_ENV"
-      - name: Install CUDA compiler for the Cargo backend
-        uses: Jimver/cuda-toolkit@21aaab8dcb4e9329ae86f60cf6586a9ef3effbea # v0.2.32
-        with:
-          cuda: '12.9.1'
-          method: network
-          sub-packages: '["nvcc", "cudart-dev", "cccl"]'
-          non-cuda-sub-packages: '["libcublas-dev"]'
-      - name: Build the native Cargo CUDA backend
-        run: |
-          mkdir -p .build
-          CMAKE_CUDA_HOST_COMPILER="$(command -v g++-13)" CMAKE_CUDA_ARCHITECTURES='75-real;80-real;86-real;89-real;90-virtual' cargo build --release --locked --offline -p broker-server --features cuda --bin graphit-broker --message-format=json-render-diagnostics > .build/broker-release-artifacts.jsonl
-      - name: Build and verify native installer pair
-        run: |
-          cargo run --release --locked --offline -p xtask -- package --binary target/release/graphit-broker --cargo-artifacts .build/broker-release-artifacts.jsonl --output installer-package
-          (cd installer-package && sha256sum -c graphit-broker-linux-amd64.sha256)
-          printf 'GRAPHIT_BROKER_CONTAINER_PACKAGE=%s\n' "$PWD/installer-package/graphit-broker-linux-amd64.tar.gz" >> "$GITHUB_ENV"
-          tar -xzf installer-package/graphit-broker-linux-amd64.tar.gz
-          cp -R graphit-broker-linux-amd64/. .
-          version="$(./graphit-broker --version)"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v${version#graphit-broker }" ]; then
-            echo "::error::Release tag does not match the native Broker version."
-            exit 1
-          fi
-          printf 'platform=linux-amd64\nversion=%s\n' "${version#graphit-broker }" >> code-source.txt
-      - name: Set up compiler for external S3 test tools
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25.9'
-          cache: false
-      - name: Prepare pinned S3 test tools
-        run: |
-          tools="$RUNNER_TEMP/broker-s3-test-tools"
-          GOBIN="$tools" sh scripts/prepare-s3-test-tools.sh
-          echo "$tools" >> "$GITHUB_PATH"
-      - name: Run maintained real integration gate
-        run: cargo run --locked --offline -p xtask -- hook pre-push
-      - name: Upload qualified native Linux artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-linux-amd64-ci
-          path: |
-            graphit-broker/graphit-broker
-            graphit-broker/graphit-runtime/
-            graphit-broker/code-source.txt
-            graphit-broker/installer-package/graphit-broker-linux-amd64.tar.gz
-            graphit-broker/installer-package/graphit-broker-linux-amd64.sha256
-          if-no-files-found: error
-          retention-days: 1
-
-  package-darwin:
-    name: Native Darwin ARM64 installer pair
-    needs: resolve-sources
-    runs-on: macos-15
-    env:
-      CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}
-      CODE_REF: ${{ needs.resolve-sources.outputs.code_commit }}
-      BROKER_COMMIT: ${{ needs.resolve-sources.outputs.broker_commit }}
-    defaults:
-      run:
-        working-directory: graphit-broker
-    steps:
-      - name: Checkout resolved Broker source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-sources.outputs.broker_commit }}
-          path: graphit-broker
-          persist-credentials: false
-      - name: Checkout resolved Code source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CODE_REPOSITORY }}
-          ref: ${{ env.CODE_REF }}
-          path: graphit-code
-          persist-credentials: false
-          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
-      - name: Verify native host and resolved commits
-        run: |
-          test "$(uname -s)" = Darwin
-          test "$(uname -m)" = arm64
-          test "$(git rev-parse --verify HEAD)" = "$BROKER_COMMIT"
-          test "$(git -C ../graphit-code rev-parse --verify HEAD)" = "$CODE_REF"
-      - name: Verify Code inputs and record source
-        id: code-source
-        run: |
-          test -s .cargo/config.toml
-          for input in .cargo/config.toml scripts/package-platform-runtime.mjs crates/graphit-ai/Cargo.toml crates/graphit-http/Cargo.toml crates/graphit-core/Cargo.toml crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE; do
-            if [ ! -s "../graphit-code/$input" ]; then
-              echo "::error::Configured Code source is missing required input: $input"
-              exit 1
-            fi
-          done
-          code_commit="$(git -C ../graphit-code rev-parse --verify HEAD)"
-          broker_commit="$(git rev-parse --verify HEAD)"
-          {
-            printf 'repository=%s\n' "$CODE_REPOSITORY"
-            printf 'commit=%s\n' "$code_commit"
-            printf 'broker_commit=%s\n' "$broker_commit"
-          } >> "$GITHUB_OUTPUT"
-          {
-            printf 'broker_commit=%s\n' "$broker_commit"
-            printf 'code_repository=%s\n' "$CODE_REPOSITORY"
-            printf 'code_ref=%s\n' "$CODE_REF"
-            printf 'code_commit=%s\n' "$code_commit"
-          } > code-source.txt
-      - name: Set up native package producer
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Set up native Darwin toolchain
-        run: |
-          rustup toolchain install 1.98.0 --profile minimal
-          rustup default 1.98.0
-          brew install cmake pkgconf llvm
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-          clang++ --version
-          cmake --version
-          pkg-config --version
-          printf 'RUSTFLAGS=%s -C link-arg=-Wl,-headerpad_max_install_names\n' "${RUSTFLAGS:-}" >> "$GITHUB_ENV"
-      - name: Fetch locked dependencies
-        run: cargo fetch --locked
-      - name: Build and verify native Darwin installer pair
-        run: |
-          cargo run --release --locked --offline -p xtask -- package --output installer-package
-          (cd installer-package && shasum -a 256 -c graphit-broker-darwin-arm64.sha256)
-          tar -xzf installer-package/graphit-broker-darwin-arm64.tar.gz
-          version="$(./graphit-broker-darwin-arm64/graphit-broker --version)"
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v${version#graphit-broker }" ]; then
-            echo "::error::Release tag does not match the native Darwin Broker version."
-            exit 1
-          fi
-          printf 'platform=darwin-arm64\nversion=%s\n' "${version#graphit-broker }" >> code-source.txt
-      - name: Install and exercise the relocated Darwin package
-        run: |
-          sh install.sh --archive installer-package/graphit-broker-darwin-arm64.tar.gz --dir .build/installed
-          mv .build/installed '.build/relocated α'
-          env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH PATH=/usr/bin:/bin:/usr/sbin:/sbin '.build/relocated α/graphit-broker' --version
-          codesign --verify --strict '.build/relocated α/graphit-broker'
-          export GRAPHIT_TEST_BROKER_BINARY="$PWD/.build/relocated α/graphit-broker"
-          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
-          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
-      - name: Upload native Darwin artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-darwin-arm64-ci
-          path: |
-            graphit-broker/code-source.txt
-            graphit-broker/installer-package/graphit-broker-darwin-arm64.tar.gz
-            graphit-broker/installer-package/graphit-broker-darwin-arm64.sha256
-          if-no-files-found: error
-          retention-days: 1
-
-  package-windows:
-    name: Native Windows AMD64 installer pair
-    needs: resolve-sources
-    runs-on: windows-2022
-    env:
-      CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}
-      CODE_REF: ${{ needs.resolve-sources.outputs.code_commit }}
-      BROKER_COMMIT: ${{ needs.resolve-sources.outputs.broker_commit }}
-    defaults:
-      run:
-        shell: pwsh
-        working-directory: graphit-broker
-    steps:
-      - name: Checkout resolved Broker source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-sources.outputs.broker_commit }}
-          path: graphit-broker
-          persist-credentials: false
-      - name: Checkout resolved Code source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CODE_REPOSITORY }}
-          ref: ${{ env.CODE_REF }}
-          path: graphit-code
-          persist-credentials: false
-          token: ${{ secrets.GRAPHIT_CODE_READ_TOKEN || github.token }}
-      - name: Set up native package producer
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Set up MSVC native tools
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vsversion: '2022'
-      - name: Verify native host, source and native dependencies
-        run: |
-          if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64' -or (git rev-parse --verify HEAD) -cne $env:BROKER_COMMIT -or (git -C ../graphit-code rev-parse --verify HEAD) -cne $env:CODE_REF) { throw 'Wrong host or unqualified source commit.' }
-          git config --global core.longpaths true
-          if ($LASTEXITCODE -ne 0) { throw 'Git long-path configuration failed.' }
-          if (-not (Test-Path -LiteralPath .cargo/config.toml -PathType Leaf)) { throw 'Broker Cargo build configuration missing.' }
-          foreach ($file in @('.cargo/config.toml', 'scripts/package-platform-runtime.mjs', 'crates/graphit-ai/Cargo.toml', 'crates/graphit-http/Cargo.toml', 'crates/graphit-core/Cargo.toml', 'crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE')) {
-            if (-not (Test-Path -LiteralPath (Join-Path ../graphit-code $file) -PathType Leaf)) { throw "Code source input missing: $file" }
-          }
-          @("broker_commit=$env:BROKER_COMMIT", "code_repository=$env:CODE_REPOSITORY", "code_ref=$env:CODE_REF", "code_commit=$env:CODE_REF") | Set-Content -Encoding utf8 code-source.txt
-          rustup toolchain install 1.98.0 --profile minimal
-          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
-          rustup default 1.98.0
-          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkg -or -not $env:VCToolsRedistDir) { throw 'Explicit vcpkg and Visual C++ redist roots are required.' }
-          choco install llvm --yes --no-progress
-          "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> $env:GITHUB_ENV
-          & "$vcpkg/vcpkg.exe" install pkgconf:x64-windows
-          if ($LASTEXITCODE -ne 0) { throw 'Native dependency installation failed.' }
-          "PKG_CONFIG=$vcpkg/installed/x64-windows/tools/pkgconf/pkgconf.exe" >> $env:GITHUB_ENV
-          Get-Command dumpbin.exe, node.exe, cmake.exe | Format-Table Name, Source
-      - name: Build and verify native Windows installer pair
-        run: |
-          cargo fetch --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Locked dependency fetch failed.' }
-          cargo run --release --locked --offline -p xtask -- package --output installer-package
-          if ($LASTEXITCODE -ne 0) { throw 'Native Windows package failed.' }
-          $archive = 'installer-package/graphit-broker-windows-amd64.tar.gz'
-          $expected = ((Get-Content installer-package/graphit-broker-windows-amd64.sha256) -split ' ')[0]
-          if ((Get-FileHash -Algorithm SHA256 $archive).Hash -ine $expected) { throw 'Package checksum mismatch.' }
-          & ./scripts/test-install.ps1 -Archive $archive
-          & ./install.ps1 -Archive $archive -Dir .build/installed
-          $version = & ./.build/installed/graphit-broker.exe --version
-          if ($LASTEXITCODE -ne 0 -or ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne ('v' + $version.Substring('graphit-broker '.Length)))) { throw 'Native version/tag mismatch.' }
-          @('platform=windows-amd64', ('version=' + $version.Substring('graphit-broker '.Length))) | Add-Content -Encoding utf8 code-source.txt
-      - name: Exercise installed native Windows Broker
-        run: |
-          $env:GRAPHIT_TEST_BROKER_BINARY = (Resolve-Path .build/installed/graphit-broker.exe).Path
-          $builderPath = $env:PATH
-          $builderOpenSSLDir = $env:OPENSSL_DIR
-          $builderOpenSSLLibDir = $env:OPENSSL_LIB_DIR
-          $checkout = (Get-Location).Path
-          try {
-            Set-Location -LiteralPath ([IO.Path]::GetTempPath())
-            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
-            Remove-Item Env:OPENSSL_DIR, Env:OPENSSL_LIB_DIR -ErrorAction SilentlyContinue
-            & $env:GRAPHIT_TEST_BROKER_BINARY --version
-            if ($LASTEXITCODE -ne 0) { throw 'Installed package requires a builder runtime or checkout.' }
-          } finally {
-            $env:PATH = $builderPath
-            $env:OPENSSL_DIR = $builderOpenSSLDir
-            $env:OPENSSL_LIB_DIR = $builderOpenSSLLibDir
-            Set-Location -LiteralPath $checkout
-          }
-          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_cli_validates_explicit_backend_without_side_effects -- --exact
-          if ($LASTEXITCODE -ne 0) { throw 'Installed config validation failed.' }
-          cargo test --release --target host-tuple --locked --offline -p broker-server --test sqlite_server sqlite_binary_birth_reopen_and_partial_startup_cleanup -- --ignored --exact
-          if ($LASTEXITCODE -ne 0) { throw 'Installed SQLite lifecycle failed.' }
-      - name: Upload native Windows artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphit-broker-windows-amd64-ci
-          path: |
-            graphit-broker/code-source.txt
-            graphit-broker/installer-package/graphit-broker-windows-amd64.tar.gz
-            graphit-broker/installer-package/graphit-broker-windows-amd64.sha256
-          if-no-files-found: error
-          retention-days: 1
+          CARGO_NET_OFFLINE: "true"
+          RUSTUP_TOOLCHAIN: "1.98.0"
+        run: cargo run --locked -p xtask -- hook pre-push

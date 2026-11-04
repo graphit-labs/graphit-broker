@@ -176,7 +176,7 @@ outside the data volume preserves them when data is replaced.
 cargo test --locked --offline -j4 -p broker-server --test container -- --ignored --exact broker_native_container_contract --test-threads=1
 ```
 
-This existing xtask pre-push phase builds the real Dockerfile in an owned temporary
+The explicit qualification phase builds the real Dockerfile in an owned temporary
 context and runs its actual executable with the maintained PostgreSQL TLS
 NOSUPERUSER fixture, native config and keys. It checks UID/volumes, missing config,
 health/readiness/actual image probe, hooks/order/failures, blocked directories,
@@ -188,19 +188,24 @@ is recorded here.
 
 Set `GRAPHIT_BROKER_CONTAINER_IMAGE` to validate an already built image with the
 same command. The Linux publisher does that before registry login/push; local tests
-never publish. The same xtask gate retains every SQL/HTTP/STS/revocation phase.
-CI also runs formatting, strict Clippy, checksum-verified actionlint and the maintained frontend check.
+never publish. The explicit `make qualify` suite runs SQL, HTTP, STS and revocation contracts.
+Qualification also runs formatting, strict Clippy, checksum-verified actionlint
+and installer checks. The default CI workflow checks the administration UI syntax.
 Workflow syntax is also checked by the active pre-commit hook.
 
 ## CI source and release provenance
 
-Configure `GRAPHIT_CODE_REPOSITORY` and `GRAPHIT_CODE_REF` with an accessible source containing
-the current `graphit-ai`, `graphit-http` and `graphit-core` crates and their locked Cargo dependencies. Reusable/manual CI also accepts
-`code_repository` and `code_ref`. Missing values stop the job before checkout/build; no repository
-or branch is silently selected. Values must be nonempty and have no surrounding whitespace. A private source may use `GRAPHIT_CODE_READ_TOKEN` with read access.
-Checkout credentials are not persisted.
+The default `Native CI` workflow runs ordinary Rust checks on Linux, macOS
+and Windows after fetching locked Cargo dependencies. The separate `Native
+qualification` workflow runs manually or from a stable-tag release. It uses
+Docker for SQL/S3/container contracts and builds installer packages on each
+platform.
 
-Each Cargo job uses sibling `graphit-broker`/`graphit-code` checkouts. Before Cargo, the source guard requires the manifests of `graphit-ai`, `graphit-http` and `graphit-core`, plus `crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE`. Use the complete Code checkout at the configured revision.
+Broker's `Cargo.toml` and `Cargo.lock` select the exact Graphit Code revision for
+the shared crates. A Broker checkout and `cargo fetch --locked` provide those
+sources through Cargo. Qualification records that locked Code revision and the
+Broker commit used by its native jobs.
+
 Linux builds its CUDA backend through the same locked Cargo dependency and the `broker-server/cuda` feature.
 Its CI job provisions the CUDA compiler and development libraries, then the native
 Cargo builder compiles the same engine with CUDA enabled. It does not install a host NVIDIA driver or claim GPU

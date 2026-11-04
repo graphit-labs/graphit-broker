@@ -100,7 +100,6 @@ async fn local(f: &Fixture, raw: Option<&str>) -> Result<Value, Error> {
     ))
 }
 #[tokio::test]
-#[ignore = "real private SQLite, Ed25519 and current opaque authority"]
 async fn sqlite_hub_current_policy_and_identity() {
     let f = Fixture::new().await;
     let db = f.db();
@@ -175,7 +174,6 @@ async fn sqlite_hub_current_policy_and_identity() {
     f.store.shutdown(end()).await.unwrap();
 }
 #[tokio::test]
-#[ignore = "real SQLite reopen, ACL revision and finite failure paths"]
 async fn sqlite_hub_reopen_caps_corruption_deadline_and_closed() {
     let f = Fixture::new().await;
     let db = f.db();
@@ -259,7 +257,6 @@ async fn sqlite_hub_reopen_caps_corruption_deadline_and_closed() {
 }
 
 #[tokio::test]
-#[ignore = "real SQLite Hub snapshot while another connection owns the write lock"]
 async fn sqlite_hub_reads_current_grants_without_a_write_lock() {
     let f = Fixture::new().await;
     let db = f.db();

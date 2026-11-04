@@ -125,7 +125,7 @@ separate native caller journeys verify a binding when actually consumed.
 ## Real qualification and saved gate
 
 `PROJECT_HUB_METADATA_EVENTS_STS` follows `GLOBAL_HUB_HTTP_STS` and precedes Audit
-in the existing pre-push runner. Only its exact target/args, array/assert and
+in the existing qualification runner. Only its exact target/args, array/assert and
 causal guide command were added; all other phases/hooks/classifiers are retained.
 
 ~~~text

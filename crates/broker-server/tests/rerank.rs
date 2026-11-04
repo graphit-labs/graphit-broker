@@ -36,6 +36,14 @@ fn address() -> SocketAddr {
         .local_addr()
         .unwrap()
 }
+fn loopback_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
+}
 fn private(path: &Path, bytes: &[u8]) {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
@@ -144,12 +152,15 @@ async fn start(path: &Path, address: SocketAddr) -> Child {
     .unwrap();
     // The service declaration and private staging parent are prepared before readiness.
     let end = Instant::now() + startup + Duration::from_secs(5);
+    let client = loopback_client();
     loop {
         assert!(
             child.try_wait().unwrap().is_none(),
             "native Broker exited before readiness"
         );
-        if reqwest::get(format!("http://{address}/readyz"))
+        if client
+            .get(format!("http://{address}/readyz"))
+            .send()
             .await
             .is_ok_and(|response| response.status().is_success())
         {
@@ -308,7 +319,7 @@ async fn consumer_scores(
         },
     )
     .unwrap();
-    let discovery = metadata(&reqwest::Client::new(), address).await;
+    let discovery = metadata(&loopback_client(), address).await;
     let advertised = &discovery["services"]["rerank"];
     let descriptor = BrokerRerankService {
         endpoint,
@@ -524,7 +535,6 @@ async fn compiled_rerank_postgres_discovery_private_cache_sdk_and_shutdown() {
     pg.shutdown().unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real SQLite executable, standalone/dual discovery and Code Graphit SDK consumer"]
 async fn compiled_rerank_sqlite_standalone_dual_disabled_and_cache_authority() {
     let (peer, endpoint, signal, job) = peer().await;
     let root = tempfile::tempdir().unwrap();
@@ -532,7 +542,7 @@ async fn compiled_rerank_sqlite_standalone_dual_disabled_and_cache_authority() {
     let (path, issuer) = config(root.path(), address, None, &endpoint);
     let child = start(&path, address).await;
     let db = sqlite_connection(root.path(), &path);
-    let client = reqwest::Client::new();
+    let client = loopback_client();
     let first = jwt(&issuer, "sqlite-a");
     let second = jwt(&issuer, "sqlite-b");
     let body = json!({"query":"query","documents":["a","b","c"]});

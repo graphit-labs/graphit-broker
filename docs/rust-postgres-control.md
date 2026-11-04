@@ -81,7 +81,10 @@ cargo audit --file Cargo.lock --json
 
 The normal control tests exercise typed limits and subprocess ambient inputs. The ignored integration fixture uses a pinned PostgreSQL 17.11 image, fresh ephemeral CA/server certificates, private test files, loopback-only dynamically assigned ports and owned-container cleanup. It exercises the public Rust service against real TLS, schema faults, concurrent opens/consumers, corruption, expiry while waiting, SQL errors, cancellation, pool pressure, COMMIT uncertainty and shutdown. Docker must be installed and usable; an absent engine is a failure, not a skipped pass.
 
-Pre-commit checks whitespace and formatting. Pre-push runs strict workspace Clippy, Rustdocs and `cargo test --locked --workspace --all-targets`, including the ordinary Control contracts. Native PostgreSQL control, identity, role and session tests, SQL-server fixtures and packaging/container checks remain separate pre-push phases. Individual changes run affected functional suites and formatting/Clippy; complete integration and other-platform runtime behavior require their own validation.
+Pre-commit checks whitespace and formatting. `make check` runs strict workspace
+Clippy, documentation tests and ordinary workspace tests, including the
+Control contracts. Use `make qualify` for the PostgreSQL control, identity,
+role and session tests, SQL fixtures and package/container checks.
 
 Runtime write tests verify confirmed deferred COMMIT success and real timeout/disconnect uncertainty. The guarantee that confirmed success is not reclassified after ACK follows the production return path and Tokio Timeout polling its inner future before its timer; the fixture does not claim to force a clock tick between ACK and the synchronous return.
 

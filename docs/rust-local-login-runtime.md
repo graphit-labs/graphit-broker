@@ -109,7 +109,7 @@ cargo test --locked --offline -j4 -p broker-server --test admin_local_login -- -
 cargo test --locked --offline -j4 -p xtask --test guardrails local_login_runtime -- --test-threads=1
 ```
 
-The recurring pre-push runner includes the new phase; its failure oracle runs
+The recurring qualification runner includes the new phase; its failure oracle runs
 both failing Rust contracts and requires later phases to remain blocked.
 Fast gates remain pre-commit. Whole-system integration and other platforms are
 coordinated separately; no gate authorizes push.

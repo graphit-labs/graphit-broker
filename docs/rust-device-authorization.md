@@ -13,12 +13,10 @@ references:
 
 # Native Device authorization
 
-Audience: headless-client integrators, Broker operators and maintainers. The native server
-composes the Device SQL producer (`tsk-50e3`, scope correction `tsk-2080`) with HTTP,
-LOCAL browser authentication and discovery under `tsk-e672`. The focused HTTP and SQL contracts are qualified locally on Linux;
-Auth/CLI integration and the complete migration remain separate work.
+The Broker exposes Device authorization through HTTP discovery and LOCAL browser authentication.
+Graphit Code uses the shared Auth consumer for its CLI Device login.
 
-The new native grant issues an access JWT through the existing
+The native grant issues an access JWT through the existing
 [Broker signing owner](rust-broker-access-issuer.md). A valid JWT does not grant PROJECT access;
 the [current SQL authorization policy](api.md) is separate.
 This Device profile authenticates the LOCAL user and static CLI for the Broker API. It grants
@@ -29,9 +27,8 @@ Any nonempty request, including whitespace, `openid`, `profile`, `offline_access
 name, returns `InvalidScope` before SQL or code generation. Existing Code-grant OIDC scopes
 and offline-access renewal remain unchanged. An API requiring nonempty `required_scopes`
 rejects a Device token; identity claims do not replace that check or PROJECT/RBAC policy.
-The active Device implementation being replaced returned only a LOCAL access bearer with
-the configured access TTL (default ten minutes); its Device-code TTL was a separate ten-minute
-setting. No importer or opaque compatibility path is part of the new grant.
+The access JWT lifetime and the Device-code lifetime are configured independently. Each defaults
+to ten minutes.
 
 ## Headless-client and browser journey
 
@@ -163,12 +160,19 @@ cargo test --locked -p broker-control --test postgres_device -- --ignored --test
 
 The four contracts use the actual PostgreSQL TLS fixture and ordinary SQL role, real Argon2 password verification, native TOTP enrollment and protected recovery codes. They exercise one-use redemption, purpose/client/code isolation, granted-scope admission and JWT claims, terminal states, persisted `slow_down`, local verification, separate PROJECT denial, malformed rows, SQL privilege rollback, concurrency, cancellation and a durable COMMIT whose TLS acknowledgement is withheld. These targets do not establish Auth client persistence or another operating system/backend.
 
-The native HTTP contracts run with `cargo test --locked --offline -j4 -p broker-server --test oauth_device -- --ignored --test-threads=1`. The saved serial pre-push phase runs all three contracts after the Device SQL phase; its guardrail deliberately fails each contract and requires the runner to stop before audit.
+The standard Cargo suite runs the four Device HTTP tests. Run the affected target alone with
+`cargo test --locked --offline -p broker-server --test oauth_device`. Each test starts the real
+Broker on loopback with a private temporary SQLite database. They cover discovery and availability,
+malformed requests, LOCAL password and MFA, consent, polling cadence, signed access, and
+PROJECT denial. The Auth journey uses the same production Device consumer as Graphit Code
+and verifies the resulting identity against the signed token. It needs neither Docker nor a
+separately built Code executable. Code's own `auth_cli::device_tests` covers CLI events and
+account publication, inspection and logout.
 
 ## SQLite LOCAL producer and HTTP consumer
 
 The explicit [SQLite Device API](rust-sqlite-device-authorization.md) composes the
 physical store and actual LOCAL runtime through consent and access-only polling.
-It preserves literal empty scope, recovery before Review,
-one-use consent, persisted cadence and the existing forms/templates. Native Server
-SQLite configuration/dispatch and release acceptance remain separate work.
+The Broker selects this producer for its private SQLite configuration. The HTTP contract
+preserves literal empty scope, recovery before Review, one-use consent, persisted cadence,
+and the existing forms.

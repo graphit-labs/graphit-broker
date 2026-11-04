@@ -43,7 +43,7 @@ UserInfo is an explicit profile operation. JWT consumers keep local verification
 
 Control owns `service/oidc_userinfo.rs`, the shared strict principal parser and current LOCAL identity reader. Presence owns `oauth_userinfo.rs`; Server runtime mounts it with the common store/verifier/upstream trust owner and advertises only the productive route.
 
-The existing Rust pre-push runner includes the same invocation across supported operating systems:
+The existing Rust qualification runner includes the same invocation across supported operating systems:
 
 ```text
 cargo test --locked --offline -j4 -p broker-server --test oauth_userinfo -- --ignored --test-threads=1

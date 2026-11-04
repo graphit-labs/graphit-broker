@@ -129,7 +129,7 @@ with family revocation/reuse and required LOCAL password change, and durable
 COMMIT with its ACK withheld. The maintained Rust gate includes this phase:
 
 ```text
-cargo run --locked --offline -p xtask -- hook pre-push
+cargo run --locked --offline -p xtask -- qualify
 ```
 
 The guardrails execute four deliberately failing compiled Rust test cases to verify that each failure blocks later phases. UserInfo/discovery/revocation are affected regressions. These tests do not establish hosted CI, other platforms or complete Broker integration.

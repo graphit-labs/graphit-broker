@@ -194,12 +194,12 @@ code exchange through the programmatic H1 producer, then consumes the cookie ove
 Native HTTP; it does not claim a native browser callback route. Response bounds
 are charged while accumulating the catalog, before project/capability expansion.
 
-The active `xtask` pre-push plan runs both aggregate read suites before later
-PROJECT, Presence and audit integration. Pre-commit runs whitespace and formatting checks; workspace Clippy and ordinary tests run in pre-push. The saved runner is:
+The explicit `xtask` qualification plan runs both aggregate read suites before later
+PROJECT, Presence and audit integration. Pre-commit runs whitespace and formatting checks; workspace Clippy and ordinary tests run in `make check`. The saved runner is:
 
 ```text
 cargo run --locked --quiet -p xtask -- hook pre-commit
-cargo run --locked --quiet -p xtask -- hook pre-push
+cargo run --locked --quiet -p xtask -- qualify
 ```
 
 Running a hook does not authorize a push. Platform-specific execution and failures

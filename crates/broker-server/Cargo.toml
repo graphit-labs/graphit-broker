@@ -16,11 +16,11 @@ path = "src/main.rs"
 cuda = ["graphit-ai/cuda"]
 
 [dependencies]
-graphit-auth = { path = "../../../graphit-code/crates/graphit-auth", version = "=0.1.0" }
-graphit-ai = { path = "../../../graphit-code/crates/graphit-ai", version = "=0.1.0" }
-graphit-http = { path = "../../../graphit-code/crates/graphit-http", version = "=0.1.0" }
-graphit-core = { path = "../../../graphit-code/crates/graphit-core", version = "=0.1.0", features = ["async-cancel"] }
-graphit-fs = { path = "../../../graphit-code/crates/graphit-fs", version = "=0.1.0" }
+graphit-auth = { workspace = true }
+graphit-ai = { workspace = true }
+graphit-http = { workspace = true }
+graphit-core = { workspace = true, features = ["async-cancel"] }
+graphit-fs = { workspace = true }
 totp-rs = { version = "=6.0.0", default-features = false, features = ["alloc", "otpauth"] }
 broker-control = { path = "../broker-control" }
 broker-security = { path = "../broker-security" }

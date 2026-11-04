@@ -199,8 +199,9 @@ pub fn package(
         }
     };
     let payload = stage.path.join("payload");
-    let (mut assets, package_id) = notices::collect(&payload)?;
-    let runtime = notices::runtime_inputs(artifacts, binary, &package_id)?;
+    let source = notices::collect(&payload)?;
+    let runtime = notices::runtime_inputs(artifacts, binary, &source.engine_package_id)?;
+    let mut assets = source.notices;
     version(binary, &runtime.search)?;
     // Transform a staged copy only; supplied qualified executables remain intact.
     let packaged = payload.join(binary_name(platform));
@@ -210,7 +211,12 @@ pub fn package(
             &payload, binary, &packaged, &assets, &runtime,
         )?);
     } else {
-        assets = platform_runtime::prepare(&payload, platform, binary_name(platform))?;
+        assets = platform_runtime::prepare(
+            &source.platform_producer,
+            &payload,
+            platform,
+            binary_name(platform),
+        )?;
     }
     version(&packaged, &[])?;
     assets.sort();

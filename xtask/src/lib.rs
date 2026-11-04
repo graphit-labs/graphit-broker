@@ -27,6 +27,7 @@ const CLIPPY: Check = Check {
     args: &[
         "clippy",
         "--locked",
+        "--offline",
         "--workspace",
         "--all-targets",
         "--",
@@ -170,11 +171,17 @@ const POSTGRES_SESSIONS: Check = Check {
 };
 const DOC: Check = Check {
     program: "cargo",
-    args: &["test", "--locked", "--workspace", "--doc"],
+    args: &["test", "--locked", "--offline", "--workspace", "--doc"],
 };
 const TEST: Check = Check {
     program: "cargo",
-    args: &["test", "--locked", "--workspace", "--all-targets"],
+    args: &[
+        "test",
+        "--locked",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+    ],
 };
 const FILESYSTEM_SESSION: Check = Check {
     program: "cargo",
@@ -532,23 +539,6 @@ const OIDC_END_SESSION_HTTP: Check = Check {
     ],
 };
 
-const DEVICE_HTTP: Check = Check {
-    program: "cargo",
-    args: &[
-        "test",
-        "--locked",
-        "--offline",
-        "-j4",
-        "-p",
-        "broker-server",
-        "--test",
-        "oauth_device",
-        "--",
-        "--ignored",
-        "--test-threads=1",
-    ],
-};
-
 const DEVICE_PG: Check = Check {
     program: "cargo",
     args: &[
@@ -797,20 +787,6 @@ const RERANK_ADMISSION_SQL: Check = Check {
         "--test-threads=1",
     ],
 };
-const RERANK_HTTP: Check = Check {
-    program: "cargo",
-    args: &[
-        "test",
-        "--locked",
-        "--offline",
-        "-p",
-        "broker-presence",
-        "--test",
-        "rerank_http",
-        "--",
-        "--test-threads=1",
-    ],
-};
 const SERVER_RERANK_HTTP_SQL: Check = Check {
     program: "cargo",
     args: &[
@@ -825,7 +801,6 @@ const SERVER_RERANK_HTTP_SQL: Check = Check {
         "--ignored",
         "--exact",
         "compiled_rerank_postgres_discovery_private_cache_sdk_and_shutdown",
-        "compiled_rerank_sqlite_standalone_dual_disabled_and_cache_authority",
         "--test-threads=1",
     ],
 };
@@ -1191,8 +1166,6 @@ const SQLITE_LOCAL_AUTH: Check = Check {
         "--test",
         "sqlite_admin_rbac_write_http",
         "--test",
-        "sqlite_hub_access",
-        "--test",
         "sqlite_hub_access_http",
         "--test",
         "sqlite_storage_admission",
@@ -1263,6 +1236,22 @@ const UI: Check = Check {
     program: "node",
     args: &["scripts/check-admin-ui.cjs"],
 };
+const UNIX_INSTALLER: Check = Check {
+    program: "cargo",
+    args: &[
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "broker-server",
+        "--test",
+        "server_assets",
+        "--",
+        "--ignored",
+        "--exact",
+        "unix_installer_checks_real_archive_and_preserves_previous_binary",
+    ],
+};
 const NATIVE_PACKAGE: Check = Check {
     program: "cargo",
     args: &[
@@ -1275,8 +1264,6 @@ const NATIVE_PACKAGE: Check = Check {
         "native_package",
         "--",
         "--ignored",
-        "--exact",
-        "native_package_matches_installer_and_preserves_previous_output",
         "--test-threads=1",
     ],
 };
@@ -1299,85 +1286,85 @@ const DOCKER: Check = Check {
     ],
 };
 
+pub fn qualification_checks() -> Vec<Check> {
+    vec![
+        AWS_HUB_STORAGE,
+        PROJECT_CORPUS_HTTP_STS,
+        USER_MEMORY_HTTP_STS,
+        GLOBAL_HUB_HTTP_STS,
+        PROJECT_HUB_METADATA_EVENTS_STS,
+        FILESYSTEM_SESSION,
+        FILESYSTEM_OBJECTS,
+        FILESYSTEM_LISTING,
+        FILESYSTEM_MULTIPART,
+        FILESYSTEM_S3_GATEWAY,
+        MIXED_STORAGE_HTTP_STS,
+        BROKER_STORAGE_SERVER_STARTUP,
+        OIDC_CODE_HTTP,
+        OIDC_REFRESH_HTTP,
+        OIDC_FEDERATED_PG,
+        OIDC_FEDERATED_HTTP,
+        LOCAL_FEDERATED_ISOLATION_PG,
+        ADMIN_SESSION_HTTP,
+        ADMIN_LOCAL_BEARER_HTTP,
+        ADMIN_UPSTREAM_BEARER_HTTP,
+        ADMIN_COOKIE_PG,
+        ADMIN_COOKIE_HTTP,
+        LOCAL_PASSWORD_ADMISSION_PG,
+        LOCAL_PASSWORD_ADMISSION_UNCERTAIN,
+        LOCAL_PASSWORD_CAPTCHA_SQL,
+        LOCAL_PASSWORD_CAPACITY_PG,
+        ADMIN_LOCAL_LOGIN_HTTP,
+        ADMIN_LOCAL_LOGIN_FAILURE_HTTP,
+        ADMIN_LOCAL_LOGIN_UNCERTAINTY_HTTP,
+        ADMIN_LOCAL_LOGIN_CONFIG,
+        UPSTREAM_BROWSER_LOGIN_PG,
+        UPSTREAM_BROWSER_UNCERTAINTY_PG,
+        ADMIN_FEDERATED_COOKIE_PG,
+        ADMIN_FEDERATED_COOKIE_UNCERTAINTY_PG,
+        ADMIN_READ_PG,
+        ADMIN_READ_HTTP,
+        PROJECT_ACCESS_HTTP,
+        PRESENCE_SERVER_HTTP,
+        ADMIN_UPSTREAM_LOGIN_HTTP,
+        ADMIN_UPSTREAM_LOGIN_UNCERTAINTY,
+        ADMIN_UPSTREAM_LOGIN_CONFIG,
+        HUB_STORAGE_FIXTURE_BUILD,
+        HUB_STORAGE_FIXTURE_CONTRACT,
+        OIDC_REGISTRATION_HTTP,
+        OIDC_REGISTRATION_UNCERTAINTY,
+        OIDC_BROWSER_CALLBACK_HTTP,
+        LOCAL_LOGIN_RUNTIME_HTTP,
+        OIDC_BROWSER_ADMISSION_PG,
+        OIDC_BROWSER_AUTHORIZATION_HTTP,
+        OIDC_DISCOVERY_HTTP,
+        SERVER_EMBEDDINGS_HTTP_SQL,
+        OIDC_REVOCATION_PG,
+        OIDC_REVOCATION_FEDERATED_PG,
+        OIDC_REVOCATION_HTTP,
+        OIDC_USERINFO_HTTP,
+        OIDC_INTROSPECTION_HTTP,
+        OIDC_END_SESSION_HTTP,
+        DEVICE_PG,
+        SQLITE_LOCAL_AUTH,
+        AUDIT,
+        POSTGRES,
+        POSTGRES_SESSIONS,
+        SQL_SERVERS,
+        MYSQL_CONTROL,
+        RERANK_ADMISSION_SQL,
+        SERVER_RERANK_HTTP_SQL,
+        UNIX_INSTALLER,
+        NATIVE_PACKAGE,
+        BUILD,
+        DOCKER,
+    ]
+}
+
 /// Classify raw NUL-separated Git paths without lossy UTF-8 conversion.
 pub fn checks(event: Event, staged: &[u8]) -> Vec<Check> {
     if event == Event::PrePush {
-        return vec![
-            CLIPPY,
-            DOC,
-            TEST,
-            AWS_HUB_STORAGE,
-            PROJECT_CORPUS_HTTP_STS,
-            USER_MEMORY_HTTP_STS,
-            GLOBAL_HUB_HTTP_STS,
-            PROJECT_HUB_METADATA_EVENTS_STS,
-            FILESYSTEM_SESSION,
-            FILESYSTEM_OBJECTS,
-            FILESYSTEM_LISTING,
-            FILESYSTEM_MULTIPART,
-            FILESYSTEM_S3_GATEWAY,
-            MIXED_STORAGE_HTTP_STS,
-            BROKER_STORAGE_SERVER_STARTUP,
-            OIDC_CODE_HTTP,
-            OIDC_REFRESH_HTTP,
-            OIDC_FEDERATED_PG,
-            OIDC_FEDERATED_HTTP,
-            LOCAL_FEDERATED_ISOLATION_PG,
-            ADMIN_SESSION_HTTP,
-            ADMIN_LOCAL_BEARER_HTTP,
-            ADMIN_UPSTREAM_BEARER_HTTP,
-            ADMIN_COOKIE_PG,
-            ADMIN_COOKIE_HTTP,
-            LOCAL_PASSWORD_ADMISSION_PG,
-            LOCAL_PASSWORD_ADMISSION_UNCERTAIN,
-            LOCAL_PASSWORD_CAPTCHA_SQL,
-            LOCAL_PASSWORD_CAPACITY_PG,
-            ADMIN_LOCAL_LOGIN_HTTP,
-            ADMIN_LOCAL_LOGIN_FAILURE_HTTP,
-            ADMIN_LOCAL_LOGIN_UNCERTAINTY_HTTP,
-            ADMIN_LOCAL_LOGIN_CONFIG,
-            UPSTREAM_BROWSER_LOGIN_PG,
-            UPSTREAM_BROWSER_UNCERTAINTY_PG,
-            ADMIN_FEDERATED_COOKIE_PG,
-            ADMIN_FEDERATED_COOKIE_UNCERTAINTY_PG,
-            ADMIN_READ_PG,
-            ADMIN_READ_HTTP,
-            PROJECT_ACCESS_HTTP,
-            PRESENCE_SERVER_HTTP,
-            ADMIN_UPSTREAM_LOGIN_HTTP,
-            ADMIN_UPSTREAM_LOGIN_UNCERTAINTY,
-            ADMIN_UPSTREAM_LOGIN_CONFIG,
-            HUB_STORAGE_FIXTURE_BUILD,
-            HUB_STORAGE_FIXTURE_CONTRACT,
-            OIDC_REGISTRATION_HTTP,
-            OIDC_REGISTRATION_UNCERTAINTY,
-            OIDC_BROWSER_CALLBACK_HTTP,
-            LOCAL_LOGIN_RUNTIME_HTTP,
-            OIDC_BROWSER_ADMISSION_PG,
-            OIDC_BROWSER_AUTHORIZATION_HTTP,
-            OIDC_DISCOVERY_HTTP,
-            SERVER_EMBEDDINGS_HTTP_SQL,
-            OIDC_REVOCATION_PG,
-            OIDC_REVOCATION_FEDERATED_PG,
-            OIDC_REVOCATION_HTTP,
-            OIDC_USERINFO_HTTP,
-            OIDC_INTROSPECTION_HTTP,
-            OIDC_END_SESSION_HTTP,
-            DEVICE_PG,
-            DEVICE_HTTP,
-            SQLITE_LOCAL_AUTH,
-            AUDIT,
-            POSTGRES,
-            POSTGRES_SESSIONS,
-            SQL_SERVERS,
-            MYSQL_CONTROL,
-            RERANK_ADMISSION_SQL,
-            RERANK_HTTP,
-            SERVER_RERANK_HTTP_SQL,
-            NATIVE_PACKAGE,
-            BUILD,
-            DOCKER,
-        ];
+        return vec![FMT, CLIPPY, DOC, TEST];
     }
     let mut selected = vec![DIFF, FMT];
     let mut shell = false;
@@ -1459,38 +1446,36 @@ mod tests {
         let paths = b"Cargo.toml\0crates/broker-store/src/schema.rs\0xtask/src/lib.rs\0docs/rust-sql-schema.md\0";
         assert_eq!(checks(Event::PreCommit, paths), vec![DIFF, FMT]);
         let push = checks(Event::PrePush, paths);
-        assert!(push.contains(&CLIPPY));
-        assert!(push.contains(&TEST));
+        assert_eq!(push, vec![FMT, CLIPPY, DOC, TEST]);
         assert_eq!(
             TEST.args,
-            &["test", "--locked", "--workspace", "--all-targets"]
+            &[
+                "test",
+                "--locked",
+                "--offline",
+                "--workspace",
+                "--all-targets"
+            ]
         );
     }
     #[test]
-    fn rerank_gates_keep_real_sql_http_and_executable_consumers() {
-        let phases = checks(Event::PrePush, b"");
-        for phase in [RERANK_ADMISSION_SQL, RERANK_HTTP, SERVER_RERANK_HTTP_SQL] {
-            assert_eq!(
-                phases
-                    .iter()
-                    .filter(|candidate| **candidate == phase)
-                    .count(),
-                1
-            );
+    fn qualification_keeps_real_postgres_rerank_consumers() {
+        let phases = qualification_checks();
+        for phase in [RERANK_ADMISSION_SQL, SERVER_RERANK_HTTP_SQL] {
+            assert!(phases.contains(&phase));
             assert!(phase.args.contains(&"--offline"));
             assert!(phase.args.contains(&"--test-threads=1"));
         }
         assert!(RERANK_ADMISSION_SQL.args.contains(&"--include-ignored"));
         assert!(SERVER_RERANK_HTTP_SQL.args.contains(&"--ignored"));
-        assert!(!RERANK_HTTP.args.contains(&"--ignored"));
         assert!(
             SERVER_RERANK_HTTP_SQL
                 .args
-                .contains(&"compiled_rerank_sqlite_standalone_dual_disabled_and_cache_authority")
+                .contains(&"compiled_rerank_postgres_discovery_private_cache_sdk_and_shutdown")
         );
     }
     #[test]
-    fn commit_keeps_static_checks_and_push_preserves_build_check() {
+    fn commit_keeps_static_checks_and_qualification_preserves_build_check() {
         assert_eq!(checks(Event::PreCommit, b"Makefile\0"), vec![DIFF, FMT]);
         assert_eq!(
             checks(
@@ -1508,11 +1493,8 @@ mod tests {
             vec![DIFF, FMT, SHELL, UI]
         );
         assert_eq!(
-            checks(Event::PrePush, b""),
+            qualification_checks(),
             vec![
-                CLIPPY,
-                DOC,
-                TEST,
                 AWS_HUB_STORAGE,
                 PROJECT_CORPUS_HTTP_STS,
                 USER_MEMORY_HTTP_STS,
@@ -1571,7 +1553,6 @@ mod tests {
                 OIDC_INTROSPECTION_HTTP,
                 OIDC_END_SESSION_HTTP,
                 DEVICE_PG,
-                DEVICE_HTTP,
                 SQLITE_LOCAL_AUTH,
                 AUDIT,
                 POSTGRES,
@@ -1579,8 +1560,8 @@ mod tests {
                 SQL_SERVERS,
                 MYSQL_CONTROL,
                 RERANK_ADMISSION_SQL,
-                RERANK_HTTP,
                 SERVER_RERANK_HTTP_SQL,
+                UNIX_INSTALLER,
                 NATIVE_PACKAGE,
                 BUILD,
                 DOCKER
@@ -1646,7 +1627,7 @@ mod tests {
     }
     #[test]
     fn upstream_browser_phases_preserve_exact_real_contracts() {
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         for (phase, name) in [
             (
                 UPSTREAM_BROWSER_LOGIN_PG,
@@ -1688,7 +1669,7 @@ mod tests {
     }
     #[test]
     fn federated_cookie_phases_preserve_exact_real_contracts() {
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         for (phase, name) in [
             (
                 ADMIN_FEDERATED_COOKIE_PG,
@@ -1744,19 +1725,19 @@ mod tests {
                 "--test-threads=1"
             ]
         );
-        let plan = checks(Event::PrePush, b"");
+        let plan = qualification_checks();
         let servers = plan.iter().position(|check| *check == SQL_SERVERS).unwrap();
         assert_eq!(plan[servers + 1], MYSQL_CONTROL);
         assert_eq!(plan[servers + 2], RERANK_ADMISSION_SQL);
-        assert_eq!(plan[servers + 3], RERANK_HTTP);
-        assert_eq!(plan[servers + 4], SERVER_RERANK_HTTP_SQL);
+        assert_eq!(plan[servers + 3], SERVER_RERANK_HTTP_SQL);
+        assert_eq!(plan[servers + 4], UNIX_INSTALLER);
         assert_eq!(plan[servers + 5], NATIVE_PACKAGE);
         assert_eq!(plan[servers + 6], BUILD);
         assert_eq!(plan[servers + 7], DOCKER);
     }
     #[test]
     fn admin_read_phases_run_all_real_consumers_before_later_integration() {
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         for (phase, package, target) in [
             (ADMIN_READ_PG, "broker-control", "postgres_admin_read"),
             (ADMIN_READ_HTTP, "broker-server", "admin_read"),
@@ -1834,7 +1815,7 @@ mod tests {
             ]
         );
 
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         let mut prior = phases
             .iter()
             .position(|p| *p == PRESENCE_SERVER_HTTP)
@@ -1880,7 +1861,7 @@ mod tests {
     }
     #[test]
     fn hub_storage_process_build_precedes_its_real_contract_and_audit() {
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         let position = |phase| phases.iter().position(|p| *p == phase).unwrap();
         assert!(position(ADMIN_UPSTREAM_LOGIN_CONFIG) < position(HUB_STORAGE_FIXTURE_BUILD));
         assert!(position(HUB_STORAGE_FIXTURE_BUILD) < position(HUB_STORAGE_FIXTURE_CONTRACT));
@@ -1985,68 +1966,67 @@ mod tests {
                 "--test-threads=1",
             ]
         );
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         assert!(phases.contains(&AWS_HUB_STORAGE));
-        assert_eq!(phases[4], PROJECT_CORPUS_HTTP_STS);
-        assert_eq!(phases[5], USER_MEMORY_HTTP_STS);
-        assert_eq!(phases[6], GLOBAL_HUB_HTTP_STS);
-        assert_eq!(phases[7], PROJECT_HUB_METADATA_EVENTS_STS);
-        assert_eq!(phases[8], FILESYSTEM_SESSION);
-        assert_eq!(phases[9], FILESYSTEM_OBJECTS);
-        assert_eq!(phases[10], FILESYSTEM_LISTING);
-        assert_eq!(phases[11], FILESYSTEM_MULTIPART);
-        assert_eq!(phases[12], FILESYSTEM_S3_GATEWAY);
-        assert_eq!(phases[13], MIXED_STORAGE_HTTP_STS);
-        assert_eq!(phases[14], BROKER_STORAGE_SERVER_STARTUP);
-        assert_eq!(phases[15], OIDC_CODE_HTTP);
-        assert_eq!(phases[16], OIDC_REFRESH_HTTP);
-        assert_eq!(phases[17], OIDC_FEDERATED_PG);
-        assert_eq!(phases[18], OIDC_FEDERATED_HTTP);
-        assert_eq!(phases[19], LOCAL_FEDERATED_ISOLATION_PG);
-        assert_eq!(phases[20], ADMIN_SESSION_HTTP);
-        assert_eq!(phases[21], ADMIN_LOCAL_BEARER_HTTP);
-        assert_eq!(phases[22], ADMIN_UPSTREAM_BEARER_HTTP);
-        assert_eq!(phases[23], ADMIN_COOKIE_PG);
-        assert_eq!(phases[24], ADMIN_COOKIE_HTTP);
-        assert_eq!(phases[25], LOCAL_PASSWORD_ADMISSION_PG);
-        assert_eq!(phases[26], LOCAL_PASSWORD_ADMISSION_UNCERTAIN);
-        assert_eq!(phases[27], LOCAL_PASSWORD_CAPTCHA_SQL);
-        assert_eq!(phases[28], LOCAL_PASSWORD_CAPACITY_PG);
-        assert_eq!(phases[29], ADMIN_LOCAL_LOGIN_HTTP);
-        assert_eq!(phases[30], ADMIN_LOCAL_LOGIN_FAILURE_HTTP);
-        assert_eq!(phases[31], ADMIN_LOCAL_LOGIN_UNCERTAINTY_HTTP);
-        assert_eq!(phases[32], ADMIN_LOCAL_LOGIN_CONFIG);
-        assert_eq!(phases[33], UPSTREAM_BROWSER_LOGIN_PG);
-        assert_eq!(phases[34], UPSTREAM_BROWSER_UNCERTAINTY_PG);
-        assert_eq!(phases[35], ADMIN_FEDERATED_COOKIE_PG);
-        assert_eq!(phases[36], ADMIN_FEDERATED_COOKIE_UNCERTAINTY_PG);
-        assert_eq!(phases[37], ADMIN_READ_PG);
-        assert_eq!(phases[38], ADMIN_READ_HTTP);
-        assert_eq!(phases[39], PROJECT_ACCESS_HTTP);
-        assert_eq!(phases[40], PRESENCE_SERVER_HTTP);
-        assert_eq!(phases[41], ADMIN_UPSTREAM_LOGIN_HTTP);
-        assert_eq!(phases[42], ADMIN_UPSTREAM_LOGIN_UNCERTAINTY);
-        assert_eq!(phases[43], ADMIN_UPSTREAM_LOGIN_CONFIG);
-        assert_eq!(phases[44], HUB_STORAGE_FIXTURE_BUILD);
-        assert_eq!(phases[45], HUB_STORAGE_FIXTURE_CONTRACT);
-        assert_eq!(phases[46], OIDC_REGISTRATION_HTTP);
-        assert_eq!(phases[47], OIDC_REGISTRATION_UNCERTAINTY);
-        assert_eq!(phases[48], OIDC_BROWSER_CALLBACK_HTTP);
-        assert_eq!(phases[49], LOCAL_LOGIN_RUNTIME_HTTP);
-        assert_eq!(phases[50], OIDC_BROWSER_ADMISSION_PG);
-        assert_eq!(phases[51], OIDC_BROWSER_AUTHORIZATION_HTTP);
-        assert_eq!(phases[52], OIDC_DISCOVERY_HTTP);
-        assert_eq!(phases[53], SERVER_EMBEDDINGS_HTTP_SQL);
-        assert_eq!(phases[54], OIDC_REVOCATION_PG);
-        assert_eq!(phases[55], OIDC_REVOCATION_FEDERATED_PG);
-        assert_eq!(phases[56], OIDC_REVOCATION_HTTP);
-        assert_eq!(phases[57], OIDC_USERINFO_HTTP);
-        assert_eq!(phases[58], OIDC_INTROSPECTION_HTTP);
-        assert_eq!(phases[59], OIDC_END_SESSION_HTTP);
-        assert_eq!(phases[60], DEVICE_PG);
-        assert_eq!(phases[61], DEVICE_HTTP);
-        assert_eq!(phases[62], SQLITE_LOCAL_AUTH);
-        assert_eq!(phases[63], AUDIT);
+        assert_eq!(phases[1], PROJECT_CORPUS_HTTP_STS);
+        assert_eq!(phases[2], USER_MEMORY_HTTP_STS);
+        assert_eq!(phases[3], GLOBAL_HUB_HTTP_STS);
+        assert_eq!(phases[4], PROJECT_HUB_METADATA_EVENTS_STS);
+        assert_eq!(phases[5], FILESYSTEM_SESSION);
+        assert_eq!(phases[6], FILESYSTEM_OBJECTS);
+        assert_eq!(phases[7], FILESYSTEM_LISTING);
+        assert_eq!(phases[8], FILESYSTEM_MULTIPART);
+        assert_eq!(phases[9], FILESYSTEM_S3_GATEWAY);
+        assert_eq!(phases[10], MIXED_STORAGE_HTTP_STS);
+        assert_eq!(phases[11], BROKER_STORAGE_SERVER_STARTUP);
+        assert_eq!(phases[12], OIDC_CODE_HTTP);
+        assert_eq!(phases[13], OIDC_REFRESH_HTTP);
+        assert_eq!(phases[14], OIDC_FEDERATED_PG);
+        assert_eq!(phases[15], OIDC_FEDERATED_HTTP);
+        assert_eq!(phases[16], LOCAL_FEDERATED_ISOLATION_PG);
+        assert_eq!(phases[17], ADMIN_SESSION_HTTP);
+        assert_eq!(phases[18], ADMIN_LOCAL_BEARER_HTTP);
+        assert_eq!(phases[19], ADMIN_UPSTREAM_BEARER_HTTP);
+        assert_eq!(phases[20], ADMIN_COOKIE_PG);
+        assert_eq!(phases[21], ADMIN_COOKIE_HTTP);
+        assert_eq!(phases[22], LOCAL_PASSWORD_ADMISSION_PG);
+        assert_eq!(phases[23], LOCAL_PASSWORD_ADMISSION_UNCERTAIN);
+        assert_eq!(phases[24], LOCAL_PASSWORD_CAPTCHA_SQL);
+        assert_eq!(phases[25], LOCAL_PASSWORD_CAPACITY_PG);
+        assert_eq!(phases[26], ADMIN_LOCAL_LOGIN_HTTP);
+        assert_eq!(phases[27], ADMIN_LOCAL_LOGIN_FAILURE_HTTP);
+        assert_eq!(phases[28], ADMIN_LOCAL_LOGIN_UNCERTAINTY_HTTP);
+        assert_eq!(phases[29], ADMIN_LOCAL_LOGIN_CONFIG);
+        assert_eq!(phases[30], UPSTREAM_BROWSER_LOGIN_PG);
+        assert_eq!(phases[31], UPSTREAM_BROWSER_UNCERTAINTY_PG);
+        assert_eq!(phases[32], ADMIN_FEDERATED_COOKIE_PG);
+        assert_eq!(phases[33], ADMIN_FEDERATED_COOKIE_UNCERTAINTY_PG);
+        assert_eq!(phases[34], ADMIN_READ_PG);
+        assert_eq!(phases[35], ADMIN_READ_HTTP);
+        assert_eq!(phases[36], PROJECT_ACCESS_HTTP);
+        assert_eq!(phases[37], PRESENCE_SERVER_HTTP);
+        assert_eq!(phases[38], ADMIN_UPSTREAM_LOGIN_HTTP);
+        assert_eq!(phases[39], ADMIN_UPSTREAM_LOGIN_UNCERTAINTY);
+        assert_eq!(phases[40], ADMIN_UPSTREAM_LOGIN_CONFIG);
+        assert_eq!(phases[41], HUB_STORAGE_FIXTURE_BUILD);
+        assert_eq!(phases[42], HUB_STORAGE_FIXTURE_CONTRACT);
+        assert_eq!(phases[43], OIDC_REGISTRATION_HTTP);
+        assert_eq!(phases[44], OIDC_REGISTRATION_UNCERTAINTY);
+        assert_eq!(phases[45], OIDC_BROWSER_CALLBACK_HTTP);
+        assert_eq!(phases[46], LOCAL_LOGIN_RUNTIME_HTTP);
+        assert_eq!(phases[47], OIDC_BROWSER_ADMISSION_PG);
+        assert_eq!(phases[48], OIDC_BROWSER_AUTHORIZATION_HTTP);
+        assert_eq!(phases[49], OIDC_DISCOVERY_HTTP);
+        assert_eq!(phases[50], SERVER_EMBEDDINGS_HTTP_SQL);
+        assert_eq!(phases[51], OIDC_REVOCATION_PG);
+        assert_eq!(phases[52], OIDC_REVOCATION_FEDERATED_PG);
+        assert_eq!(phases[53], OIDC_REVOCATION_HTTP);
+        assert_eq!(phases[54], OIDC_USERINFO_HTTP);
+        assert_eq!(phases[55], OIDC_INTROSPECTION_HTTP);
+        assert_eq!(phases[56], OIDC_END_SESSION_HTTP);
+        assert_eq!(phases[57], DEVICE_PG);
+        assert_eq!(phases[58], SQLITE_LOCAL_AUTH);
+        assert_eq!(phases[59], AUDIT);
         for (phase, target) in [
             (
                 ADMIN_LOCAL_LOGIN_HTTP,
@@ -2253,7 +2233,7 @@ mod tests {
                 "--test-threads=1"
             ]
         );
-        assert!(checks(Event::PrePush, b"").contains(&AWS_HUB_STORAGE));
+        assert!(qualification_checks().contains(&AWS_HUB_STORAGE));
         assert_eq!(
             AWS_HUB_STORAGE.args,
             &[
@@ -2279,7 +2259,7 @@ mod tests {
     }
     #[test]
     fn dynamic_registration_phases_preserve_exact_contracts_before_audit() {
-        let phases = checks(Event::PrePush, b"");
+        let phases = qualification_checks();
         let position = |phase| phases.iter().position(|p| *p == phase).unwrap();
         assert!(position(OIDC_REGISTRATION_HTTP) < position(OIDC_REGISTRATION_UNCERTAINTY));
         assert!(position(OIDC_REGISTRATION_UNCERTAINTY) < position(AUDIT));

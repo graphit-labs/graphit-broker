@@ -132,9 +132,9 @@ The isolated runner counterproof used the actual saved selector, executor and
 CLI failure loop. It selected the new phase while omitting earlier phases only
 in that fixture; an actual ignored Rust assertion failure stopped it with exit 1
 before the audit. This proves the runner barrier, not Broker backend behavior or
-the entire pre-push pipeline. Git hooks remain activated through `.githooks`.
+the entire qualification suite. Git hooks use the native Git registry.
 
-The first exact command is the `PROJECT_CORPUS_HTTP_STS` long pre-push phase,
+The first exact command is the `PROJECT_CORPUS_HTTP_STS` qualification phase,
 after the existing exact Hub AWS phase and before the USER Memory phase and
 dependency audit. Other
 phases, hooks and lockfiles stay intact. Ordinary tests remain in pre-commit.

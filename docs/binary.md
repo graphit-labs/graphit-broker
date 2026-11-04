@@ -128,7 +128,8 @@ with older distributions. Packaging does not make this a fully static executable
 
 ### macOS and Windows native runtimes
 
-These producers use the paired Code source's `scripts/package-platform-runtime.mjs`
+These producers use `scripts/package-platform-runtime.mjs` from the Code source
+selected by Cargo
 with the `graphit-runtime/broker` namespace. Node 22 and native inspection tools are
 build prerequisites, not client runtime prerequisites. Neither changes the current
 MSVC CRT selection or silently drops a dependency.
@@ -255,22 +256,17 @@ from that probe subprocess; the [container](deployment.md) already does so.
 The main service keeps its configuration environment. SIGTERM/SIGINT request
 the normal bounded, ordered shutdown described in the runbook.
 
-## Artifact and migration scope
+## Artifact sources and qualification
 
-The native workflows require an explicit Code source. Configure repository variables
-`GRAPHIT_CODE_REPOSITORY` and `GRAPHIT_CODE_REF` for push/PR/tag runs, or supply
-`code_repository` and `code_ref` to reusable/manual CI. Explicit workflow inputs
-have precedence. Values must be nonempty and have no surrounding whitespace.
-The workflow never chooses a repository or branch. A private source can use the
-`GRAPHIT_CODE_READ_TOKEN` secret with read access; credentials are not persisted.
-When Code CI consumes Broker in the reverse direction, its separately configured
-`GRAPHIT_BROKER_REF` must likewise identify a compatible, accessible source.
-Local unpublished changes are not a remote ref in either direction.
+The Broker lockfile pins the shared Graphit Code crates to an immutable Git
+revision. Cargo fetches them along with the other dependencies. Packaging resolves
+the runtime producer and license notices from the same locked sources via
+`cargo metadata --locked --offline`.
 
-Every Cargo job uses sibling `graphit-broker` and `graphit-code` checkouts. Before Cargo, the source guard requires `scripts/package-platform-runtime.mjs`, the manifests of `graphit-ai`, `graphit-http` and `graphit-core`, plus `crates/graphit-ai/licenses/NVIDIA-CUDA-LICENSE`. Use the complete Code checkout at the configured revision.
+The manual and stable-tag `Native qualification` workflow records the locked
+Code revision and the Broker commit. The Linux, macOS and Windows native producers
+build at those revisions. The release container uses the qualified Linux artifact.
 
-Linux CI resolves the requested refs and records actual Code/Broker commits.
-The Darwin/Windows producers and container consumer check out those immutable commits.
 Each platform's `code-source.txt` records the source repository/ref, both commits,
 platform and the version read from its native executable. The artifacts are:
 

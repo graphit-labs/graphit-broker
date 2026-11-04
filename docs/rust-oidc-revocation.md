@@ -127,7 +127,7 @@ cargo test --locked --offline -j4 -p broker-control --test postgres_oidc_federat
 cargo test --locked --offline -j4 -p broker-server --test oauth_revocation -- --ignored --test-threads=1
 ```
 
-These tests use genuine LOCAL/H1 grants, actual PostgreSQL TLS under NOSUPERUSER, native HTTP processes, observed SQL locks, rollback/cancellation/deadlines and a durable COMMIT whose TLS acknowledgement is withheld. They also retain local JWT validity after revocation. The existing pre-push runner includes these focused commands, and the configured executable `.githooks/pre-push` adapter calls it. The [native CI/container workflow](deployment.md) consumes the maintained Rust gate. A library or one operating-system result does not establish complete Broker integration.
+These tests use genuine LOCAL/H1 grants, actual PostgreSQL TLS under NOSUPERUSER, native HTTP processes, observed SQL locks, rollback/cancellation/deadlines and a durable COMMIT whose TLS acknowledgement is withheld. They also retain local JWT validity after revocation. The explicit `make qualify` suite runs these focused commands. The [native CI/container workflow](deployment.md) consumes the maintained Rust gate. A library or one operating-system result does not establish complete Broker integration.
 
 [End-session](rust-oidc-end-session.md) instead requires a signed ID hint and
 disposes all SQL OIDC families of that subject/client, including after DCR removal.

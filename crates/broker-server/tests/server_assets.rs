@@ -109,6 +109,7 @@ async fn native_samples_and_favicon_are_served_by_the_real_executable() {
     }
     private(&config, health.as_bytes());
     let mut child = Command::new(env!("CARGO_BIN_EXE_graphit-broker"))
+        .env("GRAPHIT_GLOBAL_DIR", root.path().join("global"))
         .arg("--config")
         .arg(&config)
         .stdout(Stdio::null())
@@ -117,6 +118,8 @@ async fn native_samples_and_favicon_are_served_by_the_real_executable() {
         .spawn()
         .unwrap();
     let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(3))
         .build()
         .unwrap();
@@ -187,6 +190,7 @@ async fn native_samples_and_favicon_are_served_by_the_real_executable() {
 }
 
 #[test]
+#[ignore = "native installer qualification uses OS packaging tools"]
 #[cfg(any(
     all(target_os = "linux", target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")

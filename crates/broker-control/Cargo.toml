@@ -10,7 +10,7 @@ workspace = true
 
 [dependencies]
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
-graphit-fs = { path = "../../../graphit-code/crates/graphit-fs", version = "=0.1.0" }
+graphit-fs = { workspace = true }
 broker-now-wire = { path = "../broker-now-wire", version = "=0.1.0" }
 oxide-auth = { version = "=0.6.1", default-features = false }
 openidconnect = { version = "=4.1.0", default-features = false }

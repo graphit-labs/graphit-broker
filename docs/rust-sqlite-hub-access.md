@@ -108,12 +108,14 @@ authority. Authentication, SQL and deadline errors retain their causal mapping.
 From the Broker checkout, run the two focused targets:
 
 ```text
-cargo test --locked --offline -j4 -p broker-control --test sqlite_hub_access -- --ignored --test-threads=1
+cargo test --locked --offline -p broker-control --test sqlite_hub_access
 cargo test --locked --offline -j4 -p broker-presence --test sqlite_hub_access_http -- --ignored --test-threads=1
 ```
 
-The Control target uses private file-backed SQLite, signed Ed25519 JWTs and actual
-human/service credential digests. The TCP target serves real Axum listeners with
+The Control target runs in the standard suite. It uses private file-backed
+SQLite, signed Ed25519 JWTs and actual human/service credential digests. It
+checks current authorization, reopening and a read while an independent
+connection holds the write lock. The TCP target serves real Axum listeners with
 joined Hyper clients and listener shutdown. Its catalog prepares physical
 metadata in temporary volumes and reads through the actual confined reader with
 SQLite authority. These documents are fixture data, not a storage grant,

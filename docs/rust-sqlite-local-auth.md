@@ -147,7 +147,7 @@ Synthetic persisted OAuth/Device rows prove invalidation only; they do not
 qualify real OP issuance.
 
 The expensive native suite is ignored in the ordinary workspace test run.
-The saved SQLITE_LOCAL_AUTH pre-push phase runs the LOCAL authentication,
+The saved SQLITE_LOCAL_AUTH qualification phase runs the LOCAL authentication,
 administrative cookie and HTTP targets, together with native LOCAL OIDC grants
 and token/browser/Device HTTP tests, full-channel administrative reads and
 [role/assignment writes](rust-sqlite-admin-rbac.md), before Audit:

@@ -111,6 +111,7 @@ fn install_pair(fixture: &Path, package: &Path, destination: &Path) -> std::proc
 }
 
 #[test]
+#[ignore = "native package qualification uses OS packaging tools"]
 fn existing_binary_package_preserves_bytes_and_rejects_invalid_inputs() {
     use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();

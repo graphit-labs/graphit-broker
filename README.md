@@ -158,6 +158,7 @@ hosted publication still require execution. See [binary scope](docs/binary.md).
 ## Development
 
 ```bash
+cargo fetch --locked
 make fmt
 make test
 make vet
@@ -176,20 +177,21 @@ shell files and the admin UI. Pre-push runs formatting, strict Clippy and the xt
 unit tests. During development, run the suites affected by each change and reuse
 valid results for unchanged code.
 
-The complete integration gate remains available explicitly with
-`cargo run --locked -p xtask -- hook pre-push` (or `make check`) and in CI. It
-includes real PostgreSQL/MySQL/HTTP/STS and native container phases, requiring
-Docker, fetched dependencies and the [pinned S3 test tools](docs/rust-hub-storage-fixture.md#build-and-prerequisites)
-on `PATH`. CI also runs actionlint and
-`node scripts/check-admin-ui.cjs`. Ordinary tests do not run ignored SQL/HTTP
-contracts. Native hosted validation requires its own executed evidence.
-CI resolves the Code and Broker commits once, then runs the Linux integration
-gate and the Windows/macOS package jobs independently against those same commits.
-Native packaging does not wait for the Linux integration gate; all checks remain
-required for the complete workflow to succeed.
-The native installation consumers use `cargo test --release --target host-tuple`,
-matching the package producer's profile and target so Cargo can reuse compatible
-build artifacts instead of compiling another profile or target directory.
+The Broker builds from its own checkout. Cargo fetches the shared Graphit Code
+crates at the exact revision recorded in `Cargo.lock`. Use `make check` to run
+formatting, strict Clippy, documentation tests and ordinary workspace tests.
+The device authorization suite starts the native Broker on loopback with a
+temporary SQLite database. The `Native CI` workflow runs these Rust checks on
+Linux, macOS and Windows and checks the administration UI syntax.
+
+Use `make qualify` or `cargo run --locked --offline -p xtask -- qualify` for
+the explicit SQL, HTTP, STS, storage and native container contracts. These
+checks need Docker, the [pinned S3 tools](docs/rust-hub-storage-fixture.md#build-and-prerequisites)
+and the release build tools described in [Deployment](docs/deployment.md).
+The `Native qualification` workflow provisions those prerequisites, validates
+the workflows and installers, builds the CUDA-enabled Linux package, and checks
+relocated installations on macOS and Windows. Stable tag releases require
+this workflow.
 
 For Windows source builds, enable [Git long-path support](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)
 with `git config --global core.longpaths true` before `cargo fetch --locked`.
@@ -201,8 +203,8 @@ setup.
 
 The [typed SQL schema and declared MySQL reference](docs/rust-mysql-catalog.md)
 is qualified on Linux under `tsk-5ca4`, including real engines and hook counterproofs. It
-changes the Rust schema producer; the MySQL runtime is delivered separately below,
-while full server migration remains in progress.
+validates the schema producer. The separate MySQL control implementation
+is described below.
 
 The [Rust MySQL control implementation](docs/rust-mysql-control.md) provides native control persistence. Server backend selection is described separately in the [native server guide](docs/rust-broker-server.md).
 

@@ -176,7 +176,7 @@ cargo test --locked --offline -p broker-server --test admin_local_login -- --ign
 cargo test --locked --offline -p broker-server --test admin_local_login -- --ignored --exact broker_admin_local_login_configuration_contract --test-threads=1
 ```
 
-These commands are saved in pre-push after password/CAPTCHA producers and before
+These commands are selected in qualification after password/CAPTCHA producers and before
 PROJECT/Presence/audit. The runner's adversarial Rust fixtures prove that a failure
 in each exact contract stops later phases. Fast formatting/affected ordinary
 checks remain in pre-commit. These fixture failures prove the gate, not a login.

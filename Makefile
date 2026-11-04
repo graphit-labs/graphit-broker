@@ -1,4 +1,4 @@
-.PHONY: build install fmt vet lint test check docker-build docker-check
+.PHONY: build install fmt vet lint test check qualify docker-build docker-check
 
 ifeq ($(OS),Windows_NT)
 SHELL := sh
@@ -41,8 +41,10 @@ test:
 	cargo test --locked --workspace --all-targets
 
 check:
-	cargo run --locked --quiet -p xtask -- hook pre-commit
-	cargo run --locked --quiet -p xtask -- hook pre-push
+	cargo run --locked --offline --quiet -p xtask -- hook pre-push
+
+qualify:
+	cargo run --locked --quiet -p xtask -- qualify
 
 docker-build: build
 	@set -eu; \

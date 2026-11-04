@@ -1,4 +1,4 @@
-//! Complete native Device journeys over TCP, TLS PostgreSQL and genuine LOCAL authentication.
+//! Complete native Device journeys over loopback, private SQLite and genuine LOCAL authentication.
 #[path = "support/oidc_http.rs"]
 #[allow(dead_code, reason = "shared process fixture covers all native grants")]
 mod http;
@@ -13,16 +13,23 @@ mod oidc;
 mod support;
 use broker_control::LocalPasswordEngine;
 use broker_security::LocalPasswordHasher;
-use oidc::{OidcFixture, PASSWORD, PEPPER};
+use graphit_auth::broker::{
+    BrokerPolicy, BrokerRequestContext, BrokerVerifier, JsonLimits, VerifierLimits,
+    oauth::{NativeOAuth, OAuthLimits},
+};
+use graphit_core::{file_io::SnapshotContext, file_lock::Cancellation};
+use graphit_http::client::{ClientPolicy, Limits as NetworkLimits};
+use oidc::{AUDIENCE, PASSWORD, PEPPER, RESOURCE};
+use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use sqlx_core::executor::Executor;
 use std::{net::SocketAddr, path::Path, time::Duration};
 use support::{deadline, n};
 use zeroize::Zeroizing;
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(45))
         .build()
         .unwrap()
 }
@@ -31,15 +38,35 @@ fn form(pairs: &[(&str, &str)]) -> String {
         .extend_pairs(pairs.iter().copied())
         .finish()
 }
-fn config(addr: SocketAddr, pg: u16, mfa: bool) -> Value {
-    let mut v: Value = serde_saphyr::from_str(&http::yaml(addr, pg)).unwrap();
+fn config(addr: SocketAddr, mfa: bool) -> Value {
+    let guide = include_str!("../../../docs/rust-broker-server.md");
+    let mut v: Value = serde_saphyr::from_str(http::block(guide)).unwrap();
+    let sqlite_example = guide.split_once("## Select private SQLite").unwrap().1;
+    let sqlite_example = sqlite_example.split_once("~~~yaml").unwrap().1;
+    let sqlite: Value =
+        serde_saphyr::from_str(sqlite_example.split_once("~~~").unwrap().0).unwrap();
+    v["database"] = sqlite["database"].clone();
+    v["server"]["address"] = json!(addr.to_string());
+    v["server"]["public_url"] = json!(format!("http://{addr}"));
+    v["auth"]["issuer"] = v["server"]["public_url"].clone();
+    v["auth"]["audience"] = json!(AUDIENCE);
+    v["auth"]["pepper"] = json!(PEPPER);
+    v["auth"].as_object_mut().unwrap().remove("resource");
+    let oidc: Value = serde_saphyr::from_str(http::block(include_str!(
+        "../../../docs/rust-oidc-token-exchange.md"
+    )))
+    .unwrap();
+    v["oidc"] = oidc["oidc"].clone();
+    v["oidc"]["accepted_resources"] = json!([RESOURCE]);
     v["auth"]["local"] = json!({"login":{"enabled":true},"mfa":{"required":mfa,"issuer_label":"Graphit Broker","challenge_ttl":"10m"},"rate_limit":{"max_failures":20,"window":"60s","lockout":"300s","max_concurrent":2,"saturation_multiplier":4}});
     v["oidc"]["device_poll_interval"] = json!("1s");
     v["oidc"]["access_ttl"] = json!("60s");
     v["oidc"]["allowed_origins"] = json!(["https://ui.example"]);
     v
 }
-async fn seed(f: &mut OidcFixture) {
+async fn seed(root: &Path, password_change_required: bool) -> Connection {
+    let db = Connection::open(root.join("private/broker.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(5)).unwrap();
     let engine = LocalPasswordEngine::new(
         LocalPasswordHasher::new(Zeroizing::new(
             PEPPER.as_bytes().to_vec().into_boxed_slice(),
@@ -51,14 +78,21 @@ async fn seed(f: &mut OidcFixture) {
     .await
     .unwrap();
     let hash = engine.hash(PASSWORD, deadline()).await.unwrap();
-    sqlx_core::query::query(
-        "UPDATE public.local_users SET password_hash=$1 WHERE username='alice'",
+    let now = oidc::micros();
+    db.execute(
+        "INSERT INTO local_users(username,subject,identity_kind,password_hash,name,email,organization,teams_json,enabled,password_change_required,revision,created_at,updated_at)
+         VALUES('alice','alice-subject','human',?1,'Alice','alice@example.invalid','org','[\"engineering\"]',1,?2,1,?3,?3)",
+        params![hash.as_str(), password_change_required, now],
     )
-    .bind(hash.as_str())
-    .execute(&mut f.admin)
-    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO oauth_dynamic_clients(client_id,client_name,redirect_uris_json,scopes_json,application_type,created_at)
+         VALUES('web-client','Client','[\"https://client.example/cb\"]','[\"openid\",\"offline_access\"]','web',?1)",
+        [now],
+    )
     .unwrap();
     engine.close().await;
+    db
 }
 async fn start(root: &Path, config: &Value, addr: SocketAddr) -> tokio::process::Child {
     http::start(
@@ -103,7 +137,7 @@ fn capture(name: &str, html: &str) {
     }
 }
 async fn page(r: reqwest::Response, status: u16, name: &str) -> String {
-    assert_eq!(r.status(), status);
+    assert_eq!(r.status(), status, "{name}");
     privacy(&r);
     let html = r.text().await.unwrap();
     capture(name, &html);
@@ -116,7 +150,7 @@ fn secret(html: &str, name: &str) -> String {
         .unwrap()[1]
         .into()
 }
-async fn issue(addr: SocketAddr) -> Value {
+async fn issue(addr: SocketAddr, interval: u64) -> Value {
     let r = post(
         addr,
         "/oauth/device/authorize",
@@ -135,7 +169,7 @@ async fn issue(addr: SocketAddr) -> Value {
         v["user_code"].as_str().unwrap()
     );
     assert!(v["expires_in"].as_u64().unwrap() <= 600);
-    assert_eq!(v["interval"], 1);
+    assert_eq!(v["interval"], interval);
     v
 }
 fn browser_path(v: &Value) -> String {
@@ -181,21 +215,18 @@ async fn decide(addr: SocketAddr, v: &Value, secret: &str, allow: &str) -> reqwe
     )
     .await
 }
-async fn count(f: &mut OidcFixture, sql: &'static str) -> i64 {
-    sqlx_core::query_scalar::query_scalar(sql)
-        .fetch_one(&mut f.admin)
-        .await
-        .unwrap()
+fn count(db: &Connection, sql: &str) -> i64 {
+    db.query_row(sql, [], |r| r.get(0)).unwrap()
 }
 #[tokio::test]
-#[ignore = "native binary, ordinary TLS SQL role, password, consent, Device JWT and protocol transport"]
 async fn broker_device_http_contract() {
-    let mut f = OidcFixture::new().await;
-    seed(&mut f).await;
     let root = tempfile::tempdir().unwrap();
     let addr = http::address();
-    let signer = http::files(root.path(), &f.fixture.ca, &format!("http://{addr}"));
-    let child = start(root.path(), &config(addr, f.fixture.port, false), addr).await;
+    let signer = http::signing_key(root.path(), &format!("http://{addr}"));
+    let mut config = config(addr, false);
+    config["oidc"]["device_poll_interval"] = json!("30s");
+    let child = start(root.path(), &config, addr).await;
+    let db = seed(root.path(), false).await;
     let doc = http::value(
         client()
             .get(format!("http://{addr}/.well-known/openid-configuration"))
@@ -236,10 +267,7 @@ async fn broker_device_http_contract() {
         )
         .await;
     }
-    assert_eq!(
-        count(&mut f, "SELECT count(*) FROM public.oauth_device_codes").await,
-        0
-    );
+    assert_eq!(count(&db, "SELECT count(*) FROM oauth_device_codes"), 0);
     error(
         post(
             addr,
@@ -300,17 +328,13 @@ async fn broker_device_http_contract() {
     )
     .await;
     assert!(entry.contains("for=\"user-code\""));
-    let d = issue(addr).await;
+    let d = issue(addr, 30).await;
     let path = browser_path(&d);
     error(poll(addr, &d).await, 400, "authorization_pending").await;
     error(poll(addr, &d).await, 400, "slow_down").await;
     assert_eq!(
-        count(
-            &mut f,
-            "SELECT interval_seconds FROM public.oauth_device_codes"
-        )
-        .await,
-        6
+        count(&db, "SELECT interval_seconds FROM oauth_device_codes"),
+        35
     );
     let login_page = page(
         client()
@@ -380,21 +404,19 @@ async fn broker_device_http_contract() {
     let s = secret(&consent, "consent_secret");
     assert_eq!(
         count(
-            &mut f,
-            "SELECT count(*) FROM public.oauth_device_codes WHERE status='pending'"
-        )
-        .await,
+            &db,
+            "SELECT count(*) FROM oauth_device_codes WHERE status='pending'"
+        ),
         1
     );
     assert_eq!(
         count(
-            &mut f,
-            "SELECT count(*) FROM public.local_tokens WHERE token_kind='oidc_access'"
-        )
-        .await,
+            &db,
+            "SELECT count(*) FROM local_tokens WHERE token_kind='oidc_access'"
+        ),
         0
     );
-    let other = issue(addr).await;
+    let other = issue(addr, 30).await;
     assert_eq!(decide(addr, &other, &s, "allow").await.status(), 400);
     assert_eq!(
         decide(addr, &d, &"a".repeat(43), "allow").await.status(),
@@ -402,9 +424,7 @@ async fn broker_device_http_contract() {
     );
     page(decide(addr, &d, &s, "allow").await, 200, "allowed").await;
     assert_eq!(decide(addr, &d, &s, "allow").await.status(), 400);
-    f.admin
-        .execute("UPDATE public.oauth_device_codes SET last_poll_at=NULL")
-        .await
+    db.execute("UPDATE oauth_device_codes SET last_poll_at=NULL", [])
         .unwrap();
     let r = poll(addr, &d).await;
     assert_eq!(r.status(), 200);
@@ -436,7 +456,7 @@ async fn broker_device_http_contract() {
         .unwrap();
     assert_eq!(api.status(), 403);
     error(poll(addr, &d).await, 400, "invalid_grant").await;
-    let d = issue(addr).await;
+    let d = issue(addr, 30).await;
     let c = login(addr, &d, PASSWORD).await;
     page(
         decide(addr, &d, &secret(&c, "consent_secret"), "deny").await,
@@ -445,8 +465,8 @@ async fn broker_device_http_contract() {
     )
     .await;
     error(poll(addr, &d).await, 400, "access_denied").await;
-    let expired = issue(addr).await;
-    f.admin.execute("UPDATE public.oauth_device_codes SET created_at=created_at-700000000,expires_at=expires_at-700000000").await.unwrap();
+    let expired = issue(addr, 30).await;
+    db.execute("UPDATE oauth_device_codes SET created_at=created_at-700000000,expires_at=expires_at-700000000", []).unwrap();
     error(poll(addr, &expired).await, 400, "expired_token").await;
     for (k, v) in [
         ("resource", "https://x"),
@@ -496,22 +516,19 @@ async fn broker_device_http_contract() {
         "https://ui.example"
     );
     http::stop(child).await;
-    f.close().await;
 }
 #[tokio::test]
-#[ignore = "native Device LOCAL password change, TOTP enrollment/recovery and protected explicit consent"]
 async fn broker_device_mfa_http_contract() {
-    let mut f = OidcFixture::new().await;
-    seed(&mut f).await;
-    f.admin
-        .execute("UPDATE public.local_users SET password_change_required=1")
-        .await
-        .unwrap();
     let root = tempfile::tempdir().unwrap();
     let addr = http::address();
-    http::files(root.path(), &f.fixture.ca, &format!("http://{addr}"));
-    let child = start(root.path(), &config(addr, f.fixture.port, true), addr).await;
-    let d = issue(addr).await;
+    http::signing_key(root.path(), &format!("http://{addr}"));
+    let mut config = config(addr, true);
+    // Password change verifies and hashes with production Argon2 in the unoptimized test build.
+    config["database"]["operation_timeout"] = json!("30s");
+    config["oidc"]["request_timeout"] = json!("30s");
+    let child = start(root.path(), &config, addr).await;
+    let db = seed(root.path(), true).await;
+    let d = issue(addr, 1).await;
     let path = browser_path(&d);
     let html = page(
         post(
@@ -566,7 +583,7 @@ async fn broker_device_mfa_http_contract() {
         .unwrap()[1]
         .to_owned();
     let sdk=totp_rs::Totp::from_url(format!("otpauth://totp/Graphit%20Broker:alice?secret={base32}&issuer=Graphit%20Broker&algorithm=SHA1&digits=6&period=30")).unwrap();
-    let other = issue(addr).await;
+    let other = issue(addr, 1).await;
     assert!(
         !post(
             addr,
@@ -612,18 +629,15 @@ async fn broker_device_mfa_http_contract() {
     assert_eq!(recovery.len(), 10);
     assert_eq!(
         count(
-            &mut f,
-            "SELECT count(*) FROM public.oauth_device_codes WHERE status='approved'"
-        )
-        .await,
+            &db,
+            "SELECT count(*) FROM oauth_device_codes WHERE status='approved'"
+        ),
         0
     );
     error(poll(addr, &d).await, 400, "authorization_pending").await;
     let s = secret(&html, "consent_secret");
     page(decide(addr, &d, &s, "allow").await, 200, "mfa-allowed").await;
-    f.admin
-        .execute("UPDATE public.oauth_device_codes SET last_poll_at=NULL")
-        .await
+    db.execute("UPDATE oauth_device_codes SET last_poll_at=NULL", [])
         .unwrap();
     assert_eq!(poll(addr, &d).await.status(), 200);
     let oauth_query = form(&[
@@ -666,7 +680,7 @@ async fn broker_device_mfa_http_contract() {
     );
     let oauth_html = oauth_response.text().await.unwrap();
     let foreign = secret(&oauth_html, "challenge_token");
-    let d = issue(addr).await;
+    let d = issue(addr, 1).await;
     assert_eq!(
         post(
             addr,
@@ -678,11 +692,7 @@ async fn broker_device_mfa_http_contract() {
         401
     );
     assert_eq!(
-        count(
-            &mut f,
-            "SELECT count(*) FROM public.local_mfa_recovery_codes"
-        )
-        .await,
+        count(&db, "SELECT count(*) FROM local_mfa_recovery_codes"),
         10
     );
     let html = page(
@@ -711,29 +721,20 @@ async fn broker_device_mfa_http_contract() {
     assert!(!html.contains("Recovery codes"));
     let s = secret(&html, "consent_secret");
     assert_eq!(
-        count(
-            &mut f,
-            "SELECT count(*) FROM public.local_mfa_recovery_codes"
-        )
-        .await,
+        count(&db, "SELECT count(*) FROM local_mfa_recovery_codes"),
         9
     );
-    f.admin
-        .execute("UPDATE public.local_users SET revision=revision+1,enabled=0")
-        .await
+    db.execute("UPDATE local_users SET revision=revision+1,enabled=0", [])
         .unwrap();
     assert!(!decide(addr, &d, &s, "allow").await.status().is_success());
     http::stop(child).await;
-    f.close().await;
 }
 #[tokio::test]
-#[ignore = "native startup policy, LOCAL/OIDC availability, configured discovery and TLS PostgreSQL"]
 async fn broker_device_configuration_contract() {
-    let f = OidcFixture::new().await;
     let root = tempfile::tempdir().unwrap();
     let addr = http::address();
-    http::files(root.path(), &f.fixture.ca, &format!("http://{addr}"));
-    let original = config(addr, f.fixture.port, false);
+    http::signing_key(root.path(), &format!("http://{addr}"));
+    let original = config(addr, false);
     for (key, values) in [
         ("device_code_ttl", vec!["299s", "1801s", "300.5s"]),
         ("device_poll_interval", vec!["0s", "31s", "1.5s"]),
@@ -784,7 +785,16 @@ async fn broker_device_configuration_contract() {
     assert_eq!(r.status(), 200);
     let v = http::value(r).await;
     assert_eq!(v["interval"], 5);
-    assert!(v["expires_in"].as_u64().unwrap() >= 598 && v["expires_in"].as_u64().unwrap() <= 600);
+    assert!((1..=600).contains(&v["expires_in"].as_u64().unwrap()));
+    let db = Connection::open(root.path().join("private/broker.db")).unwrap();
+    assert_eq!(
+        count(
+            &db,
+            "SELECT expires_at - created_at FROM oauth_device_codes"
+        ),
+        600_000_000
+    );
+    drop(db);
     http::stop(child).await;
     let mut literal = config.clone();
     literal["server"]["public_url"] = json!("https://Broker.Example:443/");
@@ -922,126 +932,90 @@ async fn broker_device_configuration_contract() {
         );
     }
     http::stop(child).await;
-    f.close().await;
 }
 
-// Cross-project consumer qualification uses the emitted Rust CLI, never a protocol double.
-fn code_cli(binary: &Path, installation: &Path, args: &[&str]) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(binary);
-    command
-        .kill_on_drop(true)
-        .env_clear()
-        .current_dir(installation.parent().unwrap())
-        .arg("--global-dir")
-        .arg(installation)
-        .arg("--non-interactive")
-        .args(args);
-    command
-}
-async fn code_cli_output(
-    binary: &Path,
-    installation: &Path,
-    args: &[&str],
-) -> std::process::Output {
-    let output = tokio::time::timeout(
-        Duration::from_secs(30),
-        code_cli(binary, installation, args).output(),
-    )
-    .await
-    .expect("Code CLI exceeded the consumer request deadline")
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "Code CLI failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output
-}
 #[tokio::test]
-#[ignore = "emitted Code CLI, native Broker, TLS SQL role and genuine LOCAL/consent journey"]
-async fn broker_device_code_cli_login_account_and_logout() {
-    use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-
-    let binary = std::path::PathBuf::from(
-        std::env::var_os("GRAPHIT_CODE_CLI")
-            .expect("set GRAPHIT_CODE_CLI to the emitted Rust graphit CLI"),
-    );
-    assert!(binary.is_file(), "the emitted Code CLI must exist");
-    let mut f = OidcFixture::new().await;
-    seed(&mut f).await;
+async fn broker_device_native_auth_login_contract() {
     let root = tempfile::tempdir().unwrap();
     let addr = http::address();
     let issuer = format!("http://{addr}");
-    let signer = http::files(root.path(), &f.fixture.ca, &issuer);
-    let broker = start(root.path(), &config(addr, f.fixture.port, false), addr).await;
-    let installation = root.path().join("code-installation");
-    let provider = code_cli_output(
-        &binary,
-        &installation,
-        &[
-            "provider",
-            "add",
-            "device",
-            "--type",
-            "broker",
-            "--broker-endpoint",
-            &issuer,
-            "--embedding-mode",
-            "disabled",
-            "--rerank-mode",
-            "disabled",
-            "--s3-credential-source",
-            "broker",
-        ],
+    let signer = http::signing_key(root.path(), &issuer);
+    let broker = start(root.path(), &config(addr, false), addr).await;
+    let db = seed(root.path(), false).await;
+    let original = SnapshotContext::new(deadline(), Cancellation::default());
+    let context = BrokerRequestContext::new(&original);
+    let verifier = BrokerVerifier::new(
+        BrokerPolicy {
+            endpoint: &issuer,
+            mcp_resource: None,
+            provider_revision: 1,
+            network: ClientPolicy {
+                origin: &issuer,
+                allow_loopback_http: true,
+                proxy: None,
+                additional_roots: &[],
+            },
+        },
+        NetworkLimits {
+            request_body_bytes: 8192,
+            response_body_bytes: 8192,
+            url_bytes: 4096,
+            header_bytes: 16384,
+            header_count: 32,
+            max_in_flight: 2,
+            max_idle_per_host: 2,
+            idle_timeout: Duration::from_secs(30),
+            max_certificates: 2,
+            max_certificate_bytes: 8192,
+        },
+        VerifierLimits {
+            token_bytes: 8192,
+            json: JsonLimits {
+                bytes: 8192,
+                nodes: 512,
+                depth: 16,
+                scalar_bytes: 2048,
+                collection_entries: 64,
+            },
+            max_keys: 8,
+            metadata_ttl: Duration::from_secs(300),
+            key_ttl: Duration::from_secs(300),
+            unknown_key_cooldown: Duration::from_millis(100),
+        },
     )
-    .await;
-    assert_eq!(provider.stdout, b"Applied\n");
-    assert!(provider.stderr.is_empty());
-
-    let mut login_process = code_cli(
-        &binary,
-        &installation,
-        &[
-            "login",
-            "--device",
-            "--provider",
-            "device",
-            "--profile",
-            "device",
-        ],
-    )
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
     .unwrap();
-    let mut diagnostic = BufReader::new(login_process.stderr.take().unwrap());
-    let mut instructions = String::new();
-    let prompt_bytes = tokio::time::timeout(
-        Duration::from_secs(15),
-        diagnostic.read_line(&mut instructions),
+    let oauth = NativeOAuth::new(
+        &verifier,
+        OAuthLimits {
+            authorization_url_bytes: 4096,
+            callback_bytes: 4096,
+            callback_query_entries: 16,
+            form_body_bytes: 8192,
+            token_bytes: 8192,
+            response_nodes: 512,
+            response_scalar_bytes: 2048,
+        },
     )
-    .await
-    .expect("Code CLI must announce public Device instructions before polling completes")
     .unwrap();
-    assert!(
-        prompt_bytes > 0,
-        "Code CLI exited without Device instructions"
+    let pending = oauth.begin_device(context).await.unwrap();
+    let instructions = pending.instructions(context).unwrap();
+    assert_eq!(
+        instructions.verification_uri(),
+        format!("{issuer}/oauth/device")
     );
-    let prefix = format!("Open {issuer}/oauth/device and enter code ");
-    let user_code = instructions.strip_prefix(&prefix).unwrap().trim();
     assert!(
         regex::Regex::new(r"^[A-Z2-9]{4}-[A-Z2-9]{4}$")
             .unwrap()
-            .is_match(user_code)
+            .is_match(instructions.user_code())
     );
-    // These helpers consume only the public user code; the CLI owns the private grant.
-    let prompt = json!({"user_code": user_code});
-    let entry = client()
-        .get(format!("{issuer}{}", browser_path(&prompt)))
-        .send()
-        .await
-        .unwrap();
+    // The browser receives only public instructions; the Auth consumer owns the private grant.
+    let prompt = json!({"user_code": instructions.user_code()});
+    let browser_url = format!("{issuer}{}", browser_path(&prompt));
+    assert_eq!(
+        instructions.verification_uri_complete(),
+        Some(browser_url.as_str())
+    );
+    let entry = client().get(&browser_url).send().await.unwrap();
     privacy(&entry);
     assert_eq!(entry.status(), 200);
     assert!(entry.text().await.unwrap().contains("name=\"password\""));
@@ -1051,88 +1025,25 @@ async fn broker_device_code_cli_login_account_and_logout() {
     let decision = decide(addr, &prompt, &secret(&consent, "consent_secret"), "allow").await;
     privacy(&decision);
     assert_eq!(decision.status(), 200);
-    // No SQL approval or last_poll_at reset: the SDK must wait the actual advertised interval.
-    let login = tokio::time::timeout(Duration::from_secs(20), login_process.wait_with_output())
-        .await
-        .expect("Code CLI polling must finish after real consent")
-        .unwrap();
-    let mut remaining_diagnostic = String::new();
-    diagnostic
-        .read_to_string(&mut remaining_diagnostic)
-        .await
-        .unwrap();
-    assert!(
-        login.status.success(),
-        "Code CLI login failed: {remaining_diagnostic}"
-    );
-    assert_eq!(login.stdout, b"Applied\n");
-    let expected_link = format!(
-        "Authorize native Broker login: {issuer}{}\n",
-        browser_path(&prompt)
-    );
-    assert!(
-        remaining_diagnostic == expected_link,
-        "Code CLI must emit exactly the public verification link after the instructions"
-    );
 
-    let stored: Value =
-        serde_json::from_slice(&std::fs::read(installation.join("auth.json")).unwrap()).unwrap();
-    let profiles = stored["profiles"].as_array().unwrap();
-    assert_eq!(profiles.len(), 1);
-    let data = &profiles[0]["data"];
-    assert_eq!(data["name"], "device");
-    assert_eq!(data["provider"], "device");
-    let credentials = &data["credentials"];
-    assert_eq!(credentials["kind"], "broker_device");
-    assert_eq!(credentials["issuer"], issuer);
-    let tokens = &credentials["tokens"];
-    assert_eq!(tokens.as_object().unwrap().len(), 3);
-    assert_eq!(tokens["token_type"], "Bearer");
-    assert!(tokens.get("id_token").is_none() && tokens.get("refresh_token").is_none());
-    let access = tokens["access_token"].as_str().unwrap();
+    // Neither the grant decision nor the polling schedule is injected through SQL.
+    let tokens = oauth.receive_device(pending, context).await.unwrap();
+    let access = tokens.access_token(context).unwrap();
     let claims = http::claims(&signer, &issuer, access);
-    let verified_subject = claims["sub"].as_str().unwrap();
-    assert!(!verified_subject.is_empty());
-    assert_eq!(credentials["subject"], verified_subject);
+    let identity = tokens.identity(context).unwrap();
+    assert_eq!(identity.issuer(), issuer);
+    assert_eq!(identity.subject(), claims["sub"].as_str().unwrap());
+    assert!(!identity.subject().is_empty());
     assert_eq!(claims["client_id"], "graphit-cli");
     assert_eq!(claims["token_use"], "access");
     assert_eq!(claims["scope"], "");
-    assert!(tokens["expires_at"].as_i64().unwrap() <= claims["exp"].as_i64().unwrap());
-    for text in [
-        &instructions,
-        &remaining_diagnostic,
-        &String::from_utf8(login.stdout).unwrap(),
-    ] {
-        assert!(!text.contains(access));
-        assert!(!text.contains("gb_dc_"));
-        assert!(!text.contains(PASSWORD));
-    }
-    let account_output =
-        code_cli_output(&binary, &installation, &["account", "show", "device"]).await;
-    let account: Value = serde_json::from_slice(&account_output.stdout).unwrap();
-    assert_eq!(account["profile"]["name"], "device");
-    assert_eq!(account["profile"]["provider"], "device");
-    assert_eq!(account["profile"]["active"], true);
+    assert!(tokens.expires_at(context).unwrap() <= claims["exp"].as_i64().unwrap());
     assert_eq!(
-        account["profile"]["broker_identity"]["subject"],
-        verified_subject
+        count(
+            &db,
+            "SELECT count(*) FROM local_tokens WHERE token_kind='oidc_access'"
+        ),
+        1
     );
-    assert_eq!(
-        account["profile"]["broker_identity"]["issuer"],
-        url::Url::parse(&issuer).unwrap().as_str()
-    );
-    assert!(
-        !String::from_utf8(account_output.stdout)
-            .unwrap()
-            .contains(access)
-    );
-    let logout = code_cli_output(&binary, &installation, &["logout", "--profile", "device"]).await;
-    assert_eq!(logout.stdout, b"Applied\n");
-    let absent = code_cli_output(&binary, &installation, &["account", "show"]).await;
-    let absent: Value = serde_json::from_slice(&absent.stdout).unwrap();
-    assert!(absent["profile"].is_null());
-    assert!(!installation.join("daemon/mcp.key").exists());
-    assert!(!installation.join("daemon/mcp.json").exists());
     http::stop(broker).await;
-    f.close().await;
 }

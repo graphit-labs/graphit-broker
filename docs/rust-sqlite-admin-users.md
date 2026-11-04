@@ -68,4 +68,4 @@ cargo test --locked --offline -j4 -p broker-presence --test sqlite_admin_users_h
 
 The targets use private physical SQLite, genuine protocol producers, real Argon2/MFA and TCP HTTP. Compilation, product execution, previous failures, reused evidence and unexecuted conditions must remain distinct in qualification. See [SQLite persistence](rust-sqlite-control.md) for the wider backend boundary and [native administration](rust-admin-users.md) for the shared input and wire contract.
 
-The retained runner selects both ignored targets in the SQLite LOCAL pre-push phase. These use the real entropy source; artificial OS entropy failure injection and other-platform execution are outside these tests.
+The retained runner selects both ignored targets in the SQLite LOCAL qualification phase. These use the real entropy source; artificial OS entropy failure injection and other-platform execution are outside these tests.

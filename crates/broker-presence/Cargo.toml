@@ -9,13 +9,13 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-graphit-auth = { path = "../../../graphit-code/crates/graphit-auth", version = "=0.1.0" }
+graphit-auth = { workspace = true }
 broker-control = { path = "../broker-control" }
 broker-security = { path = "../broker-security" }
 broker-storage = { path = "../broker-storage" }
-graphit-ai = { path = "../../../graphit-code/crates/graphit-ai", version = "=0.1.0" }
-graphit-http = { path = "../../../graphit-code/crates/graphit-http", version = "=0.1.0" }
-graphit-core = { path = "../../../graphit-code/crates/graphit-core", version = "=0.1.0", features = ["async-cancel"] }
+graphit-ai = { workspace = true }
+graphit-http = { workspace = true }
+graphit-core = { workspace = true, features = ["async-cancel"] }
 s3s = { version = "=0.17.0", default-features = false }
 broker-now-wire = { path = "../broker-now-wire" }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio", "ws"] }
@@ -33,7 +33,7 @@ zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 tokio-tungstenite = { version = "=0.29.0", default-features = false }
 
 [dev-dependencies]
-graphit-fs = { path = "../../../graphit-code/crates/graphit-fs", version = "=0.1.0" }
+graphit-fs = { workspace = true }
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry", "std"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }

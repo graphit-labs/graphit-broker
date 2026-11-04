@@ -17,6 +17,7 @@ use tokio::process::{Child, Command};
 use zeroize::Zeroizing;
 pub fn block(doc: &str) -> &str {
     doc.split_once("```yaml\n")
+        .or_else(|| doc.split_once("```yaml\r\n"))
         .unwrap()
         .1
         .split_once("```")
@@ -64,10 +65,13 @@ pub fn address() -> SocketAddr {
         .unwrap()
 }
 pub fn files(root: &Path, ca: &[u8], expected_issuer: &str) -> BrokerAccessIssuer {
+    std::fs::write(root.join("ca.pem"), ca).unwrap();
+    signing_key(root, expected_issuer)
+}
+pub fn signing_key(root: &Path, expected_issuer: &str) -> BrokerAccessIssuer {
     let key = KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let der = Zeroizing::new(key.serialize_der());
     std::fs::write(root.join("signing.pk8"), &der).unwrap();
-    std::fs::write(root.join("ca.pem"), ca).unwrap();
     BrokerAccessIssuer::new(expected_issuer, AUDIENCE, "configured-key", &der).unwrap()
 }
 pub fn write(root: &Path, yaml: &str) -> PathBuf {
@@ -88,8 +92,11 @@ pub async fn start(path: &Path, address: SocketAddr) -> Child {
         .spawn()
         .unwrap();
     let end = deadline();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     loop {
-        if reqwest::get(format!("http://{address}/readyz"))
+        if client
+            .get(format!("http://{address}/readyz"))
+            .send()
             .await
             .is_ok_and(|r| r.status().is_success())
         {

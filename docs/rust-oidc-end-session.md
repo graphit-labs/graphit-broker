@@ -125,7 +125,7 @@ producers against PostgreSQL TLS with a NOSUPERUSER owner: wire/pair isolation
 and elapsed ID expiry; upstream closed and trust/DCR removed; SQL ordering,
 corruption/caps/permission/cancellation/deadline and LOCAL invalidation;
 and durable multi-row COMMIT with its ACK withheld. The maintained Rust
-pre-push runner includes this exact phase; four deliberately failing compiled
+qualification runner includes this exact phase; four deliberately failing compiled
 Rust cases verify that each contract failure stops later phases.
 
 Compilation alone does not validate the runtime contracts, other platforms or the complete Broker migration.

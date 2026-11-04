@@ -79,22 +79,13 @@ Byte budgets remain the responsibility of the decoding transport.
 
 ## Source and build layout
 
-Canonical source belongs to graphit-broker, repository
-`https://github.com/graphit-labs/graphit-broker.git`, crate
-`crates/broker-now-wire`. The normal first-party build layout has sibling
-checkouts named `graphit-code` and `graphit-broker`. Broker consumers use an
-internal Cargo path dependency when their Source introduces actual use. Main
-owns the Code dependency/lockfile and CI bootstrap that acquires the Broker
-peer checkout. There is no registry, loader or vendored validator copy.
-
-The Code CI/bootstrap must explicitly provision the canonical Broker repository
-and reviewed producer reference, keep Code as its command working directory,
-and align cache/artifact paths to that layout. A path already present on one
-developer's machine is insufficient. An old Broker commit observed before this
-crate's Source is not a valid claim that the crate exists at that commit.
-Canonical source must contain the producer before a remote CI run can qualify
-it. Local sibling builds and remote CI execution are separate evidence.
-This work does not publish a crate, commit or push the migration.
+The canonical producer is `crates/broker-now-wire` in the
+[Graphit Broker repository](https://github.com/graphit-labs/graphit-broker).
+Broker workspace crates use its internal path dependency. Code uses the published
+Git revision selected in its Cargo manifest and lockfile. Code's producer-side
+integration tests use the same revision as the wire crate, so Cargo resolves the
+wire types from one source. Run `cargo fetch --locked` to prepare the dependencies
+in a clean checkout.
 
 ## Checks and gate
 
@@ -111,7 +102,9 @@ cargo fmt --all --check
 cargo run --locked --quiet -p xtask -- hook pre-commit
 ~~~
 
-Pre-commit checks whitespace and formatting. Pre-push runs strict workspace Clippy and `cargo test --locked --workspace --all-targets`, including Control and the wire crate's codec tests. Native SQL and transport integration retain their own pre-push phases; invoking these checks does not perform a push.
+Pre-commit checks whitespace and formatting. `make check` runs strict workspace
+Clippy and the ordinary workspace tests, including Control and the wire codec.
+Use `make qualify` for native SQL and transport integration.
 
 The original extraction compared Source and tests to the prior qualified
 version after only the Rust crate import change. The later consuming DATA

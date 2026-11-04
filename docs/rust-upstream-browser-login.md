@@ -192,7 +192,7 @@ only after PostgreSQL reports the exact connection's COMMIT idle and committed
 row state, then checks absence of authority/SDK replay and healthy recovery.
 It also exercises caller Drop, Original deadline and expiry during UserInfo.
 
-The two exact commands are saved before PROJECT/Presence/audit phases in xtask pre-push. The runner's adversarial fixture uses real failing Rust tests to verify later phases do not execute. Run the hook through `cargo run --locked --offline -p xtask -- hook pre-push` only for a scheduled full integration; invoking a hook never authorizes `git push`. Affected ordinary/doc tests, Clippy, fmt, F1 native HTTP and link checks accompany this adapter. Linux execution does not establish other-platform runtime support or complete integration.
+The two exact commands are saved before PROJECT/Presence/audit phases in the explicit xtask qualification. The runner's adversarial fixture uses real failing Rust tests to verify later phases do not execute. Run qualification through `cargo run --locked --offline -p xtask -- qualify` only for a scheduled full integration; invoking a hook never authorizes `git push`. Affected ordinary/doc tests, Clippy, fmt, F1 native HTTP and link checks accompany this adapter. Linux execution does not establish other-platform runtime support or complete integration.
 
 Implementation owners: `crates/broker-control/src/upstream_login.rs`,
 `crates/broker-control/src/service/upstream_login.rs` and

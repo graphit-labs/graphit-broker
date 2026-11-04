@@ -5,7 +5,13 @@ use std::{
     process::Command,
 };
 
-pub(super) fn collect(root: &Path) -> io::Result<(Vec<PathBuf>, String)> {
+pub(super) struct NativeSource {
+    pub(super) notices: Vec<PathBuf>,
+    pub(super) engine_package_id: String,
+    pub(super) platform_producer: PathBuf,
+}
+
+pub(super) fn collect(root: &Path) -> io::Result<NativeSource> {
     let output = Command::new("cargo")
         .args([
             "metadata",
@@ -101,7 +107,11 @@ pub(super) fn collect(root: &Path) -> io::Result<(Vec<PathBuf>, String)> {
         .as_str()
         .ok_or_else(|| io::Error::other("Cargo package ID missing"))?
         .to_owned();
-    Ok((entries, id))
+    Ok(NativeSource {
+        notices: entries,
+        engine_package_id: id,
+        platform_producer: ai.join("../../scripts/package-platform-runtime.mjs"),
+    })
 }
 
 /// Explicit native outputs from the successful Cargo build, never checkout discovery.

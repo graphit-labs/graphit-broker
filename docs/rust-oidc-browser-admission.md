@@ -114,7 +114,7 @@ COMMIT-idle state before withholding the reply; no fabricated storage success is
 used. Unit tests independently preserve Original, UTC and monotonic gates, and
 rustdoc rejects construction, serialization and cloning of sealed outputs.
 
-The versioned xtask pre-push phase runs this invocation before audit. Its isolated
+The versioned xtask qualification phase runs this invocation before audit. Its isolated
 Cargo failure oracle makes each selected real Rust test fail and proves later
 phases stop. Linux execution qualifies Linux only; the command is portable but
 Windows/macOS execution remains part of final integration.

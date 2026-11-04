@@ -18,11 +18,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-#[allow(
-    dead_code,
-    reason = "shared Code TCP fixture also serves response-header tests"
-)]
-#[path = "../../../../graphit-code/crates/graphit-ai/tests/support/rerank_http.rs"]
+#[path = "support/model_http.rs"]
 mod wire;
 use wire::{fixture, reply};
 

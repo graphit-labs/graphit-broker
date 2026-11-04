@@ -137,7 +137,7 @@ No instant logout/revocation or last-byte-before-expiry guarantee is promised.
 
 The exact long `USER_MEMORY_HTTP_STS` phase follows `PROJECT_CORPUS_HTTP_STS`
 and is followed by `GLOBAL_HUB_HTTP_STS` and `PROJECT_HUB_METADATA_EVENTS_STS`
-before Audit in the existing pre-push runner:
+before Audit in the existing qualification runner:
 
 ~~~text
 cargo test --locked -j1 -p broker-presence --test user_memory_storage_credentials_http -- --ignored --exact user_memory_storage_credentials_http_contract --test-threads=1
@@ -171,7 +171,7 @@ root cause; choosing this test transport does not prove their cause or repair.
 Receipts in `.build/rust-user-memory-storage-http-2026-10-12/` record actual
 passes/failures and elapsed times. The reused isolated runner counterproof
 establishes only that a real failing USER HTTP Rust assertion blocks Audit;
-it does not qualify Broker or the whole pre-push pipeline. Windows/macOS,
+it does not qualify Broker or the whole qualification suite. Windows/macOS,
 production AWS IAM/TLS/provider deployments, native caller/datasets, Global Hub,
 metadata/events and final migration integration remain separate qualifications.
 

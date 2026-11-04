@@ -352,7 +352,7 @@ Run the focused SQLite Server process target with:
     cargo test --locked --offline -p broker-server --test sqlite_server
     cargo test --locked --offline -p broker-server --test sqlite_server -- --ignored --test-threads=1
 
-The ignored target is selected by the existing SQLite pre-push phase. A Linux
+The ignored target is selected by the existing SQLite qualification phase. A Linux
 run does not qualify Windows/macOS signals, filesystem policy or runtime.
 
 ## Requests, startup and shutdown
@@ -514,6 +514,12 @@ The maintained checks cover HTTP/SQL behavior and real local GGUF consumers with
 ## Native rerank
 
 The native `services.rerank` composition supports PostgreSQL/SQLite Broker executables and the Code rerank SDK consumer. Local rerank uses the typed GGUF manifest and provisioned BAAI/bge-reranker-v2-m3 F16 bundle through the shared paired rank classifier. It remains opt-in. There is no automatic download or cosine fallback. CPU qualification does not establish GPU or other-platform support. See the [HTTP contract](api.md#rerank) and [current SQL admission](authorization.md#native-rerank-sql-admission).
+
+The standard `broker-server` `rerank` test target runs the real executable
+with temporary SQLite and a controlled loopback provider. It checks discovery
+in standalone, dual-service and disabled configurations, SDK score ordering,
+cache isolation and current authorization. The PostgreSQL and GGUF cases in
+that target remain explicit qualification.
 
 This native fragment selects an already deployed Graphit service. Replace its
 endpoint and revision with actual deployment values. Requests cannot select a model.

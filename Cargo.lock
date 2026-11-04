@@ -2512,6 +2512,7 @@ dependencies = [
 [[package]]
 name = "graphit-ai"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "agent-client-protocol",
  "cxx",
@@ -2537,6 +2538,7 @@ dependencies = [
 [[package]]
 name = "graphit-auth"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -2560,6 +2562,7 @@ dependencies = [
 [[package]]
 name = "graphit-core"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
@@ -2589,6 +2592,7 @@ dependencies = [
 [[package]]
 name = "graphit-fs"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "errno",
  "libc",
@@ -2604,6 +2608,7 @@ dependencies = [
 [[package]]
 name = "graphit-http"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "futures-util",
  "graphit-core",
@@ -2620,6 +2625,7 @@ dependencies = [
 [[package]]
 name = "graphit-hub"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "base64 0.22.1",
  "graphit-core",
@@ -2642,6 +2648,7 @@ dependencies = [
 [[package]]
 name = "graphit-process"
 version = "0.1.0"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=f4aff51be8ceb9d05a040b663b5231d657318042#f4aff51be8ceb9d05a040b663b5231d657318042"
 dependencies = [
  "graphit-core",
  "nix 0.31.3",

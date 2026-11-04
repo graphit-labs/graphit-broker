@@ -165,6 +165,6 @@ both results and native shutdown. To cancel safely, create the index path with
 its extension replaced by `.stop`; cancellation cleans up and fails the test.
 Ordinary unattended runs omit this variable and still exercise all three modes.
 
-The callback command is the focused pre-push phase; fast checks remain pre-commit.
+The callback command is the focused qualification phase; fast checks remain pre-commit.
 A full hook/integration run is coordinated separately and never authorizes push.
 Only executed checks may be reported passed.

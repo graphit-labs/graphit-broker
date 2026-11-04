@@ -159,11 +159,22 @@ fn storage_gate_fixture(pre_push: bool) -> Fixture {
 
 fn assert_storage_gate_failure(pre_push: bool) {
     let fixture = storage_gate_fixture(pre_push);
-    let event = "pre-push";
-    let output = Command::new("cargo")
-        .args([
-            "run", "--locked", "--quiet", "-p", "xtask", "--", "hook", event,
-        ])
+    let mut command = Command::new("cargo");
+    command.args([
+        "run",
+        "--locked",
+        "--offline",
+        "--quiet",
+        "-p",
+        "xtask",
+        "--",
+    ]);
+    if pre_push {
+        command.arg("qualify");
+    } else {
+        command.args(["hook", "pre-push"]);
+    }
+    let output = command
         .env("CARGO_TARGET_DIR", fixture.0.join("target"))
         .env("CARGO_BUILD_JOBS", "1")
         .current_dir(&fixture.0)
@@ -182,7 +193,7 @@ fn assert_storage_gate_failure(pre_push: bool) {
     let selected = if pre_push {
         "broker check: cargo [\"test\", \"--locked\", \"-p\", \"broker-storage\", \"--test\", \"aws_hub_storage\""
     } else {
-        "broker check: cargo [\"test\", \"--locked\", \"--workspace\", \"--all-targets\"]"
+        "broker check: cargo [\"test\", \"--locked\", \"--offline\", \"--workspace\", \"--all-targets\"]"
     };
     assert!(transcript.contains(selected), "{transcript}");
     assert!(transcript.contains("test result: FAILED"), "{transcript}");
@@ -199,7 +210,7 @@ fn saved_prepush_stops_after_workspace_ordinary_failure() {
     assert_storage_gate_failure(false);
 }
 #[test]
-fn saved_prepush_stops_after_storage_ignored_contract_failure() {
+fn qualification_stops_after_storage_ignored_contract_failure() {
     assert_storage_gate_failure(true);
 }
 
@@ -233,7 +244,7 @@ fn saved_server_http_phases_stop_after_an_actual_rust_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/oidc_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&"CONTRACT")).unwrap();
     let audit = phases.iter().position(|p| p.args.first() == Some(&"audit")).unwrap();
     for phase in phases.into_iter().skip(start).take(audit-start+1) {
@@ -287,7 +298,7 @@ fn saved_admin_postgres_target_stops_before_later_persistence_phase() {
     // in this new target. This adversarial gate fixture is not a PostgreSQL proof.
     let fixture = storage_gate_fixture(true);
     let root = &fixture.0;
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let phase = phases
         .iter()
         .find(|p| p.args.contains(&"postgres_admin_broker_session"))
@@ -320,7 +331,7 @@ fn saved_admin_postgres_target_stops_before_later_persistence_phase() {
     }
     fs::write(root.join("runner/src/bin/admin_postgres_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&"postgres_admin_broker_session")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -403,7 +414,7 @@ fn saved_cookie_postgres_failure_stops_before_cookie_http_and_audit() {
     fs::write(root.join("Cargo.toml"), manifest).unwrap();
     fs::write(root.join("runner/src/bin/cookie_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"postgres_admin_cookie_contract")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -507,7 +518,7 @@ fn saved_local_password_admission_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/admission_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
     let target = std::env::args().nth(1).unwrap();
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let selector = if target.ends_with("postgres_https_local_password_admission_contract") { "_https_local_password_admission_contract" } else { target.as_str() };
     let start = phases.iter().position(|p| p.args.contains(&selector)).unwrap();
     for phase in phases.into_iter().skip(start) {
@@ -597,7 +608,7 @@ fn saved_admin_local_login_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/local_login_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
     let target = std::env::args().nth(1).unwrap();
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&target.as_str())).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -697,7 +708,7 @@ fn saved_upstream_browser_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/upstream_browser_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
     let target = std::env::args().nth(1).unwrap();
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&target.as_str())).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -798,7 +809,7 @@ fn saved_federated_cookie_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/federated_cookie_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
     let target = std::env::args().nth(1).unwrap();
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&target.as_str())).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -890,7 +901,7 @@ fn saved_admin_read_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/admin_read_gate.rs"),r#"
 fn main() -> std::process::ExitCode {
     let target=std::env::args().nth(1).unwrap();
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&target.as_str())).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -981,7 +992,7 @@ fn saved_admin_upstream_login_phases_stop_on_real_contract_failure() {
         fs::write(root.join("runner/src/bin/upstream_login_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
     let target = std::env::args().nth(1).unwrap();
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.contains(&target.as_str())).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -1070,7 +1081,7 @@ fn saved_hub_storage_process_phases_stop_on_real_build_or_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/hub_storage_gate.rs"), r#"
 fn main() -> std::process::ExitCode {
-    let phases = xtask::checks(xtask::Event::PrePush, b"");
+    let phases = xtask::qualification_checks();
     let start = phases.iter().position(|p| p.args.first() == Some(&"build") && p.args.contains(&"hub_storage_fixture")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {
@@ -1156,7 +1167,7 @@ fn saved_dcr_phases_stop_on_real_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/dcr_gate.rs"),r#"
 fn main() -> std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"CONTRACT")).unwrap();
     let audit=phases.iter().position(|p|p.args.first()==Some(&"audit")).unwrap();
     for phase in phases.into_iter().skip(start).take(audit-start+1) {
@@ -1263,7 +1274,7 @@ fn saved_federated_phases_stop_on_real_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/federated_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"TARGET")).unwrap();
     let audit=phases.iter().position(|p|p.args.first()==Some(&"audit")).unwrap();
     for phase in phases.into_iter().skip(start).take(audit-start+1) {
@@ -1339,7 +1350,7 @@ fn saved_upstream_oauth_callback_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/oidc_browser_callback.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/oauth_callback_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oidc_browser_callback")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1407,7 +1418,7 @@ fn saved_local_login_runtime_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/local_login_runtime.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/local_runtime_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"local_login_runtime")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1484,7 +1495,7 @@ fn saved_oidc_browser_admission_phase_stops_on_real_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/browser_admission_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"postgres_oidc_authorization")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1564,7 +1575,7 @@ fn saved_oidc_browser_authorization_phase_stops_on_real_contract_failure() {
         .unwrap();
         fs::write(root.join("runner/src/bin/browser_authorization_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oidc_browser_authorization")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1637,7 +1648,7 @@ fn saved_oidc_discovery_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/oidc_discovery.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/discovery_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oidc_discovery")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1712,7 +1723,7 @@ fn saved_oidc_userinfo_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/oauth_userinfo.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/userinfo_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oauth_userinfo")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1787,7 +1798,7 @@ fn saved_oidc_introspection_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/oauth_introspection.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/introspection_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oauth_introspection")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1862,7 +1873,7 @@ fn saved_oidc_end_session_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/oauth_end_session.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/end_session_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"oauth_end_session")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -1963,7 +1974,7 @@ fn saved_revocation_phases_stop_on_real_rust_failures() {
         }
         fs::write(root.join("runner/src/bin/revocation_gate.rs"), r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"postgres_oidc_revocation")).unwrap();
     for phase in phases.into_iter().skip(start).take(3) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -2152,7 +2163,7 @@ fn native_builder_and_container_phase_stop_on_real_failures() {
     }
     fs::create_dir_all(root.join("server/tests")).unwrap();
     fs::write(root.join("server/tests/container.rs"), "#[test]\n#[ignore]\nfn broker_native_container_contract() { panic!(\"intentional native container failure\"); }\n").unwrap();
-    let phase = xtask::checks(xtask::Event::PrePush, b"")
+    let phase = xtask::qualification_checks()
         .into_iter()
         .find(|p| p.args.contains(&"container"))
         .unwrap();
@@ -2201,7 +2212,7 @@ fn saved_device_phase_stops_on_real_contract_failure() {
         fs::write(root.join("server/tests/postgres_device.rs"), source).unwrap();
         fs::write(root.join("runner/src/bin/device_gate.rs"),r#"
 fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&"postgres_device")).unwrap();
     for phase in phases.into_iter().skip(start) {
         match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
@@ -2218,80 +2229,6 @@ fn main()->std::process::ExitCode {
                 "xtask",
                 "--bin",
                 "device_gate",
-            ])
-            .env("CARGO_TARGET_DIR", root.join("target"))
-            .env("CARGO_BUILD_JOBS", "1")
-            .current_dir(root)
-            .output()
-            .unwrap();
-        let transcript = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!output.status.success(), "{transcript}");
-        assert!(
-            transcript.contains(&format!("{contract} ... FAILED")),
-            "{transcript}"
-        );
-        assert!(
-            transcript.contains("broker check failed: cargo"),
-            "{transcript}"
-        );
-        assert!(
-            !transcript.contains("broker check: cargo [\"audit\""),
-            "Device failure must block audit: {transcript}"
-        );
-    }
-}
-
-#[test]
-fn saved_device_http_phase_stops_on_real_contract_failure() {
-    let cases = [
-        "broker_device_http_contract",
-        "broker_device_mfa_http_contract",
-        "broker_device_configuration_contract",
-    ];
-    for (index, contract) in cases.iter().enumerate() {
-        let fixture = storage_gate_fixture(true);
-        let root = &fixture.0;
-        fs::write(
-            root.join("server/Cargo.toml"),
-            "[package]\nname = \"broker-server\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("runner/src/bin")).unwrap();
-        fs::create_dir_all(root.join("server/tests")).unwrap();
-        let source: String = cases
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                format!(
-                    "#[test]\n#[ignore]\nfn {name}() {{ assert_eq!({}, 0); }}\n",
-                    usize::from(i == index)
-                )
-            })
-            .collect();
-        fs::write(root.join("server/tests/oauth_device.rs"), source).unwrap();
-        fs::write(root.join("runner/src/bin/device_http_gate.rs"),r#"
-fn main()->std::process::ExitCode {
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
-    let start=phases.iter().position(|p|p.args.contains(&"oauth_device")).unwrap();
-    for phase in phases.into_iter().skip(start) {
-        match xtask::execute(phase) {Ok(status) if status.success()=>{},_=>{eprintln!("broker check failed: {}",phase.program);return std::process::ExitCode::FAILURE;}}
-    }
-    std::process::ExitCode::SUCCESS
-}
-"#).unwrap();
-        let output = Command::new("cargo")
-            .args([
-                "run",
-                "--offline",
-                "--quiet",
-                "-p",
-                "xtask",
-                "--bin",
-                "device_http_gate",
             ])
             .env("CARGO_TARGET_DIR", root.join("target"))
             .env("CARGO_BUILD_JOBS", "1")
@@ -2449,7 +2386,7 @@ fn sqlite_local_saved_checks_for(selectors: &[&str]) {
         // Complete the disposable workspace for the saved SQLite phase. The
         // selected targets above inject real failures; unrelated targets only
         // need to exist so Cargo can reach those assertions.
-        let phases = xtask::checks(xtask::Event::PrePush, b"");
+        let phases = xtask::qualification_checks();
         let phase = phases
             .iter()
             .find(|p| p.args.contains(&"sqlite_local_auth"))
@@ -2472,7 +2409,7 @@ fn sqlite_local_saved_checks_for(selectors: &[&str]) {
 fn main()->std::process::ExitCode {
     let selector=std::env::args().nth(1).unwrap();
     let restored=std::env::args().nth(2).as_deref()==Some("restored");
-    let phases=xtask::checks(xtask::Event::PrePush,b"");
+    let phases=xtask::qualification_checks();
     let start=phases.iter().position(|p|p.args.contains(&selector.as_str())).unwrap();
     for phase in phases.into_iter().skip(start).take(if restored {1}else{usize::MAX}) {
         match xtask::execute(phase) {
