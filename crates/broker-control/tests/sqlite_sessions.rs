@@ -739,9 +739,11 @@ async fn real_writer_deadline_caller_drop_close_and_recovery_preserve_three_tabl
         Err(ControlError::Deadline)
     ));
     writer.rollback().unwrap();
-    short_view.session("existing", end()).await.unwrap();
-    assert_eq!(snapshot(&db), before);
+    // The caller can time out while SQLite still owns the interrupted transaction.
+    // Drain that worker before checking recovery under the normal operation budget.
     short.shutdown(end()).await.unwrap();
+    view.session("existing", end()).await.unwrap();
+    assert_eq!(snapshot(&db), before);
     let writer = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();

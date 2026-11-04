@@ -813,7 +813,7 @@ async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret(
     .await
     .unwrap();
     let gate = Gate::new("broker_control::sqlite::admin_users_commit_ack", 1);
-    let job = tokio::spawn({
+    let mut job = tokio::spawn({
         let s = f.store.clone();
         let e = engine.clone();
         let raw = Zeroizing::new(raw.to_string());
@@ -828,28 +828,40 @@ async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret(
                     username: "ack-robot",
                     input: &r,
                 },
-                Instant::now() + Duration::from_millis(750),
+                Instant::now() + Duration::from_secs(3),
             )
             .await
         }
         .with_subscriber(Registry::default().with(GateLayer(gate)))
     });
-    gate.wait().await;
-    assert_eq!(
-        count(
-            &f.db,
-            "SELECT count(*) FROM local_tokens WHERE subject='ack-subject'"
-        ),
-        1
+    tokio::select! {
+        biased;
+        () = gate.wait() => {},
+        result = &mut job => {
+            gate.release();
+            match result {
+                Ok(Err(error)) => panic!("credential issuance failed before the commit was observed: {error:?}"),
+                Ok(Ok(_)) => panic!("credential issuance returned before the commit was observed"),
+                Err(error) => panic!("credential issuance task failed before the commit was observed: {error}"),
+            }
+        }
+    }
+    let committed = count(
+        &f.db,
+        "SELECT count(*) FROM local_tokens WHERE subject='ack-subject'",
     );
-    let error = job.await.unwrap().unwrap_err();
+    let outcome = job.await;
+    gate.release();
+    assert_eq!(committed, 1);
+    let error = outcome
+        .unwrap()
+        .expect_err("credential secret must remain withheld without acknowledgement");
     assert_eq!(
         error,
         AdminUsersError::Authorization(AdminBrokerSessionError::Control(
             ControlError::OutcomeUncertain
         ))
     );
-    gate.release();
     // A known independent read joins the actual owner before the next operation.
     f.store
         .resource_grants(n(65536))
