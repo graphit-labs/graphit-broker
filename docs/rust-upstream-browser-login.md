@@ -98,7 +98,7 @@ an isolated `OidcFlow`, profile JSON or fabricated metadata into a proof.
 ## Verify protocol and identity
 
 The authorization request uses S256 PKCE. Token exchange and ID verification use
-`openidconnect =4.0.1`. Confidential authentication is selected once from
+`openidconnect =4.1.0`. Confidential authentication is selected once from
 advertised Basic/Post methods; public clients use their exact client ID without
 secret. There is no client-authentication retry or automatic code replay.
 Discovery, token and UserInfo use the common bounded transport with certificate

@@ -57,7 +57,7 @@ Send JSON to the Broker base URL:
 No bearer or client secret is required for this public registration. The transport
 reads JSON directly without adding a Content-Type requirement. The body has a
 fixed 32768-byte cap, independent of the token form cap. The pinned
-`openidconnect 4.0.1` metadata types and serde perform parsing, including rejection
+`openidconnect 4.1.0` metadata types and serde perform parsing, including rejection
 of duplicate known fields, malformed types and trailing JSON. Unknown metadata
 extensions are ignored; the server does not fetch their URLs.
 
