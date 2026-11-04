@@ -178,7 +178,7 @@ async fn actual_cli_configuration_without_effects() {
         root.path().join("postgres-ca.pem"),
     )
     .unwrap();
-    write_config(root.path(), example);
+    write_config(root.path(), &example.replace('\n', "\r\n"));
     let out = command()
         .args(["--config", path.to_str().unwrap(), "--check-config"])
         .env("BROKER_DATABASE_PASSWORD", "ephemeral-password")

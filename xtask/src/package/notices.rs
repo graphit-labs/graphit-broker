@@ -205,14 +205,8 @@ mod tests {
 
     #[test]
     fn receipt_selects_the_supplied_binary_and_exact_engine_build() {
-        let root = std::env::temp_dir().join(format!(
-            "broker-cargo-receipt-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
         fs::create_dir_all(root.join("engine/lib")).unwrap();
         let binary = root.join("broker");
         fs::write(&binary, "fixture").unwrap();
@@ -234,8 +228,9 @@ mod tests {
         };
         write(&messages);
         let selected = runtime_inputs(Some(&receipt), &binary, "selected-llama").unwrap();
-        assert_eq!(selected.engine, Some(root.join("engine")));
-        assert_eq!(selected.search, vec![root.join("engine/lib")]);
+        let engine = fs::canonicalize(root.join("engine")).unwrap();
+        assert_eq!(selected.search, vec![engine.join("lib")]);
+        assert_eq!(selected.engine, Some(engine));
         assert!(selected.toolkit.is_none());
         assert!(runtime_inputs(Some(&receipt), &binary, "other-llama").is_err());
         let mut duplicate = messages.clone();
@@ -254,6 +249,5 @@ mod tests {
                 .search
                 .is_empty()
         );
-        fs::remove_dir_all(root).unwrap();
     }
 }

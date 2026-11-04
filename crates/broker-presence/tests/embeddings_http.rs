@@ -603,13 +603,13 @@ async fn genuine_ingresses_reauthorize_hits_and_reject_invalid_credentials_befor
     let f = Fixture::new().await;
     let issuer = ingress::fixture::Fixture::new().await;
     let jwt = ingress::jwt(&issuer).await;
-    let mut external = ingress::upstream::UpstreamFixture::new().await;
-    let trust = ingress::trust(vec![ingress::config(
-        &external.issuer,
-        &external.ca,
-        false,
-        None,
-    )]);
+    // Leave OS TLS validation to its own tests. This route exercises real
+    // discovery, JWKS, JWT verification and authorization using local HTTP.
+    let mut external = ingress::upstream::UpstreamFixture::loopback_http().await;
+    let mut provider = ingress::config(&external.issuer, &[], false, None);
+    provider.allow_loopback_http = true;
+    provider.trusted_ca_pem = None;
+    let trust = ingress::trust(vec![provider]);
     let upstream = external.sign(&external.claims(), "upstream-key", "at+jwt");
     let peer = Peer::new("openai", false).await;
     let backend = peer.backend("openai", HeaderMap::new());
@@ -631,7 +631,12 @@ async fn genuine_ingresses_reauthorize_hits_and_reject_invalid_credentials_befor
     let service = format!("Bearer {}", f.service);
     let native = format!("Bearer {}", jwt.as_str());
     let federated = format!("Bearer {}", upstream.as_str());
-    for raw in [&human, &service, &native, &federated] {
+    for (ingress, raw) in [
+        ("opaque human", &human),
+        ("opaque service", &service),
+        ("native JWT", &native),
+        ("federated JWT", &federated),
+    ] {
         grants(&f, "authenticated", "");
         let reply = send(
             &server,
@@ -639,9 +644,10 @@ async fn genuine_ingresses_reauthorize_hits_and_reject_invalid_credentials_befor
             r#"{"input":"cache-me"}"#,
         )
         .await;
-        assert_eq!(reply.status.as_u16(), 200, "{}", reply.json());
-        assert_eq!(reply.headers["x-graphit-cache"], "HIT");
+        assert_eq!(reply.status.as_u16(), 200, "{ingress}: {}", reply.json());
+        assert_eq!(reply.headers["x-graphit-cache"], "HIT", "{ingress}");
     }
+    assert_eq!(external.hits(), 2, "federated discovery and JWKS");
     for (kind, principal) in [
         ("user", " alice "),
         ("organization", "org"),

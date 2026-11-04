@@ -1,0 +1,5 @@
+# Tests extract and modify the fenced YAML in these maintained examples.
+docs/rust-admin-cookie-session.md text eol=lf
+docs/rust-admin-local-login.md text eol=lf
+docs/rust-broker-server.md text eol=lf
+docs/rust-oidc-token-exchange.md text eol=lf

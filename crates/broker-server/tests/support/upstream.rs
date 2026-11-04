@@ -1,4 +1,4 @@
-//! Owned Rust HTTPS discovery/JWKS issuer with real Ed25519 access signatures.
+//! Owned discovery/JWKS issuer with real Ed25519 access signatures.
 use axum::{Json, Router, extract::State, routing::get};
 use broker_control::BrokerAccessIssuer;
 use hyper::server::conn::http1;
@@ -31,7 +31,9 @@ struct IssuerState {
 async fn discovery(State(state): State<Arc<IssuerState>>) -> Json<Value> {
     state.hits.fetch_add(1, Ordering::Relaxed);
     let delay = *state.delay.lock().unwrap();
-    tokio::time::sleep(delay).await;
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
     if let Some(value) = state.metadata.lock().unwrap().clone() {
         return Json(value);
     }
@@ -53,32 +55,23 @@ pub struct UpstreamFixture {
 }
 impl UpstreamFixture {
     pub async fn new() -> Self {
+        Self::start(Some(tls())).await
+    }
+    #[allow(dead_code, reason = "the embeddings contract uses loopback HTTP")]
+    pub async fn loopback_http() -> Self {
+        Self::start(None).await
+    }
+    async fn start(tls: Option<(Vec<u8>, TlsAcceptor)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let scheme = if tls.is_some() { "https" } else { "http" };
         let issuer = format!(
-            "https://127.0.0.1:{}",
+            "{scheme}://127.0.0.1:{}",
             listener.local_addr().unwrap().port()
         );
-        let ca_key = KeyPair::generate().unwrap();
-        let mut ca_params = CertificateParams::new(vec![]).unwrap();
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let ca = ca_params.self_signed(&ca_key).unwrap();
-        let tls_key = KeyPair::generate().unwrap();
-        let params = CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
-        let cert = params
-            .signed_by(&tls_key, &Issuer::new(ca_params, ca_key))
-            .unwrap();
-        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![CertificateDer::from(cert.der().to_vec())],
-            PrivatePkcs8KeyDer::from(tls_key.serialize_der()).into(),
-        )
-        .unwrap();
-        let acceptor = TlsAcceptor::from(Arc::new(tls));
+        let (ca, acceptor) = match tls {
+            Some((ca, acceptor)) => (ca, Some(acceptor)),
+            None => (Vec::new(), None),
+        };
         let key = Zeroizing::new(
             KeyPair::generate_for(&rcgen::PKCS_ED25519)
                 .unwrap()
@@ -100,6 +93,15 @@ impl UpstreamFixture {
             .with_state(state.clone());
         let (stop, mut stopping) = oneshot::channel();
         let task = tokio::spawn(async move {
+            let Some(acceptor) = acceptor else {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        let _ = stopping.await;
+                    })
+                    .await
+                    .unwrap();
+                return;
+            };
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
@@ -117,7 +119,7 @@ impl UpstreamFixture {
         });
         Self {
             issuer,
-            ca: ca.pem().into_bytes(),
+            ca,
             state,
             key,
             stop: Some(stop),
@@ -174,6 +176,29 @@ impl UpstreamFixture {
             task.await.unwrap();
         }
     }
+}
+fn tls() -> (Vec<u8>, TlsAcceptor) {
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca_params = CertificateParams::new(vec![]).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_key).unwrap();
+    let tls_key = KeyPair::generate().unwrap();
+    let params = CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+    let cert = params
+        .signed_by(&tls_key, &Issuer::new(ca_params, ca_key))
+        .unwrap();
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(cert.der().to_vec())],
+        PrivatePkcs8KeyDer::from(tls_key.serialize_der()).into(),
+    )
+    .unwrap();
+    (ca.pem().into_bytes(), TlsAcceptor::from(Arc::new(tls)))
 }
 impl Drop for UpstreamFixture {
     fn drop(&mut self) {
