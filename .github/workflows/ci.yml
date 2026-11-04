@@ -82,4 +82,4 @@ jobs:
         env:
           CARGO_NET_OFFLINE: "true"
           RUSTUP_TOOLCHAIN: "1.98.0"
-        run: cargo run --locked -p xtask -- hook pre-push
+        run: cargo run --locked --offline --target host-tuple -p xtask -- hook pre-push

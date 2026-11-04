@@ -180,14 +180,15 @@ valid results for unchanged code.
 The Broker builds from its own checkout. Cargo fetches the shared Graphit Code
 crates at the exact revision recorded in `Cargo.lock`. After `cargo fetch --locked`,
 `make test` runs the ordinary workspace tests offline. Use `make check` to include
-formatting, strict Clippy and documentation tests.
+formatting, strict Clippy and documentation tests. The check launcher runs from
+Cargo's host-target directory so workspace tests can rebuild `xtask` even on Windows.
 Cargo builds in parallel, and Rust runs cases within each test target on the
 available CPUs. Use `RUST_TEST_THREADS` to override test concurrency locally.
 The device authorization suite starts the native Broker on loopback with a
 temporary SQLite database. The `Native CI` workflow runs these Rust checks on
 Linux, macOS and Windows and checks the administration UI syntax.
 
-Use `make qualify` or `cargo run --locked --offline -p xtask -- qualify` for
+Use `make qualify` or `cargo run --locked --offline --target host-tuple -p xtask -- qualify` for
 the explicit SQL, HTTP, STS, storage and native container contracts. These
 checks need Docker, the [pinned S3 tools](docs/rust-hub-storage-fixture.md#build-and-prerequisites)
 and the release build tools described in [Deployment](docs/deployment.md).

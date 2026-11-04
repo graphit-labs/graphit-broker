@@ -124,7 +124,7 @@ jobs:
       - name: Run ordinary Rust checks
         env:
           CARGO_NET_OFFLINE: "true"
-        run: cargo run --locked --offline -p xtask -- hook pre-push
+        run: cargo run --locked --offline --target host-tuple -p xtask -- hook pre-push
       - name: Install CUDA compiler for the Cargo backend
         uses: Jimver/cuda-toolkit@21aaab8dcb4e9329ae86f60cf6586a9ef3effbea # v0.2.32
         with:
@@ -160,7 +160,7 @@ jobs:
           GOBIN="$tools" sh scripts/prepare-s3-test-tools.sh
           echo "$tools" >> "$GITHUB_PATH"
       - name: Run maintained real integration gate
-        run: cargo run --locked --offline -p xtask -- qualify
+        run: cargo run --locked --offline --target host-tuple -p xtask -- qualify
       - name: Upload qualified native Linux artifact
         uses: actions/upload-artifact@v4
         with:
