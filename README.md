@@ -181,6 +181,8 @@ The Broker builds from its own checkout. Cargo fetches the shared Graphit Code
 crates at the exact revision recorded in `Cargo.lock`. After `cargo fetch --locked`,
 `make test` runs the ordinary workspace tests offline. Use `make check` to include
 formatting, strict Clippy and documentation tests.
+Cargo builds in parallel, and Rust runs cases within each test target on the
+available CPUs. Use `RUST_TEST_THREADS` to override test concurrency locally.
 The device authorization suite starts the native Broker on loopback with a
 temporary SQLite database. The `Native CI` workflow runs these Rust checks on
 Linux, macOS and Windows and checks the administration UI syntax.

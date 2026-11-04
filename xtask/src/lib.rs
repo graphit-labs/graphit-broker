@@ -30,6 +30,7 @@ const CLIPPY: Check = Check {
         "--offline",
         "--workspace",
         "--all-targets",
+        "--keep-going",
         "--",
         "-D",
         "warnings",

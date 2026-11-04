@@ -501,7 +501,7 @@ async fn stop(mut child: Child, success: bool) {
     #[cfg(unix)]
     assert_eq!(exit.success(), success, "native shutdown result");
     #[cfg(not(unix))]
-    let _ = exit;
+    let _ = (exit, success);
 }
 async fn credentials(address: SocketAddr, bearer: &str) -> Value {
     let reply = reqwest::Client::new()
