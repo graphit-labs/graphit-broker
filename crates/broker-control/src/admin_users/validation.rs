@@ -69,3 +69,11 @@ pub(crate) fn values<'a>(
 pub(crate) fn valid_new_password(password: &str) -> bool {
     password.len() <= LOCAL_PASSWORD_MAX_BYTES && password.chars().count() >= 15
 }
+
+pub(crate) fn valid_credential_id(value: &str) -> bool {
+    safe_identity_segment(value, 128)
+        || (value.len() == 16
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
+}

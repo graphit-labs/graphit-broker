@@ -13,7 +13,7 @@ use crate::{
     SystemAction, VerifiedBrokerAccess, VerifiedLocalBearer,
     admin_cookie_session::{CookieClock, decode_secret},
     admin_read::{ReadWitness, cookie_authorization},
-    admin_users::validation::values,
+    admin_users::validation::{valid_credential_id, values},
     flow::now_micros,
     identity::{safe_identity_segment, valid_identity_subject},
     upstream_oidc::VerifiedUpstreamBearer,
@@ -861,7 +861,7 @@ async fn apply(
             if current.kind != "service" {
                 return Err(Error::ServiceIdentityNotFound);
             }
-            if !safe_identity_segment(id, 128) {
+            if !valid_credential_id(id) {
                 return Err(error);
             }
             let now = now_micros()?;
@@ -903,7 +903,7 @@ async fn inventory(
         let client: &str = row.try_get(1).map_err(|_| error)?;
         let scopes: Option<&str> = row.try_get(2).map_err(|_| error)?;
         let scopes: Vec<String> = serde_json::from_str(scopes.ok_or(error)?).map_err(|_| error)?;
-        if !safe_identity_segment(id, 128)
+        if !valid_credential_id(id)
             || !safe_identity_segment(client, 128)
             || scopes.iter().any(|s| s.is_empty() || s.trim() != s)
             || scopes.windows(2).any(|s| s[0] >= s[1])

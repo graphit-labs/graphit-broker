@@ -1,7 +1,7 @@
 use super::super::{admin_rbac, local_auth};
 use crate::{
     AdminRbacError, AdminUsersError as Error, AdminUsersLimits, AdminUsersRequest, ControlError,
-    admin_users::validation::values,
+    admin_users::validation::{valid_credential_id, values},
     flow::now_micros,
     identity::{safe_identity_segment, valid_identity_subject},
     sqlite::executor::Work,
@@ -488,7 +488,7 @@ pub(super) fn apply(
             if current.kind != "service" {
                 return Err(Error::ServiceIdentityNotFound);
             }
-            if !safe_identity_segment(id, 128) {
+            if !valid_credential_id(id) {
                 return Err(error);
             }
             let now = now_micros()?;
@@ -548,7 +548,7 @@ fn inventory(
         let id = text(0)?;
         let client = text(1)?;
         let scopes: Vec<String> = serde_json::from_str(text(2)?).map_err(|_| error)?;
-        if !safe_identity_segment(id, 128)
+        if !valid_credential_id(id)
             || !safe_identity_segment(client, 128)
             || scopes.iter().any(|s| s.is_empty() || s.trim() != s)
             || scopes.windows(2).any(|s| s[0] >= s[1])

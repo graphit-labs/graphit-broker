@@ -1049,6 +1049,17 @@ async fn sqlite_binary_local_mfa_admin_current_authority_and_redacted_config() {
     .await;
     let opaque = Zeroizing::new(issued["token"].as_str().unwrap().to_owned());
     assert!(opaque.starts_with("gb_sc_"));
+    // URL-safe base64 can start with a dash. Make the listing cover that
+    // valid random outcome on every run, while leaving the bearer intact.
+    let credential_id = "-AAAAAAAAAAAAAAA";
+    Connection::open(&dbpath)
+        .unwrap()
+        .execute(
+            "UPDATE local_tokens SET token_id=?1 WHERE token_id=?2",
+            [credential_id, issued["id"].as_str().unwrap()],
+        )
+        .unwrap();
+
     let credentials = data(
         admin_request(reqwest::Method::GET, "local-users/server-bot/credentials")
             .send()
@@ -1057,6 +1068,7 @@ async fn sqlite_binary_local_mfa_admin_current_authority_and_redacted_config() {
         200,
     )
     .await;
+    assert_eq!(credentials["credentials"][0]["id"], credential_id);
     assert!(!credentials.to_string().contains(opaque.as_str()));
     let db = Connection::open(&dbpath).unwrap();
     #[cfg(target_os = "linux")]
