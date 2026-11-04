@@ -312,7 +312,6 @@ async fn sqlite_users_four_ingresses_crud_and_current_action() {
     f.store.shutdown(end()).await.unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "actual CSPRNG service issuance, at-rest HMAC, SQLite verifier, bounded inventory and revoke"]
 async fn sqlite_users_service_credential_issuance_verification_and_revocation() {
     let f = Fixture::new().await;
     let raw = ingress::persisted_opaque(&f);
@@ -797,7 +796,6 @@ async fn sqlite_users_kdf_reobserves_authority_and_retains_factor_expiry() {
     f.store.shutdown(end()).await.unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "actual commit-before-ACK uncertainty, no credential delivery, cancellation and recovery"]
 async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret() {
     use std::{future::Future, task::Poll};
     let f = Fixture::new().await;
@@ -1393,7 +1391,6 @@ async fn sqlite_users_update_delete_preserve_federated_same_subject_and_atomicit
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "two physical SQLite owners preserve last explicit administrator during concurrent deletion"]
 async fn sqlite_users_last_admin_concurrent_owners_and_disabled_target() {
     let f = Fixture::new().await;
     let raw = ingress::persisted_opaque(&f);

@@ -358,7 +358,6 @@ impl Drop for Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real TCP, native Argon2 login, SQLite cookie and opaque possession"]
 async fn sqlite_admin_reads_http_real_local_cookie_and_opaque_contract() {
     let f = Fixture::new().await;
     let login = f

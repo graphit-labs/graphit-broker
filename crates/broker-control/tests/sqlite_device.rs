@@ -348,7 +348,6 @@ async fn sqlite_device_malformed_and_original_lock() {
     f.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "native Argon2 proof, protected consent and two-owner one-winner redemption"]
 async fn sqlite_device_genuine_consent_two_owner_redemption() {
     let f = Fixture::new().await;
     let engine = LocalPasswordEngine::new(

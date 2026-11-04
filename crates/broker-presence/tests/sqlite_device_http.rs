@@ -819,7 +819,6 @@ async fn sqlite_device_http_captcha() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real Device forms, disabled owner, original SQLite lock and closed owner"]
 async fn sqlite_device_http_forms_disabled_and_deadline() {
     let f = Fixture::new(false, false, false).await;
     let s = Server::new(&f, Some(f.runtime.clone()), Duration::from_secs(10)).await;

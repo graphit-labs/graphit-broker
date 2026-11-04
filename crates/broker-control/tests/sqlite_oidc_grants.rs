@@ -3,7 +3,6 @@ pub mod fixture;
 use fixture::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "native file SQLite, Argon2 LOCAL preparation, S256 and signed JWTs"]
 async fn sqlite_pending_completion_and_signed_grants() {
     let f = Fixture::new().await;
     let service = f.store.browser_oidc_authorizations(f.authorization.clone());
@@ -136,7 +135,6 @@ async fn sqlite_pending_completion_and_signed_grants() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "native SQLite guards, corruption, rollback, reopen and two-store code race"]
 async fn sqlite_exchange_guards_atomicity_and_races() {
     let mut f = Fixture::new().await;
     let code = f.code(true, true).await;
@@ -275,7 +273,6 @@ async fn sqlite_exchange_guards_atomicity_and_races() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "native absolute refresh rotation, narrowing, one winner and committed reuse revocation"]
 async fn sqlite_refresh_rotation_narrowing_and_reuse() {
     let f = Fixture::new().await;
     let code = f.code(true, true).await;

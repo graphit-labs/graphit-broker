@@ -3,7 +3,6 @@ pub mod fixture;
 use fixture::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real TCP, SQLite, Argon2 LOCAL code issuance and signed token/refresh HTTP"]
 async fn sqlite_token_http_code_refresh_and_reuse() {
     let f = Fixture::new().await;
     let server = Server::new(&f, Duration::from_secs(10)).await;
@@ -77,7 +76,6 @@ async fn sqlite_token_http_code_refresh_and_reuse() {
     f.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real TCP parser/Basic/UTF8/body limits and constructor family rejection"]
 async fn sqlite_token_http_form_guards_and_configuration() {
     let f = Fixture::new().await;
     let server = Server::new(&f, Duration::from_secs(10)).await;
@@ -187,7 +185,6 @@ async fn sqlite_token_http_form_guards_and_configuration() {
     f.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "real TCP SQLite locked original deadline and closed owner"]
 async fn sqlite_token_http_deadline_and_closed_owner() {
     let f = Fixture::new().await;
     let server = Server::new(&f, Duration::from_millis(100)).await;
