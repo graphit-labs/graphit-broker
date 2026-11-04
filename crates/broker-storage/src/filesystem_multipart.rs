@@ -2,12 +2,12 @@ use crate::{
     FilesystemConditions, FilesystemObjectInfo, FilesystemRequest, FilesystemStore,
     FilesystemStoreError, VerifiedFilesystemSession,
     filesystem_session::key as valid_key,
-    filesystem_store::{etag, header, options, owned_dir, sync_dir, valid_etag},
+    filesystem_store::{create_store_dir, etag, header, options, owned_dir, sync_dir, valid_etag},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use broker_control::StorageOperation;
 use cap_fs_ext::DirExt;
-use cap_std::fs::{Dir, DirBuilder};
+use cap_std::fs::Dir;
 use cap_tempfile::TempDir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -304,13 +304,7 @@ impl FilesystemStore {
             getrandom::fill(&mut random).map_err(|_| FilesystemStoreError::Crypto)?;
             let id = URL_SAFE_NO_PAD.encode(random);
             let _guard = self.lock(&upload_lock(&id), session, request)?;
-            let mut builder = DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use cap_std::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            self.multipart.create_dir_with(&id, &builder)?;
+            create_store_dir(&self.multipart, &id)?;
             let dir = self.upload_directory(&id)?;
             let publish = (|| {
                 owned_dir(&dir, "parts")?;

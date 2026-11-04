@@ -183,14 +183,19 @@ pub(crate) fn options(read: bool, create: bool) -> OpenOptions {
     }
     o
 }
-pub(crate) fn owned_dir(parent: &Dir, name: &str) -> Result<Dir, FilesystemStoreError> {
-    let mut builder = cap_std::fs::DirBuilder::new();
+pub(crate) fn create_store_dir(parent: &Dir, name: &str) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use cap_std::fs::DirBuilderExt;
+        use cap_std::fs::{DirBuilder, DirBuilderExt};
+        let mut builder = DirBuilder::new();
         builder.mode(0o700);
+        parent.create_dir_with(name, &builder)
     }
-    match parent.create_dir_with(name, &builder) {
+    #[cfg(not(unix))]
+    parent.create_dir(name)
+}
+pub(crate) fn owned_dir(parent: &Dir, name: &str) -> Result<Dir, FilesystemStoreError> {
+    match create_store_dir(parent, name) {
         Ok(()) => sync_dir(parent)?,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e.into()),

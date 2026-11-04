@@ -129,19 +129,10 @@ fn privacy(r: &reqwest::Response) {
     let csp = r.headers()["content-security-policy"].to_str().unwrap();
     assert!(csp.contains("form-action 'self';") && csp.contains("frame-ancestors 'none'"));
 }
-fn capture(name: &str, html: &str) {
-    if let Some(root) = std::env::var_os("GRAPHIT_BROKER_DEVICE_UI_DIR") {
-        let root = std::path::PathBuf::from(root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(format!("{name}.html")), html).unwrap();
-    }
-}
 async fn page(r: reqwest::Response, status: u16, name: &str) -> String {
     assert_eq!(r.status(), status, "{name}");
     privacy(&r);
-    let html = r.text().await.unwrap();
-    capture(name, &html);
-    html
+    r.text().await.unwrap()
 }
 fn secret(html: &str, name: &str) -> String {
     regex::Regex::new(&format!(r#"name="{name}" value="([A-Za-z0-9_-]{{43}})""#))
@@ -841,7 +832,6 @@ async fn broker_device_configuration_contract() {
         .unwrap()
         .to_owned();
     let h = r.text().await.unwrap();
-    capture("captcha", &h);
     assert!(
         h.contains("data-action=\"device-login\"")
             && h.contains("native-device-site")
