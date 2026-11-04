@@ -795,8 +795,40 @@ async fn sqlite_users_kdf_reobserves_authority_and_retains_factor_expiry() {
     );
     f.store.shutdown(end()).await.unwrap();
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret() {
+    const CASE: &str = "sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret";
+    const CHILD: &str = "GRAPHIT_BROKER_SQLITE_COMMIT_TEST_CHILD";
+    let mut args = std::env::args_os().skip(1);
+    if std::env::var_os(CHILD).is_some_and(|marker| marker == CASE)
+        && args.next().is_some_and(|arg| arg == "--exact")
+        && args.next().is_some_and(|arg| arg == CASE)
+    {
+        sqlite_users_commit_ack_child().await;
+        return;
+    }
+    // A scoped subscriber races other test threads on the shared tracing
+    // callsite cache. Only this child installs a process-wide subscriber.
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", CASE])
+        .env(CHILD, CASE)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated commit test failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed;"),
+        "isolated commit test did not execute exactly one case"
+    );
+}
+
+async fn sqlite_users_commit_ack_child() {
     use std::{future::Future, task::Poll};
     let f = Fixture::new().await;
     let raw = ingress::persisted_opaque(&f);
@@ -813,11 +845,12 @@ async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret(
     .await
     .unwrap();
     let gate = Gate::new("broker_control::sqlite::admin_users_commit_ack", 1);
+    tracing::subscriber::set_global_default(Registry::default().with(GateLayer(gate.clone())))
+        .unwrap();
     let mut job = tokio::spawn({
         let s = f.store.clone();
         let e = engine.clone();
         let raw = Zeroizing::new(raw.to_string());
-        let gate = gate.clone();
         async move {
             let r = AdminServiceCredentialInput::default();
             opaque(
@@ -832,7 +865,6 @@ async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret(
             )
             .await
         }
-        .with_subscriber(Registry::default().with(GateLayer(gate)))
     });
     tokio::select! {
         biased;
@@ -853,9 +885,9 @@ async fn sqlite_users_commit_uncertainty_and_cancellation_do_not_release_secret(
     let outcome = job.await;
     gate.release();
     assert_eq!(committed, 1);
-    let error = outcome
-        .unwrap()
-        .expect_err("credential secret must remain withheld without acknowledgement");
+    let Err(error) = outcome.unwrap() else {
+        panic!("credential secret must remain withheld without acknowledgement");
+    };
     assert_eq!(
         error,
         AdminUsersError::Authorization(AdminBrokerSessionError::Control(

@@ -370,15 +370,24 @@ async fn independent_owners_insert_once_without_overwriting_existing_rows() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writer_lock_deadlines_cancel_and_close_recover_without_response_or_replay() {
-    for (operation, caller) in [
-        (Duration::from_secs(2), Duration::from_millis(80)),
-        (Duration::from_millis(80), Duration::from_secs(2)),
-    ] {
-        let f = Fixture::new(operation).await;
+    let normal_budget = Duration::from_secs(2);
+    let short_budget = Duration::from_millis(80);
+    for caller in [short_budget, normal_budget] {
+        let f = Fixture::new(normal_budget).await;
+        let short = if caller == normal_budget {
+            Some(
+                SqliteControlStore::open(config(&f.path, short_budget), digester(), end())
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
         let policy = policy(true, 8192, 4096);
         let raw = metadata();
         f.db.execute_batch("BEGIN IMMEDIATE").unwrap();
-        let service = f.store.oidc_registration_service(&policy);
+        let store = short.as_ref().unwrap_or(f.store.as_ref());
+        let service = store.oidc_registration_service(&policy);
         let mut pending = Box::pin(service.register(&raw, Instant::now() + caller));
         assert!(futures_util::poll!(pending.as_mut()).is_pending());
         assert_eq!(f.count(), 0);
@@ -388,7 +397,18 @@ async fn writer_lock_deadlines_cancel_and_close_recover_without_response_or_repl
         ));
         assert_eq!(f.count(), 0);
         f.db.execute_batch("ROLLBACK").unwrap();
-        let recovered = service.register(&raw, end()).await.unwrap();
+        // A timed-out call may leave SQLite releasing its transaction. Drain the
+        // short-budget owner before testing a new registration on the same database.
+        if let Some(short) = short {
+            short.shutdown(end()).await.unwrap();
+            assert_eq!(f.count(), 0);
+        }
+        let recovered = f
+            .store
+            .oidc_registration_service(&policy)
+            .register(&raw, end())
+            .await
+            .unwrap();
         assert_public(&body(&recovered));
         assert_eq!(f.count(), 1);
         f.store.shutdown(end()).await.unwrap();
