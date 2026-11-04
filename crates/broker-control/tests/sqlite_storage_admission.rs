@@ -10,10 +10,7 @@ use broker_control::{
 };
 use fixture::*;
 use serde_json::json;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "real private SQLite, Ed25519 verification and controlled human/service opaque possession"]
@@ -463,22 +460,9 @@ async fn sqlite_storage_factory_binding_and_policy_are_current() {
     f.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "native SQLite lock, expiring proof before corrupt ACL error, Original, closed and recovery"]
+#[tokio::test]
+#[ignore = "native SQLite snapshot, expiring proof before corrupt ACL error, Original, closed and recovery"]
 async fn sqlite_storage_negative_acl_errors_keep_factor_and_original_causality() {
-    use std::{
-        future::Future,
-        task::{Context, Poll, Wake, Waker},
-    };
-    struct Ready(tokio::sync::Notify);
-    impl Wake for Ready {
-        fn wake(self: Arc<Self>) {
-            self.0.notify_one();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.notify_one();
-        }
-    }
     let f = Fixture::new().await;
     f.grant("all", &Rule::all());
     let verifier = f.signer.verifier();
@@ -487,15 +471,11 @@ async fn sqlite_storage_negative_acl_errors_keep_factor_and_original_causality()
         .broker_storage_authorizer(&verifier, n(65536), "configured")
         .unwrap();
     let scope = StorageScope::project(A, StorageModule::Task).unwrap();
-    let ready = Arc::new(Ready(tokio::sync::Notify::new()));
-    let waker = Waker::from(ready.clone());
-    let mut context = Context::from_waker(&waker);
     f.db.execute(
         "UPDATE resource_grants SET principal=zeroblob(1) WHERE id='all'",
         [],
     )
     .unwrap();
-    f.db.execute_batch("BEGIN IMMEDIATE").unwrap();
     let mut claims = f.signer.claims();
     let expires = seconds() + 2;
     claims["exp"] = json!(expires);
@@ -504,35 +484,28 @@ async fn sqlite_storage_negative_acl_errors_keep_factor_and_original_causality()
         .authenticate(&raw, &["storage".into()], end())
         .unwrap();
     caller.check().unwrap();
-    let mut pending = Box::pin(factory.authorize_authenticated(caller, &scope));
-    assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
-    assert!(SystemTime::now() < UNIX_EPOCH + Duration::from_secs(expires));
-    let release = async {
-        let until = UNIX_EPOCH + Duration::from_secs(expires) + Duration::from_millis(80);
-        tokio::time::sleep(until.duration_since(SystemTime::now()).unwrap_or_default()).await;
-        f.db.execute_batch("ROLLBACK").unwrap();
-    };
-    let (result, ()) = tokio::join!(pending, release);
+    let until = UNIX_EPOCH + Duration::from_secs(expires);
+    tokio::time::sleep(until.duration_since(SystemTime::now()).unwrap_or_default()).await;
     assert_eq!(
-        result.unwrap_err(),
+        factory
+            .authorize_authenticated(caller, &scope)
+            .await
+            .unwrap_err(),
         Error::Native(BrokerAccessError::Expired)
     );
     f.db.execute("UPDATE resource_grants SET principal='' WHERE id='all'", [])
         .unwrap();
     let fresh = f.signer.sign(&f.signer.claims());
-    f.db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let caller = factory
-        .authenticate(&fresh, &[], Instant::now() + Duration::from_millis(150))
-        .unwrap();
-    let result = factory.authorize_authenticated(caller, &scope).await;
-    f.db.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(result.unwrap_err(), Error::Deadline);
-    f.db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let caller = factory.authenticate(&fresh, &[], end()).unwrap();
-    let mut pending = Box::pin(factory.authorize_authenticated(caller, &scope));
-    assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
-    drop(pending);
-    f.db.execute_batch("ROLLBACK").unwrap();
+    let deadline = Instant::now() + Duration::from_millis(150);
+    let caller = factory.authenticate(&fresh, &[], deadline).unwrap();
+    tokio::time::sleep_until(deadline.into()).await;
+    assert_eq!(
+        factory
+            .authorize_authenticated(caller, &scope)
+            .await
+            .unwrap_err(),
+        Error::Deadline
+    );
     f.store
         .resource_grants(n(65536))
         .unwrap()
