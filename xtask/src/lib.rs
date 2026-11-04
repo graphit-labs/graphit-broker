@@ -181,6 +181,7 @@ const TEST: Check = Check {
         "--offline",
         "--workspace",
         "--all-targets",
+        "--no-fail-fast",
     ],
 };
 const FILESYSTEM_SESSION: Check = Check {
@@ -1454,7 +1455,8 @@ mod tests {
                 "--locked",
                 "--offline",
                 "--workspace",
-                "--all-targets"
+                "--all-targets",
+                "--no-fail-fast"
             ]
         );
     }

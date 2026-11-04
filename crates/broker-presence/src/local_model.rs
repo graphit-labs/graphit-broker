@@ -554,7 +554,10 @@ mod tests {
         let global = fixture.path().join("global");
         let _birth = graphit_fs::create_private_directory(&global).unwrap();
         let mut config = config(&global);
-        assert_eq!(config.snapshot_parent.canonical_path(), global.join("tmp"));
+        assert_eq!(
+            config.snapshot_parent.canonical_path(),
+            global.join("tmp").canonicalize().unwrap()
+        );
         config.source.root = bundle.clone();
         let artifact = &manifest["artifacts"][0];
         config.source.model = manifest["id"].as_str().unwrap().into();

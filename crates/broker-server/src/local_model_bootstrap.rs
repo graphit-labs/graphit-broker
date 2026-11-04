@@ -115,7 +115,10 @@ mod tests {
             };
             assert!(!expected.exists());
             let parent = prepare(&paths, Duration::from_secs(5)).unwrap();
-            assert_eq!(parent.canonical_path(), expected);
+            assert_eq!(
+                parent.canonical_path(),
+                std::fs::canonicalize(&expected).unwrap()
+            );
             assert!(!yaml.join("tmp").exists());
         }
         assert!(resolve_with(&start, Some(&home), Some(Path::new(""))).is_err());

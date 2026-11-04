@@ -178,13 +178,13 @@ pub fn package(
         )),
         pending: false,
     };
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        fs::DirBuilder::new().mode(0o700).create(&stage.path)?;
     }
-    builder.create(&stage.path)?;
+    #[cfg(not(unix))]
+    fs::create_dir(&stage.path)?;
     stage.pending = true;
     let built = stage.path.join(if platform == "windows-amd64" {
         "native-broker.exe"

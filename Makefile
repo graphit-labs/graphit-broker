@@ -33,12 +33,12 @@ fmt:
 	cargo fmt --all
 
 vet:
-	cargo clippy --locked --workspace --all-targets -- -D warnings
+	cargo clippy --locked --offline --workspace --all-targets -- -D warnings
 
 lint: vet
 
 test:
-	cargo test --locked --workspace --all-targets
+	cargo test --locked --offline --workspace --all-targets --no-fail-fast
 
 check:
 	cargo run --locked --offline --quiet -p xtask -- hook pre-push

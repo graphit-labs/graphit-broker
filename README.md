@@ -178,8 +178,9 @@ unit tests. During development, run the suites affected by each change and reuse
 valid results for unchanged code.
 
 The Broker builds from its own checkout. Cargo fetches the shared Graphit Code
-crates at the exact revision recorded in `Cargo.lock`. Use `make check` to run
-formatting, strict Clippy, documentation tests and ordinary workspace tests.
+crates at the exact revision recorded in `Cargo.lock`. After `cargo fetch --locked`,
+`make test` runs the ordinary workspace tests offline. Use `make check` to include
+formatting, strict Clippy and documentation tests.
 The device authorization suite starts the native Broker on loopback with a
 temporary SQLite database. The `Native CI` workflow runs these Rust checks on
 Linux, macOS and Windows and checks the administration UI syntax.
