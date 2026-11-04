@@ -185,7 +185,6 @@ cargo test --locked --offline -j4 -p broker-control --test sqlite_oidc_lifecycle
 cargo test --locked --offline -j4 -p broker-presence --test sqlite_oidc_lifecycle_http -- --ignored --test-threads=1
 cargo clippy --locked --offline -j4 -p broker-control -p broker-presence --lib --test sqlite_oidc_lifecycle --test sqlite_oidc_lifecycle_http --test sqlite_oidc_grants --test sqlite_oidc_token_http --no-deps -- -D warnings
 cargo test --locked --offline -j4 -p broker-control -p broker-presence --doc
-cargo test --locked --offline -p xtask --test guardrails sqlite_oidc_lifecycle_saved_checks_stop_and_recover_on_real_assertions -- --exact --test-threads=1
 ```
 
 The existing `SQLITE_LOCAL_AUTH` phase includes both focal Control/Presence targets. Native Server routing/CORS, federated UserInfo, Runtime Device integration and other-platform runtime behavior require separate tests.

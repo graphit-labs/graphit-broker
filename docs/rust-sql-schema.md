@@ -185,19 +185,20 @@ Its exact saved invocation is:
 cargo test --locked -p broker-control --test postgres --test postgres_identity --test postgres_roles --test storage_admission --test project_corpus_storage_admission --test user_memory_storage_admission --test global_hub_storage_admission -- --ignored --test-threads=1
 ~~~
 
-Focused SQL runner counterproofs copy the actual selected phase, executor and
-CLI failure loop into a disposable Cargo fixture, omitting only earlier phases.
-A real ignored assertion failure in a storage target exits with failure
-before PostgreSQL sessions. The USER addition reuses this existing runner
-counterproof for its actual target. This qualifies the isolated runner, not a backend or
-the full qualification suite.
-
 Both storage targets use actual PostgreSQL TLS and authenticated Native/opaque
 factories. The [corpus admission guide](rust-project-corpus-storage-admission.md)
 records the new module isolation contract; [Hub admission](rust-hub-storage-admission.md)
 retains registry/artifacts. This extends the existing long SQL phase; ordinary control tests run in `make check` and other phase selection/order is unchanged.
 
-Runner guardrails use disposable Git/Cargo fixtures to check that formatting and real test failures stop later phases, preserving staged changes and creating no commit. These validate runner failure handling; native service behavior has its own test targets. Identical commands and source portability do not establish Windows/macOS execution. Build output under `/target/` is ignored.
+The `xtask` unit tests check phase selection and order. Its CLI guardrails run
+the already built dispatcher against a temporary Git repository and two
+dependency-free Cargo projects. They check real formatting and test failures,
+the stop on the first failure and native artifact handling. Service behavior
+is exercised by the corresponding integration targets.
+
+~~~text
+cargo test --locked --offline -p xtask --lib --test guardrails
+~~~
 
 The [native Rust server](rust-broker-server.md) now integrates PostgreSQL startup, local password/MFA/CAPTCHA, identity, sessions, grants, upstream OIDC, the Broker OpenID Provider and storage. The [Device authorization reference](rust-device-authorization.md) records the current access-only Device Flow. Native [MySQL control persistence](rust-mysql-control.md) and its related domain references describe qualified library slices; the server selects PostgreSQL or private SQLite, while MySQL remains a library boundary. SQLite private birth and file/WAL lifecycle are qualified under [tsk-6ebc](rust-sqlite-control.md); [identity/role/ACL metadata](rust-sqlite-identity-acl.md) and [LOCAL authentication](rust-sqlite-local-auth.md) are separate library slices. The [session metadata](rust-sqlite-sessions.md), [dynamic client catalog](rust-sqlite-oidc-registration.md) and [durable inventory writer](rust-sqlite-instances.md) with its [bounded reader](rust-sqlite-instance-read.md) references delimit their additional library APIs and qualification. MySQL server selection, final consumer integration and native platform validation remain separate work. A schema fixture or an individual library does not establish completion of those deliveries.
 

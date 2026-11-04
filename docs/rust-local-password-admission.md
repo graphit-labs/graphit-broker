@@ -182,9 +182,8 @@ cargo test --locked --offline -p broker-control --lib -- --ignored --exact local
 cargo test --locked --offline -p broker-control --lib -- --ignored --exact local_password_admission::tests::postgres_admission_capacity_preserves_active_entries --test-threads=1
 ```
 
-`cargo test --locked --offline -p xtask` exercises each saved phase with a real
-Rust assertion failure and requires it to stop before later phases and audit.
-Those adversarial runner fixtures prove the gate, never credential authority.
+The [shared runner guardrails](rust-sql-schema.md#active-development-guardrails)
+check phase selection and stop on the first failing command.
 Normal control tests include the actual fixed-host HTTPS protocol and SDK-worker
 retention/closure tests. The existing `postgres_password` and exact
 `postgres_password_change_native_contract` targets cover affected previous

@@ -194,6 +194,6 @@ cargo run --locked --quiet -p xtask -- hook pre-commit
 cargo test --locked --workspace --doc
 ```
 
-The [active gates](rust-sql-schema.md#active-development-guardrails) check whitespace and formatting in pre-commit. Pre-push runs workspace Clippy, Rustdocs and workspace all-target tests, including the security contracts, followed by native integration phases. The runner stops on a failed command; invoking a hook never initiates a push. Linux execution does not establish Windows/macOS behavior.
+The [active gates](rust-sql-schema.md#active-development-guardrails) check whitespace and formatting in pre-commit. `make check` runs workspace Clippy, documentation tests and ordinary workspace tests, including the security contracts. `make qualify` runs the native integration phases. The runner stops on a failed command; invoking a hook never initiates a push. Linux execution does not establish Windows/macOS behavior.
 
 The [administrative session service](rust-admin-sessions.md) uses credential kind 1, AdminSession; its PostgreSQL session persistence is qualified on Linux in `tsk-dcfc`.

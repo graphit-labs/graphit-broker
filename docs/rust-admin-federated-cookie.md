@@ -156,8 +156,8 @@ cargo test --locked --offline -j4 -p broker-control --test postgres_admin_federa
 cargo test --locked --offline -j4 -p broker-control --test postgres_admin_federated_cookie -- --ignored --exact postgres_admin_federated_cookie_uncertainty_contract --test-threads=1
 ```
 
-These exact phases belong to the active xtask qualification sequence. Its adversarial
-runner executes an actual failing Rust contract and verifies that later phases
-are not reached. Full migration integration and other platform execution remain
+The xtask qualification sequence selects these exact phases. The [shared runner
+guardrails](rust-sql-schema.md#active-development-guardrails) check their
+selection and failure propagation. Full migration integration and other platform execution remain
 separate coordinator outcomes; library verification does not prove browser HTTP,
 OP grants or the migration complete.

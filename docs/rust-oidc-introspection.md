@@ -132,7 +132,7 @@ COMMIT with its ACK withheld. The maintained Rust gate includes this phase:
 cargo run --locked --offline -p xtask -- qualify
 ```
 
-The guardrails execute four deliberately failing compiled Rust test cases to verify that each failure blocks later phases. UserInfo/discovery/revocation are affected regressions. These tests do not establish hosted CI, other platforms or complete Broker integration.
+The [shared runner guardrails](rust-sql-schema.md#active-development-guardrails) verify phase selection and stop on the first failing command. The native OIDC integration targets cover UserInfo, discovery and revocation.
 
 ## Explicit SQLite composition
 

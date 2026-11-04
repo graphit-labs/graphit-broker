@@ -145,8 +145,8 @@ cargo test --locked --offline -j4 -p broker-server --test oidc_discovery -- --ig
 ```
 
 `make check` runs ordinary tests. The explicit `xtask` qualification suite runs
-the second invocation before the dependency audit. A runner oracle uses a real failing Rust test for each native
-journey and checks that failure prevents later phases. The focal invocation is the same on
+the second invocation before the dependency audit. The [shared runner guardrails](rust-sql-schema.md#active-development-guardrails)
+check phase order and stop on failure. The focal invocation is the same on
 Linux, Windows and macOS; executed Linux evidence does not qualify the other platforms. No
 test or saved gate authorizes a push.
 
