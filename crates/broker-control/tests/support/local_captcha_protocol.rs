@@ -27,11 +27,10 @@ use tokio_rustls::{TlsAcceptor, rustls};
 struct Reply {
     status: u16,
     body: Vec<u8>,
-    delay: Duration,
     length: bool,
 }
 struct ServerState {
-    reply: Mutex<Reply>,
+    reply: Mutex<Option<Reply>>,
     calls: AtomicUsize,
     forms: Mutex<Vec<Vec<(String, String)>>>,
 }
@@ -61,11 +60,15 @@ async fn serve(
         .collect::<Vec<_>>();
     state.forms.lock().unwrap().push(form);
     state.calls.fetch_add(1, Ordering::SeqCst);
-    let (status, body, delay, length) = {
-        let reply = state.reply.lock().unwrap();
-        (reply.status, reply.body.clone(), reply.delay, reply.length)
+    let reply = state
+        .reply
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|reply| (reply.status, reply.body.clone(), reply.length));
+    let Some((status, body, length)) = reply else {
+        return std::future::pending().await;
     };
-    tokio::time::sleep(delay).await;
     let mut response = Response::builder()
         .status(status)
         .header("content-type", "application/json");
@@ -118,13 +121,12 @@ impl Siteverify {
         .unwrap();
         let acceptor = TlsAcceptor::from(Arc::new(config));
         let state = Arc::new(ServerState {
-            reply: Mutex::new(Reply {
+            reply: Mutex::new(Some(Reply {
                 status: 200,
                 body: br#"{"success":true,"hostname":" BROKER.EXAMPLE ","action":"admin-login"}"#
                     .to_vec(),
-                delay: Duration::ZERO,
                 length: true,
-            }),
+            })),
             calls: AtomicUsize::new(0),
             forms: Mutex::new(Vec::new()),
         });
@@ -163,7 +165,7 @@ impl Siteverify {
                 secret_key: Zeroizing::new("protected-fixture-key".into()),
                 public_url: Url::parse("https://broker.example").unwrap(),
                 trigger_multiplier: multiplier,
-                verification_timeout: Duration::from_millis(500),
+                verification_timeout: Duration::from_secs(5),
             },
             NonZeroUsize::new(1).unwrap(),
             NonZeroUsize::new(2).unwrap(),
@@ -180,13 +182,12 @@ impl Siteverify {
             .unwrap();
         captcha
     }
-    fn set(&self, status: u16, body: Vec<u8>, delay: Duration, length: bool) {
-        *self.state.reply.lock().unwrap() = Reply {
+    fn set(&self, status: u16, body: Vec<u8>, length: bool) {
+        *self.state.reply.lock().unwrap() = Some(Reply {
             status,
             body,
-            delay,
             length,
-        };
+        });
     }
     fn calls(&self) -> usize {
         self.state.calls.load(Ordering::SeqCst)
@@ -241,7 +242,6 @@ async fn postgres_https_local_password_admission_contract() {
     site.set(
         200,
         br#"{"success":false,"hostname":"broker.example","action":"admin-login"}"#.to_vec(),
-        Duration::ZERO,
         true,
     );
     for _ in 0..2 {
@@ -254,7 +254,6 @@ async fn postgres_https_local_password_admission_contract() {
     site.set(
         200,
         br#"{"success":true,"hostname":"broker.example","action":"admin-login"}"#.to_vec(),
-        Duration::ZERO,
         true,
     );
     let original = deadline();
@@ -324,7 +323,6 @@ async fn postgres_https_local_password_admission_contract() {
             &serde_json::json!({"success":true,"hostname":"broker.example","action":"oauth-login"}),
         )
         .unwrap(),
-        Duration::ZERO,
         true,
     );
     let original = deadline();
@@ -396,14 +394,14 @@ async fn postgres_https_local_password_admission_contract() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_fixed_host_https_siteverify_protocol() {
     let site = Siteverify::new().await;
-    let captcha = site.captcha(LocalCaptchaProvider::Turnstile, 0.0);
+    let mut captcha = site.captcha(LocalCaptchaProvider::Turnstile, 0.0);
     assert!(captcha.required(1));
     assert!(matches!(
         captcha
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 None,
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await,
         Err(CaptchaFailure::Required)
@@ -413,7 +411,7 @@ async fn actual_fixed_host_https_siteverify_protocol() {
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some(" "),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await,
         Err(CaptchaFailure::Required)
@@ -423,7 +421,7 @@ async fn actual_fixed_host_https_siteverify_protocol() {
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some(&"x".repeat(2049)),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await,
         Err(CaptchaFailure::Required)
@@ -434,7 +432,7 @@ async fn actual_fixed_host_https_siteverify_protocol() {
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some("  actual-fixture-proof  "),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await
             .is_ok()
@@ -468,7 +466,6 @@ async fn actual_fixed_host_https_siteverify_protocol() {
                 &serde_json::json!({"success":true,"hostname":"broker.example","action":action}),
             )
             .unwrap(),
-            Duration::ZERO,
             true,
         );
         for (purpose, _) in purposes {
@@ -476,7 +473,7 @@ async fn actual_fixed_host_https_siteverify_protocol() {
                 .verify(
                     purpose,
                     Some("fixture-proof"),
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + Duration::from_secs(10),
                 )
                 .await;
             assert_eq!(
@@ -489,19 +486,18 @@ async fn actual_fixed_host_https_siteverify_protocol() {
     site.set(
         200,
         br#"{"success":true,"hostname":"broker.example","action":"admin-login"}"#.to_vec(),
-        Duration::ZERO,
         true,
     );
     let (admin, oauth) = tokio::join!(
         captcha.verify(
             LocalAuthPurpose::AdminLogin,
             Some("fixture-proof"),
-            Instant::now() + Duration::from_secs(2)
+            Instant::now() + Duration::from_secs(10)
         ),
         captcha.verify(
             LocalAuthPurpose::OauthAuthorize,
             Some("fixture-proof"),
-            Instant::now() + Duration::from_secs(2)
+            Instant::now() + Duration::from_secs(10)
         ),
     );
     assert!(admin.is_ok());
@@ -532,14 +528,14 @@ async fn actual_fixed_host_https_siteverify_protocol() {
         (403, b"{}".to_vec()),
         (302, b"{}".to_vec()),
     ] {
-        site.set(status, body, Duration::ZERO, true);
+        site.set(status, body, true);
         let calls = site.calls();
         assert!(matches!(
             captcha
                 .verify(
                     LocalAuthPurpose::AdminLogin,
                     Some("fixture-proof"),
-                    Instant::now() + Duration::from_secs(2)
+                    Instant::now() + Duration::from_secs(10)
                 )
                 .await,
             Err(CaptchaFailure::Required)
@@ -550,13 +546,13 @@ async fn actual_fixed_host_https_siteverify_protocol() {
             "redirect or denial must never retry/follow"
         );
     }
-    site.set(200, vec![b'x'; RESPONSE_BYTES + 1], Duration::ZERO, false);
+    site.set(200, vec![b'x'; RESPONSE_BYTES + 1], false);
     assert!(matches!(
         captcha
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some("fixture-proof"),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await,
         Err(CaptchaFailure::Required)
@@ -564,7 +560,6 @@ async fn actual_fixed_host_https_siteverify_protocol() {
     site.set(
         200,
         br#"{"success":true,"hostname":"broker.example"}"#.to_vec(),
-        Duration::ZERO,
         true,
     );
     let google = site.captcha(LocalCaptchaProvider::Recaptcha, 1.5);
@@ -575,7 +570,7 @@ async fn actual_fixed_host_https_siteverify_protocol() {
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some("fixture-proof"),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await
             .is_ok()
@@ -587,23 +582,26 @@ async fn actual_fixed_host_https_siteverify_protocol() {
                 .verify(
                     purpose,
                     Some("fixture-proof"),
-                    Instant::now() + Duration::from_secs(2)
+                    Instant::now() + Duration::from_secs(10)
                 )
                 .await
                 .is_ok()
         );
     }
-    site.set(200, b"{}".to_vec(), Duration::from_secs(1), true);
+    // The peer receives requests but deliberately never provides a response.
+    *site.state.reply.lock().unwrap() = None;
+    captcha.enabled.as_mut().unwrap().timeout = Duration::from_millis(500);
     assert!(matches!(
         captcha
             .verify(
                 LocalAuthPurpose::AdminLogin,
                 Some("fixture-proof"),
-                Instant::now() + Duration::from_secs(2)
+                Instant::now() + Duration::from_secs(10)
             )
             .await,
         Err(CaptchaFailure::Required)
     ));
+    captcha.enabled.as_mut().unwrap().timeout = Duration::from_secs(5);
     assert!(matches!(
         captcha
             .verify(
@@ -710,7 +708,7 @@ async fn sqlite_https_local_password_admission_contract() {
         br#"{"success":true,"hostname":"wrong.example","action":"device-login"}"#.as_slice(),
         br#"{"success":true,"hostname":"broker.example","action":"oauth-login"}"#.as_slice(),
     ] {
-        site.set(200, reply.to_vec(), Duration::ZERO, true);
+        site.set(200, reply.to_vec(), true);
         assert!(matches!(
             view.authenticate("alice", password, Some("opaque-provider-proof"), end())
                 .await,
@@ -721,7 +719,6 @@ async fn sqlite_https_local_password_admission_contract() {
     site.set(
         200,
         br#"{"success":true,"hostname":"broker.example","action":"device-login"}"#.to_vec(),
-        Duration::ZERO,
         true,
     );
     assert!(matches!(

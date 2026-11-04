@@ -137,23 +137,25 @@ fn write(root: &Path, value: &Value) -> PathBuf {
     private(&path, &serde_json::to_vec(value).unwrap());
     path
 }
-fn command() -> Command {
-    let binary = std::env::var_os("GRAPHIT_TEST_BROKER_BINARY")
+fn qualification_binary() -> PathBuf {
+    std::env::var_os("GRAPHIT_TEST_BROKER_BINARY")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_graphit-broker")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_graphit-broker")))
+}
+fn command(binary: &Path) -> Command {
     let mut c = Command::new(binary);
     c.kill_on_drop(true);
     c
 }
-async fn checked(path: &Path) -> std::process::Output {
-    command()
+async fn checked(path: &Path, binary: &Path) -> std::process::Output {
+    command(binary)
         .args(["--config", path.to_str().unwrap(), "--check-config"])
         .output()
         .await
         .unwrap()
 }
 async fn start(path: &Path, addr: SocketAddr) -> Child {
-    let mut child = command()
+    let mut child = command(&qualification_binary())
         .args(["--config", path.to_str().unwrap()])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -364,7 +366,12 @@ async fn sqlite_binary_op_storage_and_native_presence() {
     });
     value["services"] = json!({"embeddings":{"enabled":true,"revision":"sqlite-server-cache-v1","dimensions":2,"max_batch":8,"max_input_bytes":64,"request_timeout":"2s","required_scopes":[],"request_body_bytes":4096,"response_body_bytes":16384,"identity_json_bytes":8192,"grants_json_bytes":16384,"vector_json_bytes":256,"metadata_bytes":2048,"upstream":{"protocol":"openai-compatible","model":"fixture-model","model_revision":"fixture-model-r1","recipe":"retrieval-v1","url":endpoint,"api_key":"synthetic-sqlite-provider-key","send_dimensions":true,"transport":{"request_body_bytes":4096,"response_body_bytes":16384,"url_bytes":2048,"header_bytes":4096,"header_count":32,"max_in_flight":2,"max_idle_per_host":2,"idle_timeout":"1s","max_certificates":1,"max_certificate_bytes":4096,"allow_loopback_http":true}}}});
     let path = write(root.path(), &value);
-    assert!(checked(&path).await.status.success());
+    assert!(
+        checked(&path, &qualification_binary())
+            .await
+            .status
+            .success()
+    );
     let dbpath = root.path().join("private/broker.db");
     provision_fixture_user(&dbpath).await;
     let child = start(&path, addr).await;
@@ -928,7 +935,12 @@ async fn sqlite_binary_local_mfa_admin_current_authority_and_redacted_config() {
     let mut value = config(root.path(), addr);
     local_admin(&mut value);
     let path = write(root.path(), &value);
-    assert!(checked(&path).await.status.success());
+    assert!(
+        checked(&path, &qualification_binary())
+            .await
+            .status
+            .success()
+    );
     assert!(!root.path().join("private").exists());
     let dbpath = root.path().join("private/broker.db");
     provision_fixture_user(&dbpath).await;
@@ -1354,11 +1366,12 @@ async fn sqlite_binary_local_mfa_admin_current_authority_and_redacted_config() {
 #[tokio::test]
 async fn sqlite_cli_validates_explicit_backend_without_side_effects() {
     let root = tempfile::tempdir().unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_graphit-broker"));
     let addr = address();
     let good = config(root.path(), addr);
     let path = write(root.path(), &good);
     assert!(load_config(&path).await.is_ok());
-    assert!(checked(&path).await.status.success());
+    assert!(checked(&path, binary).await.status.success());
     assert!(!root.path().join("private").exists());
     assert!(!root.path().join("volume").exists());
     assert!(TcpStream::connect(addr).await.is_err());
@@ -1395,7 +1408,7 @@ async fn sqlite_cli_validates_explicit_backend_without_side_effects() {
             load_config(&path).await.err(),
             Some(ServerError::Configuration)
         );
-        let result = checked(&path).await;
+        let result = checked(&path, binary).await;
         assert!(!result.status.success());
         assert!(!String::from_utf8_lossy(&result.stderr).contains(PEPPER));
     }
@@ -1438,7 +1451,7 @@ async fn sqlite_binary_birth_reopen_and_partial_startup_cleanup() {
     reopened(&dbpath).await;
     // Bind fails after SQL and volume owners have started; their ownership is released.
     let held = tokio::net::TcpListener::bind(addr).await.unwrap();
-    let output = command()
+    let output = command(&qualification_binary())
         .args(["--config", path.to_str().unwrap()])
         .output()
         .await
@@ -1453,7 +1466,7 @@ async fn sqlite_binary_birth_reopen_and_partial_startup_cleanup() {
     private(&root.path().join("occupied"), b"occupied");
     bad["storage"]["routes"]["z-bad"] = json!({"driver":"filesystem","bucket":"blocked-storage","base_prefix":"graphit","directory":"occupied"});
     let badpath = write(root.path(), &bad);
-    let output = command()
+    let output = command(&qualification_binary())
         .args(["--config", badpath.to_str().unwrap()])
         .output()
         .await

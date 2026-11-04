@@ -238,13 +238,10 @@ their title/body/draft/prerelease state; uploads never overwrite or delete asset
 Conflicts fail. Partial upload recovery preserves verified existing files and
 manually sends only absent names, as described in that runbook.
 
-Code CI's reverse dependency separately requires an explicit compatible
-`GRAPHIT_BROKER_REF`. Neither direction can use an invented remote ref for
-unpublished local changes. A real accessible Rust Code revision remains necessary for hosted composition;
-its Cargo lock selects the maintained forks from the published Libs revision. No hosted build, native Darwin
-execution, asset upload/download, registry push or release publication was
-executed in this workflow preparation. Linux process/container results do not
-establish other-platform runtime or full Broker parity.
+Code resolves the Broker wire and test crates at its own locked Cargo revision.
+Broker and Code CI prepare those dependencies with `cargo fetch --locked` and
+run their ordinary tests offline. Release qualification records the revisions
+it actually builds, and its native jobs report package validation by platform.
 
 
 Native release executables use Cargo Release with Thin LTO, one codegen unit and

@@ -368,10 +368,9 @@ async fn local_http_preserves_wire_and_original_sql_deadline() {
     let f = Fixture::new().await;
     let db = f.db();
     let auth = format!("Bearer {}", f.access);
-    let mut cfg = config();
-    cfg.request_timeout = Duration::from_millis(60);
     let server =
-        Server::start(sqlite_project_authorization_router(f.store.clone(), cfg).unwrap()).await;
+        Server::start(sqlite_project_authorization_router(f.store.clone(), config()).unwrap())
+            .await;
     for body in [
         "[]",
         "{}",
@@ -407,13 +406,30 @@ async fn local_http_preserves_wire_and_original_sql_deadline() {
         StatusCode::PAYLOAD_TOO_LARGE,
         "body_too_large",
     );
+    let mut short = config();
+    short.request_timeout = Duration::from_millis(60);
+    let limited =
+        Server::start(sqlite_project_authorization_router(f.store.clone(), short).unwrap()).await;
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    // WAL reads can pass an unrelated writer. Queue a blocked write on the
+    // shared store owner before sending the HTTP request.
+    let mut blocked = std::pin::pin!(f.store.consume_flow(&[b'x'; 32], &[b'y'; 32], end()));
+    std::future::poll_fn(|cx| {
+        assert!(blocked.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
     error(
-        post(&server, &[&auth], input(A, "task", "read")).await,
+        post(&limited, &[&auth], input(A, "task", "read")).await,
         StatusCode::GATEWAY_TIMEOUT,
         "deadline",
     );
     db.execute_batch("COMMIT").unwrap();
+    assert!(matches!(
+        blocked.await,
+        Err(broker_control::SqliteControlError::Unavailable)
+    ));
+    limited.stop().await;
     grant(
         &db,
         "logical",

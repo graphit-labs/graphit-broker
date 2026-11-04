@@ -26,7 +26,10 @@ use axum::{
     response::Response,
     routing::post,
 };
-use broker_control::{EmbeddingAdmissionLimits, EmbeddingCacheLimits};
+use broker_control::{
+    BrokerAccessIssuer, BrokerAccessTokenInput, BrokerAccessVerifier, EmbeddingAdmissionLimits,
+    EmbeddingCacheLimits,
+};
 use broker_presence::{
     EmbeddingBackend, EmbeddingsHttpConfig, RemoteEmbeddingsConfig, disabled_embeddings_router,
     sqlite_embeddings_router,
@@ -39,7 +42,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use transport::{Reply, Server};
 
 const PATH: &str = "/v1/embeddings";
@@ -778,18 +781,14 @@ async fn bounded_input_and_closed_disabled_errors_do_not_infer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn genuine_jwt_expiry_cuts_off_locked_acl_and_keeps_earliest_cause() {
     let f = Fixture::new().await;
-    let mut issuer = ingress::fixture::Fixture::new().await;
-    // Preserve the productive exchange's genuine minimum TTL; use its real cutoff.
-    issuer.policy = Arc::new(
-        broker_control::OidcTokenExchangePolicy::new(
-            Duration::from_secs(60),
-            Duration::from_secs(86400),
-        )
-        .unwrap(),
+    let issuer_url = ingress::fixture::ISSUER;
+    let audience = ingress::fixture::AUDIENCE;
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let issuer =
+        BrokerAccessIssuer::new(issuer_url, audience, "fixture", &key.serialize_der()).unwrap();
+    let native = Arc::new(
+        BrokerAccessVerifier::new(issuer_url, audience, None, issuer.jwks(), n(8192)).unwrap(),
     );
-    let jwt = ingress::jwt(&issuer).await;
-    let original = Instant::now() + Duration::from_secs(62);
-    let native = issuer.verifier();
     let peer = Peer::new("openai", false).await;
     let backend = peer.backend("openai", HeaderMap::new());
     let mut http = config();
@@ -800,7 +799,35 @@ async fn genuine_jwt_expiry_cuts_off_locked_acl_and_keeps_earliest_cause() {
     )
     .await;
     grants(&f, "authenticated", "");
-    let bearer = format!("Bearer {}", jwt.as_str());
+    // This ingress test needs a valid token near expiry, not a new token exchange.
+    // Start with a pre-aged 60-second token signed by the real Broker issuer.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expires_at = now + 5;
+    let original = Instant::now() + Duration::from_secs(6);
+    let jwt = issuer
+        .sign_access(
+            BrokerAccessTokenInput {
+                subject: "fixture-subject",
+                client_id: "graphit-cli",
+                resource: None,
+                scope: "openid",
+                jti: "embedding-expiry-fixture",
+                issued_at: expires_at - 60,
+                expires_at,
+                preferred_username: None,
+                name: None,
+                email: None,
+                organization: None,
+                groups: &[],
+                roles: &[],
+            },
+            original,
+        )
+        .unwrap();
+    let bearer = format!("Bearer {jwt}");
     let headers = [("Authorization", bearer.as_str())];
     let body = r#"{"input":"acl-lock"}"#;
     assert_eq!(send(&server, &headers, body).await.status.as_u16(), 200);
@@ -855,5 +882,4 @@ async fn genuine_jwt_expiry_cuts_off_locked_acl_and_keeps_earliest_cause() {
     backend.stop();
     peer.close().await;
     f.store.shutdown(end()).await.unwrap();
-    issuer.store.shutdown(end()).await.unwrap();
 }

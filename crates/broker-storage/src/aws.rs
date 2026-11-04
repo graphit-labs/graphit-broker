@@ -871,8 +871,8 @@ mod tests {
             "server-only AWS endpoint expected"
         );
     }
-    #[test]
-    fn environment_and_profile_cannot_select_role_http_transport() {
+    #[tokio::test]
+    async fn environment_and_profile_cannot_select_role_http_transport() {
         let folder = tempfile::tempdir().unwrap();
         let profile = folder.path().join("config");
         std::fs::write(
@@ -881,8 +881,19 @@ mod tests {
         )
         .unwrap();
         for source in ["environment", "profile"] {
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-            child
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            // Set only the SDK inputs this case exercises, independently of
+            // the developer's profiles, endpoint mode, or AWS credentials.
+            for (name, _) in std::env::vars_os() {
+                if name
+                    .to_string_lossy()
+                    .to_ascii_uppercase()
+                    .starts_with("AWS_")
+                {
+                    command.env_remove(name);
+                }
+            }
+            command
                 .args([
                     "--exact",
                     "aws::tests::sdk_endpoint_environment_child",
@@ -901,20 +912,27 @@ mod tests {
                 .env(
                     "AWS_SHARED_CREDENTIALS_FILE",
                     folder.path().join("absent-credentials"),
-                )
-                .env_remove("AWS_ENDPOINT_URL")
-                .env_remove("AWS_ENDPOINT_URL_STS");
+                );
             if source == "environment" {
-                child.env("AWS_ENDPOINT_URL_STS", "http://198.51.100.9:9999");
+                command.env("AWS_ENDPOINT_URL_STS", "http://198.51.100.9:9999");
             }
-            let status = child
+            let mut child = command
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status()
+                .kill_on_drop(true)
+                .spawn()
                 .unwrap();
+            let status = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
+                Ok(status) => status.unwrap(),
+                Err(_) => {
+                    child.kill().await.unwrap();
+                    panic!("isolated {source} endpoint regression child timed out");
+                }
+            };
             assert!(
                 status.success(),
-                "isolated endpoint regression child failed"
+                "isolated {source} endpoint regression child failed"
             );
         }
     }
