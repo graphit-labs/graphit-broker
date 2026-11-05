@@ -194,6 +194,9 @@ Ubuntu 24.04 and GCC13). The binding's `cuda-no-vmm` and `dynamic-link` features
 build one shared engine through Cargo. The package includes that engine and
 CUDA runtime/cuBLAS from the explicit `CUDA_PATH` toolkit under
 `graphit-runtime/broker/lib`; relative loader paths make it relocatable.
+Linux packages recognize the explicit CUDA 12 and 13 SONAMEs for cudart,
+cuBLAS and cuBLASLt. Both retain the same toolkit-origin and NVIDIA notice
+requirements; this does not select a toolkit or change the CI build version.
 The artifact stream must select the supplied binary and the resolved engine build.
 VMM is disabled, allowing CPU startup without an NVIDIA driver. Actual GPU
 inference requires a compatible host driver. CPU-only builds link the engine

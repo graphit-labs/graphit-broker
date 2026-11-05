@@ -173,8 +173,8 @@ configuration; it does not use `core.hooksPath`. Commands are read when the hook
 runs, so editing an existing event's commands needs no reinstall.
 
 Pre-commit checks workflow syntax and keeps the staged-path checks for formatting,
-shell files and the admin UI. Pre-push runs formatting, strict Clippy and the xtask
-unit tests. During development, run the suites affected by each change and reuse
+shell files and the admin UI. Pre-push runs formatting, strict Clippy, documentation
+and ordinary workspace tests. During development, run the suites affected by each change and reuse
 valid results for unchanged code.
 
 The Broker builds from its own checkout. Cargo fetches the shared Graphit Code
@@ -186,7 +186,9 @@ Cargo builds in parallel, and Rust runs cases within each test target on the
 available CPUs. Use `RUST_TEST_THREADS` to override test concurrency locally.
 The device authorization suite starts the native Broker on loopback with a
 temporary SQLite database. The `Native CI` workflow runs these Rust checks on
-Linux, macOS and Windows and checks the administration UI syntax.
+Linux, macOS and Windows and checks administration UI syntax and asynchronous
+editor behavior. See [testing boundaries](docs/testing.md) for the complete suite
+inventory, causal concurrency checks and explicit qualification requirements.
 
 Use `make qualify` or `cargo run --locked --offline --target host-tuple -p xtask -- qualify` for
 the explicit SQL, HTTP, STS, storage and native container contracts. These

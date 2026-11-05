@@ -283,6 +283,13 @@ impl AdminCookieReadSession {
     pub fn csrf_token(&self) -> &str {
         &self.csrf
     }
+    pub fn csrf_matches(&self, supplied: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
+        supplied
+            .and_then(|value| decode_secret(value).ok())
+            .zip(decode_secret(&self.csrf).ok())
+            .is_some_and(|(left, right)| bool::from(left.as_ref().ct_eq(right.as_ref())))
+    }
     pub fn authentication_expiry(&self) -> (SystemTime, Instant) {
         self.window.expiry()
     }

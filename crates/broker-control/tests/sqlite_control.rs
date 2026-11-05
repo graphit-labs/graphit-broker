@@ -413,13 +413,11 @@ async fn sqlite_cancelled_writer_wait_cannot_consume_later_or_interrupt_next() {
         .await
         .unwrap();
     db.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let pending = tokio::spawn({
-        let store = store.clone();
-        async move { store.consume_flow(&state, &binding, deadline()).await }
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    pending.abort();
-    assert!(pending.await.unwrap_err().is_cancelled());
+    {
+        let mut pending = std::pin::pin!(store.consume_flow(&state, &binding, deadline()));
+        assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        // Dropping an admitted operation cancels it before releasing the writer.
+    }
     db.execute_batch("ROLLBACK").unwrap();
     assert_eq!(
         store

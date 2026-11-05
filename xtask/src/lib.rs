@@ -1377,7 +1377,8 @@ pub fn checks(event: Event, staged: &[u8]) -> Vec<Check> {
             || path.starts_with(b"compose.")
             || path.starts_with(b"scripts/");
         ui |= path.starts_with(b"crates/broker-presence/assets/admin/")
-            || path == b"scripts/check-admin-ui.cjs";
+            || path == b"scripts/check-admin-ui.cjs"
+            || path == b"scripts/test-admin-instructions.cjs";
     }
     if shell {
         selected.push(SHELL);
@@ -1489,6 +1490,10 @@ mod tests {
         );
         assert_eq!(
             checks(Event::PreCommit, b"Makefile\0scripts/check-admin-ui.cjs\0"),
+            vec![DIFF, FMT, SHELL, UI]
+        );
+        assert_eq!(
+            checks(Event::PreCommit, b"scripts/test-admin-instructions.cjs\0"),
             vec![DIFF, FMT, SHELL, UI]
         );
         assert_eq!(

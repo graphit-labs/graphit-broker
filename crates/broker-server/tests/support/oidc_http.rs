@@ -94,11 +94,13 @@ pub async fn start(path: &Path, address: SocketAddr) -> Child {
     let end = deadline();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     loop {
-        if client
-            .get(format!("http://{address}/readyz"))
-            .send()
-            .await
-            .is_ok_and(|r| r.status().is_success())
+        if tokio::time::timeout_at(
+            end.into(),
+            client.get(format!("http://{address}/readyz")).send(),
+        )
+        .await
+        .expect("native Broker readiness request deadline")
+        .is_ok_and(|r| r.status().is_success())
         {
             return child;
         }

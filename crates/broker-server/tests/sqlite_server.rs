@@ -1017,6 +1017,41 @@ async fn sqlite_binary_local_mfa_admin_current_authority_and_redacted_config() {
             .header("x-csrf-token", csrf.as_str())
             .header("content-type", "application/json")
     };
+    let admin_page = client.get(format!("{base}/admin/")).send().await.unwrap();
+    assert!(admin_page.status().is_success());
+    assert!(
+        admin_page
+            .text()
+            .await
+            .unwrap()
+            .contains("Agent instructions")
+    );
+    let override_document = data(
+        admin_request(reqwest::Method::PUT, "agent-instructions")
+            .body(json!({
+                "revision":0,
+                "templates":{"policy/mandates/ast.md":{"enabled":true,"markdown":"Review {{ brand }} architecture."}}
+            }).to_string())
+            .send().await.unwrap(),
+        200,
+    ).await;
+    assert_eq!(override_document["revision"], 1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(root.path().join("agent-instructions.json")).unwrap()
+        )
+        .unwrap(),
+        override_document
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/v1/agent-instructions"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
     assert_eq!(
         admin_request(reqwest::Method::POST, "local-users")
             .body(

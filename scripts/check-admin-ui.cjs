@@ -14,3 +14,7 @@ if (scripts.length !== 1) {
 
 new vm.Script(scripts[0], { filename: "crates/broker-presence/assets/admin/index.html" });
 console.log("Administration UI JavaScript syntax is valid.");
+
+// The same local entry point used by hooks and CI also exercises asynchronous
+// editor state against the actual shipped controller, without browser downloads.
+require("./test-admin-instructions.cjs");

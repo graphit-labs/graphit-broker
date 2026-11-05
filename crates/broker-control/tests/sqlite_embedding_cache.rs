@@ -405,27 +405,16 @@ async fn expired_and_dropped_locked_work_cannot_insert_and_store_remains_usable(
     );
     let locker = Connection::open(&path).unwrap();
     locker.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let pending = {
-        let store = store.clone();
-        tokio::spawn(async move {
-            store
-                .embedding_cache(limits())
-                .unwrap()
-                .insert(
-                    &[EmbeddingCacheEntry {
-                        key: key(),
-                        provenance: provenance(),
-                        vector: &[1., 2.],
-                    }],
-                    end(),
-                )
-                .await
-        })
-    };
-    tokio::time::sleep(Duration::from_millis(40)).await;
-    assert!(!pending.is_finished());
-    pending.abort();
-    assert!(pending.await.unwrap_err().is_cancelled());
+    {
+        let entries = [EmbeddingCacheEntry {
+            key: key(),
+            provenance: provenance(),
+            vector: &[1., 2.],
+        }];
+        let mut pending = std::pin::pin!(cache.insert(&entries, end()));
+        assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        // Cancel the real submitted request while SQLite is still locked.
+    }
     locker.execute_batch("ROLLBACK").unwrap();
     assert_eq!(cache.read(&[key()], end()).await.unwrap(), vec![None]);
     assert_eq!(

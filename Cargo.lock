@@ -1211,6 +1211,7 @@ name = "broker-store"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "tempfile",
 ]
 
 [[package]]

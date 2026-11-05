@@ -1,3 +1,4 @@
+mod command;
 use broker_control::{
     ConnectionLimits, FlowLimits, PoolConfig, PostgresConfig, PostgresControlStore,
     PostgresCredentials, PostgresEndpoint,
@@ -73,36 +74,7 @@ fn docker(args: &[&str]) -> String {
     }
     let mut command = Command::new("docker");
     command.args(args).stderr(Stdio::null());
-    let output = if diagnostic && args.first() == Some(&"create") {
-        // Match Command::output's I/O policy while identifying the blocked stage.
-        command.stdin(Stdio::null()).stdout(Stdio::piped());
-        eprintln!("broker-fixture phase=docker-create-spawn event=begin");
-        command.spawn().and_then(|child| {
-            eprintln!("broker-fixture phase=docker-create-spawn event=end status=success");
-            #[cfg(target_os = "linux")]
-            {
-                let resolved = fs::read_link(format!("/proc/{}/exe", child.id()));
-                let system = fs::canonicalize("/usr/bin/docker");
-                let identity = match (resolved, system) {
-                    (Ok(resolved), Ok(system)) if resolved == system => "matches-system-docker",
-                    (Ok(_), Ok(_)) => "differs-from-system-docker",
-                    _ => "unavailable",
-                };
-                eprintln!("broker-fixture phase=docker-create-executable identity={identity}");
-            }
-            eprintln!("broker-fixture phase=docker-create-wait-output event=begin");
-            let output = child.wait_with_output();
-            let status = if output.is_ok() {
-                "reaped"
-            } else {
-                "wait-failure"
-            };
-            eprintln!("broker-fixture phase=docker-create-wait-output event=end status={status}");
-            output
-        })
-    } else {
-        command.output()
-    };
+    let output = command::output(&mut command, &[], Instant::now() + Duration::from_secs(60));
     if diagnostic {
         let status = match &output {
             Ok(output) if output.status.success() => "success",
@@ -136,10 +108,11 @@ impl Fixture {
         reason = "public Presence fixtures consume explicit cleanup; SQL suites use RAII"
     )]
     pub fn shutdown(mut self) -> Result<(), FixtureCleanupError> {
-        let removed = Command::new("docker")
-            .args(["rm", "--force", "--volumes", &self.id])
-            .stderr(Stdio::null())
-            .output();
+        let removed = command::output(
+            Command::new("docker").args(["rm", "--force", "--volumes", &self.id]),
+            &[],
+            Instant::now() + Duration::from_secs(60),
+        );
         if !removed.is_ok_and(|output| output.status.success()) {
             return Err(FixtureCleanupError);
         }
@@ -152,10 +125,11 @@ impl Drop for Fixture {
         if self.id.is_empty() {
             return;
         }
-        let removed = Command::new("docker")
-            .args(["rm", "--force", "--volumes", &self.id])
-            .stderr(Stdio::null())
-            .output();
+        let removed = command::output(
+            Command::new("docker").args(["rm", "--force", "--volumes", &self.id]),
+            &[],
+            Instant::now() + Duration::from_secs(60),
+        );
         if !removed.is_ok_and(|output| output.status.success()) {
             eprintln!("owned PostgreSQL fixture cleanup failed");
         }

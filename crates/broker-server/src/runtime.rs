@@ -292,6 +292,7 @@ async fn serve_inner(
         embeddings,
         rerank,
         configuration_yaml,
+        instruction_overrides_file,
         native_sdk: _,
     } = config;
     let embeddings_backend = embeddings.as_ref().map(|e| e.backend.clone());
@@ -893,6 +894,28 @@ async fn serve_inner(
         };
         let administration_router = match administration {
             Some(config) => {
+                let instructions = match config.cookie {
+                    Some(cookie) => broker_presence::instruction_overrides_router(
+                        match &store {
+                            OwnedDatabase::Postgres(store) => {
+                                broker_presence::InstructionStore::Postgres(store.clone())
+                            }
+                            OwnedDatabase::Sqlite(store) => {
+                                broker_presence::InstructionStore::Sqlite(store.clone())
+                            }
+                        },
+                        verifier.clone(),
+                        upstream.clone(),
+                        broker_presence::InstructionHttpConfig {
+                            file: instruction_overrides_file,
+                            timeout: config.http.request_timeout,
+                            audience: audience.clone(),
+                            identity_json_bytes: config.http.limits.profile_json_bytes,
+                            cookie,
+                        },
+                    ),
+                    None => Router::new(),
+                };
                 let reads = match &store {
                     OwnedDatabase::Postgres(store) => admin_read_router(
                         store.clone(),
@@ -1091,6 +1114,7 @@ async fn serve_inner(
                     .merge(rbac)
                     .merge(grants)
                     .merge(users)
+                    .merge(instructions)
             }
             None => Router::new(),
         };

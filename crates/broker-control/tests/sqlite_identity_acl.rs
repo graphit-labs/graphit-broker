@@ -727,25 +727,24 @@ async fn affected_operations_keep_deadline_cancel_shutdown_and_no_partial_role_e
     let writer = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    let store = f.store.clone();
-    let pending = tokio::spawn(async move {
-        store
-            .set_role(
-                "held",
-                &[SystemPermission::Action(SystemAction::UsersWrite)],
-                deadline(),
-            )
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let close = f.store.shutdown(deadline());
-    let release = async {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        writer.rollback().unwrap();
-    };
-    let (closed, ()) = tokio::join!(close, release);
+    let permissions = [SystemPermission::Action(SystemAction::UsersWrite)];
+    let mut pending = std::pin::pin!(f.store.set_role("held", &permissions, deadline()));
+    assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    let mut close = std::pin::pin!(f.store.shutdown(deadline()));
+    // Poll shutdown before releasing SQLite: it closes admission immediately.
+    let closed = futures_util::poll!(close.as_mut());
+    writer.rollback().unwrap();
+    let (closed, pending) = tokio::join!(
+        async {
+            match closed {
+                std::task::Poll::Ready(result) => result,
+                std::task::Poll::Pending => close.await,
+            }
+        },
+        pending,
+    );
     closed.unwrap();
-    assert_eq!(pending.await.unwrap(), Err(ControlError::Closed));
+    assert_eq!(pending, Err(ControlError::Closed));
     assert_eq!(role_rows(&db, "held"), ["*"]);
     assert_eq!(
         read(&f.store, "alice", "alice-subject", 1)

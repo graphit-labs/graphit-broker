@@ -32,6 +32,52 @@ The older identities capture uses the former sidebar labels and is kept only as 
 reference in [screenshot maintenance](screenshots.md). Use the current labels above when following
 this guide.
 
+## Agent instructions
+
+**Operations → Agent instructions** manages Broker-wide Markdown overrides for
+the Graphit agents. Create an override with the path relative to
+`templates/agent-instructions/` in Graphit Code, for example
+`skills/ast/entry.md` or `policy/mandates/task-coordinator.md`. The compiled
+template can be included from `defaults/<path>` using the regular template
+syntax.
+
+Use **Save draft** to keep an inactive override, **Activate** to make it available
+to clients, and **Publish changes** to update an active override. **Deactivate**
+returns the entry to draft and removes it from clients on their next sync.
+Graphit installations with this Broker active retrieve the active entries on
+general sync or a specific native instruction sync. A project's rules, personal
+rules and explicitly selected Hub artifacts retain priority over the Broker.
+
+The administration view requires a cookie session with `configuration.read`
+or administrator authority. Edits require the built-in `admin` role or wildcard
+authority, a current CSRF token and the revision read from the server.
+A stale revision returns HTTP 409. Refresh before retrying an edit. The sync
+endpoint returns active templates to authenticated Graphit clients across
+projects, so keep credentials and confidential project content out of them.
+
+When administration cookies are enabled, the Broker stores the collection in
+`agent-instructions.json` beside its deployment configuration by default.
+Set `server.instruction_overrides_file` to use a file in a writable persistent
+directory. Relative paths resolve from the configuration directory. Broker
+replicas serving the same deployment should point at the same file on a volume
+that supports atomic rename and file locking. Saving does not require a restart.
+
+The administrative HTTP path is `/admin/api/v1/agent-instructions` (`GET`,
+`PUT`). The PUT body uses the returned document shape
+`{"revision":0,"templates":{"skills/ast/entry.md":{"enabled":false,"markdown":"..."}}}`.
+Clients use `GET /v1/agent-instructions` with a Broker access bearer. The response
+is `{"version":1,"templates":{"skills/ast/entry.md":"..."}}`. The collection is
+limited to 512 KiB of JSON. Disabled entries are absent from that response.
+
+Authentication and current edit permission are checked before the PUT body is
+read. Loading and saving keep the editor and selection stable until the response
+arrives; a response from a previous session cannot replace the current editor.
+A failed load does not appear as an empty collection, and a revision conflict
+preserves unsaved text so it can be copied before an explicit refresh. Invalid
+persisted content is unavailable rather than silently published as an empty
+bundle. [Testing boundaries](testing.md) distinguishes controller checks, real
+HTTP authorization and interactive visual validation.
+
 ## Unified OIDC login
 
 Configure explicit `browser_clients` on one or more native `auth.oidc` entries. Each entry supplies issuer,

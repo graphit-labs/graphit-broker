@@ -1107,6 +1107,10 @@
         text-align: left;
         padding: 10px 12px;
       }
+      #instruction-list strong { overflow-wrap: anywhere; }
+      #instruction-status[hidden], #instruction-editor button[hidden] { display: none; }
+      #instruction-editor:not(.hidden) { display: grid; gap: 12px; }
+      #instruction-markdown { min-height: 260px; resize: vertical; }
       .configuration-reader textarea {
         min-height: 650px;
         resize: vertical;
@@ -1541,6 +1545,19 @@
             ></span>
             Configuration
           </button>
+          <button
+            data-tab="instructions"
+            data-permission="configuration.read"
+            data-title="Agent instructions"
+            data-kicker="Graphit sync"
+            data-description="Manage the templates Graphit downloads from this Broker"
+          >
+            <span class="nav-icon"
+              ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path d="M6 3h9l3 3v15H6zM14 3v4h4M9 11h6M9 15h6" />
+              </svg></span>
+            Agent instructions
+          </button>
           <p class="nav-hint">
             Every request keeps its caller identity. Resource access is
             evaluated independently from administration roles.
@@ -1823,6 +1840,60 @@
                     spellcheck="false"
                     aria-label="Broker configuration YAML"
                   ></textarea>
+                </section>
+              </div>
+            </section>
+            <section id="tab-instructions" class="tab hidden">
+              <div class="scope-strip">
+                <span id="instructions-count" class="revision"></span>
+                <button id="reload-instructions" type="button">Refresh</button>
+                <button id="new-instruction" class="primary" type="button">New override</button>
+              </div>
+              <div class="reader-layout">
+                <aside class="panel">
+                  <h2>Overrides</h2>
+                  <p class="muted">
+                    Active templates replace Graphit defaults on the next sync.
+                    Project and personal overrides still take precedence.
+                  </p>
+                  <div id="instruction-list" class="section-index"></div>
+                </aside>
+                <section class="panel" aria-labelledby="instruction-title">
+                  <div class="section-heading">
+                    <h2 id="instruction-title">Template editor</h2>
+                    <span id="instruction-status" class="tag" hidden></span>
+                  </div>
+                  <p id="instruction-empty" class="muted">Select an override or create one.</p>
+                  <form id="instruction-editor" class="hidden">
+                    <label><span>Template path</span>
+                      <input id="instruction-name" required spellcheck="false" list="instruction-paths"
+                        placeholder="policy/mandates/task-coordinator.md" />
+                      <datalist id="instruction-paths">
+                        <option value="policy/mandates/task-coordinator.md"></option>
+                        <option value="policy/mandates/ast.md"></option>
+                        <option value="policy/hooks/project-hook-context.md"></option>
+                        <option value="skills/ast/entry.md"></option>
+                        <option value="skills/knowledge/entry.md"></option>
+                        <option value="roles/scout.md"></option>
+                        <option value="coordinator/prompt.md"></option>
+                      </datalist>
+                    </label>
+                    <label><span>Markdown template</span>
+                      <textarea id="instruction-markdown" rows="11" spellcheck="false"></textarea>
+                    </label>
+                    <p class="muted">
+                      Use the path inside Graphit's instruction templates and keep any variables the
+                      template needs. Every authenticated Graphit client on this Broker can read
+                      active overrides. Keep secrets out of templates.
+                    </p>
+                    <div id="instruction-actions" class="profile-actions">
+                      <button id="save-instruction" type="submit">Save draft</button>
+                      <button id="activate-instruction" class="primary" type="button">Activate</button>
+                      <button id="deactivate-instruction" type="button">Deactivate</button>
+                      <button id="delete-instruction" class="danger" type="button">Delete draft</button>
+                    </div>
+                  </form>
+                  <p id="instruction-feedback" role="status" class="muted"></p>
                 </section>
               </div>
             </section>
@@ -2377,6 +2448,7 @@
         }
         if (!response.ok) {
           const error = new Error(body.error?.message || `HTTP ${response.status}`);
+          error.code = body.error?.code;
           error.status = response.status;
           throw error;
         }
@@ -2470,6 +2542,7 @@
       function showSignedOut() {
         resetInspectors();
         sessionGeneration++;
+        resetInstructions();
         localUsers = [];
         $("assignment-local").replaceChildren();
         $("assignment-subject").value = "";
@@ -2755,6 +2828,7 @@
       async function start(loginFailure = "") {
         resetInspectors();
         sessionGeneration++;
+        resetInstructions();
         localUsers = [];
         $("assignment-local").replaceChildren();
         $("assignment-subject").value = "";
@@ -2771,6 +2845,7 @@
           $("admin-nav").classList.remove("hidden");
           $("app").classList.remove("hidden");
           sessionPermissions = new Set(session.permissions || []);
+          instructionAdmin = canAction("*") || (session.roles || []).includes("admin");
           const can = canAction,
             loaders = [];
           applyPermissions();
@@ -2820,6 +2895,8 @@
               button.dataset.kicker,
               button.dataset.description,
             );
+            if (button.dataset.tab === "instructions" && !instructionDocument)
+              loadInstructions();
             closeMobileMenu();
             scrollTo({ top: 0, behavior: "smooth" });
           }),
@@ -2881,6 +2958,181 @@
           );
         }
       };
+
+      const instructionsPath = "/admin/api/v1/agent-instructions";
+      let instructionDocument = null,
+        instructionSelection = null,
+        instructionAdmin = false,
+        instructionSaving = false,
+        instructionLoading = false,
+        instructionRequest = 0;
+
+      function instructionFeedback(text) {
+        $("instruction-feedback").textContent = text;
+      }
+
+      function instructionControls() {
+        const busy = instructionSaving || instructionLoading;
+        $("reload-instructions").disabled = busy;
+        $("new-instruction").disabled = busy || !instructionAdmin || !instructionDocument;
+        $("instruction-list").querySelectorAll("button").forEach((button) => (button.disabled = busy));
+        $("instruction-editor").querySelectorAll("button").forEach((button) => (button.disabled = busy));
+        $("instruction-name").readOnly = busy || Boolean(instructionSelection) || !instructionAdmin;
+        $("instruction-markdown").readOnly = busy || !instructionAdmin;
+        $("instruction-editor").setAttribute("aria-busy", String(busy));
+      }
+
+      function resetInstructions() {
+        instructionRequest++;
+        instructionDocument = null;
+        instructionSelection = null;
+        instructionAdmin = false;
+        instructionSaving = false;
+        instructionLoading = false;
+        renderInstructions();
+        instructionFeedback("");
+      }
+
+      function renderInstructions(create = false) {
+        const entries = Object.entries(instructionDocument?.templates || {});
+        const list = $("instruction-list");
+        list.replaceChildren();
+        $("instructions-count").textContent = entries.length
+          ? `${entries.filter(([, row]) => row.enabled).length} active of ${entries.length}`
+          : "No overrides";
+        $("new-instruction").disabled = !instructionAdmin || !instructionDocument || instructionSaving;
+        for (const [name, row] of entries) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "directory-row";
+          const label = document.createElement("span");
+          const title = document.createElement("strong");
+          const status = document.createElement("small");
+          title.textContent = name;
+          status.textContent = row.enabled ? "Active" : "Draft";
+          label.append(title, status);
+          button.append(label);
+          button.setAttribute("aria-pressed", name === instructionSelection);
+          button.onclick = () => {
+            if (instructionSaving || instructionLoading) return;
+            instructionSelection = name;
+            instructionFeedback("");
+            renderInstructions();
+          };
+          list.append(button);
+        }
+        const current = instructionSelection &&
+          Object.hasOwn(instructionDocument?.templates || {}, instructionSelection)
+          ? instructionDocument.templates[instructionSelection] : null;
+        $("instruction-editor").classList.toggle("hidden", !(create || current));
+        $("instruction-empty").classList.toggle("hidden", Boolean(create || current));
+        $("instruction-status").hidden = !current;
+        $("instruction-status").textContent = current?.enabled ? "Active" : "Draft";
+        $("instruction-name").value = current ? instructionSelection : "";
+        $("instruction-name").readOnly = Boolean(current) || !instructionAdmin;
+        $("instruction-markdown").value = current?.markdown || "";
+        $("instruction-markdown").readOnly = !instructionAdmin;
+        $("instruction-actions").classList.toggle("hidden", !instructionAdmin);
+        $("save-instruction").hidden = Boolean(current?.enabled);
+        $("activate-instruction").textContent = current?.enabled ? "Publish changes" : "Activate";
+        $("deactivate-instruction").hidden = !current?.enabled;
+        $("delete-instruction").hidden = !current || current.enabled;
+        instructionControls();
+      }
+
+      async function loadInstructions() {
+        if (instructionSaving || instructionLoading) return;
+        const generation = sessionGeneration, request = ++instructionRequest;
+        const current = () => generation === sessionGeneration && request === instructionRequest;
+        instructionLoading = true;
+        instructionFeedback("Loading templates…");
+        instructionControls();
+        try {
+          const [, bundle] = await api(instructionsPath);
+          if (!current()) return;
+          instructionDocument = bundle;
+          renderInstructions();
+          instructionFeedback("");
+        } catch (error) {
+          if (!current()) return;
+          instructionFeedback(error.status === 404
+            ? "This Broker has not enabled instruction overrides."
+            : error.message);
+        } finally {
+          if (current()) {
+            instructionLoading = false;
+            instructionControls();
+          }
+        }
+      }
+
+      async function saveInstruction(action) {
+        if (!instructionAdmin || !instructionDocument || instructionSaving || instructionLoading ||
+            !$("instruction-editor").reportValidity()) return;
+        const name = $("instruction-name").value.trim();
+        const templates = Object.assign(Object.create(null), instructionDocument.templates);
+        const exists = Object.hasOwn(templates, name);
+        if (!instructionSelection && exists) {
+          instructionFeedback("This path already has an override. Select it to edit.");
+          return;
+        }
+        if (action === "delete") delete templates[name];
+        else templates[name] = {
+          markdown: action === "deactivate" ? templates[name].markdown : $("instruction-markdown").value,
+          enabled: action === "activate",
+        };
+        const generation = sessionGeneration, request = ++instructionRequest;
+        const current = () => generation === sessionGeneration && request === instructionRequest;
+        instructionSaving = true;
+        instructionControls();
+        try {
+          const [, bundle] = await api(instructionsPath, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ revision: instructionDocument.revision, templates }),
+          });
+          if (!current()) return;
+          instructionDocument = bundle;
+          instructionSelection = action === "delete" ? null : name;
+          renderInstructions();
+          instructionFeedback({
+            draft: "Draft saved.",
+            activate: "Override published. Clients will receive it on the next sync.",
+            deactivate: "Override deactivated. Clients will stop using it on the next sync.",
+            delete: "Draft deleted.",
+          }[action]);
+        } catch (error) {
+          if (!current()) return;
+          instructionFeedback(error.status === 409
+            ? "Someone changed the templates. Copy any unsaved edits, then refresh."
+            : ({
+                invalid_instruction_template: "Enter a relative Markdown template path.",
+                invalid_instruction_syntax: "Fix the template syntax before activating it.",
+                instruction_document_too_large: "The template collection is too large.",
+              }[error.code] || error.message));
+        } finally {
+          if (current()) {
+            instructionSaving = false;
+            instructionControls();
+          }
+        }
+      }
+
+      $("reload-instructions").onclick = loadInstructions;
+      $("new-instruction").onclick = () => {
+        if (!instructionAdmin || !instructionDocument || instructionSaving || instructionLoading) return;
+        instructionSelection = null;
+        instructionFeedback("");
+        renderInstructions(true);
+        $("instruction-name").focus();
+      };
+      $("instruction-editor").onsubmit = (event) => {
+        event.preventDefault();
+        saveInstruction($("save-instruction").hidden ? "activate" : "draft");
+      };
+      $("activate-instruction").onclick = () => saveInstruction("activate");
+      $("deactivate-instruction").onclick = () => saveInstruction("deactivate");
+      $("delete-instruction").onclick = () => saveInstruction("delete");
 
       async function loadConfig() {
         const [, body] = await api("/admin/api/v1/config");

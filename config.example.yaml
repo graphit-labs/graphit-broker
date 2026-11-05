@@ -4,6 +4,8 @@
 server:
   address: 127.0.0.1:8080
   public_url: https://broker.example.test
+  # Optional writable path for overrides edited in the administration console.
+  # instruction_overrides_file: agent-instructions.json
 database:
   backend: postgres
   host: postgres.example.test

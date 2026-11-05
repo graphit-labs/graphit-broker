@@ -32,7 +32,10 @@ class Installer(unittest.TestCase):
     def test_local_archive_and_make_install_use_the_same_validated_payload(self):
         self.install_case(local=True)
 
-    def install_case(self, local):
+    def test_cuda_13_local_archive_keeps_notices_and_installation_boundaries(self):
+        self.install_case(local=True, cuda_major=13)
+
+    def install_case(self, local, cuda_major=12):
         with tempfile.TemporaryDirectory(prefix="broker-install-") as directory:
             root = Path(directory)
             tools = root / "tools"
@@ -72,7 +75,7 @@ esac
             environment.pop("VERSION", None)
             for index, invalid in enumerate([None, "digest", "missing-notice", "missing-engine-notice", "missing-nvidia-notice", None]):
                 with tarfile.open(archive, "w:gz") as output:
-                    for name in CPU + LINUX:
+                    for name in CPU + [name.replace(".so.12", f".so.{cuda_major}") for name in LINUX]:
                         missing = {"missing-notice": CPU[-1],
                                    "missing-engine-notice": "graphit-runtime/licenses/broker/ggml/LICENSE-MIT",
                                    "missing-nvidia-notice": "graphit-runtime/licenses/broker/nvidia/LICENSE"}
@@ -232,6 +235,12 @@ printf '%s' "$7" > "$WINDOWS_INSTALL_RECORD"
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_release_validator_accepts_complete_cpu_and_rejects_invalid_layouts(self):
+        self.release_validator_case(cuda_major=12)
+
+    def test_release_validator_cuda_13_retains_license_and_layout_rejections(self):
+        self.release_validator_case(cuda_major=13)
+
+    def release_validator_case(self, cuda_major):
         workflow = (REPO / ".github/workflows/release.yml").read_text()
         step = workflow.split("- name: Verify every native pair before release mutation", 1)[1]
         code = textwrap.dedent(step.split("python3 - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
@@ -239,7 +248,7 @@ printf '%s' "$7" > "$WINDOWS_INSTALL_RECORD"
             root = Path(directory)
             environment = dict(os.environ, BROKER_COMMIT="broker-fixture", CODE_REPOSITORY="fixture/code",
                                CODE_COMMIT="code-fixture", GITHUB_REF_NAME="v1.2.0")
-            for issue in [None, "missing-notice", "unknown", "escape",
+            for issue in [None, "missing-notice", "missing-nvidia-notice", "unknown", "escape",
                           "duplicate", "symlink", "wrong-mode", "wrong-platform",
                           "windows-missing-dll", "windows-missing-notice", "windows-digest", "windows-case-duplicate", "macos-manifest"]:
                 for platform in ["linux-amd64", "darwin-arm64", "windows-amd64"]:
@@ -251,7 +260,7 @@ printf '%s' "$7" > "$WINDOWS_INSTALL_RECORD"
                     archive = package / f"graphit-broker-{platform}.tar.gz"
                     executable = "graphit-broker.exe" if platform == "windows-amd64" else "graphit-broker"
                     names = [executable] + CPU[1:]
-                    if platform == "linux-amd64": names += LINUX
+                    if platform == "linux-amd64": names += [name.replace(".so.12", f".so.{cuda_major}") for name in LINUX]
                     elif platform == "darwin-arm64": names += ["graphit-runtime/broker/macos-libraries.json", "graphit-runtime/broker/lib/libcrypto.3.dylib", "graphit-runtime/broker/licenses/darwin-arm64/OpenSSL-LICENSE.txt"]
                     else: names += ["graphit-runtime/broker/windows-libraries.json", "vcruntime140.dll", "msvcp140.dll", "graphit-runtime/broker/licenses/windows-amd64/Microsoft-VC-REDIST-NOTICE.txt"]
                     payloads = {name: b"controlled release fixture\n" for name in names}
@@ -264,6 +273,7 @@ printf '%s' "$7" > "$WINDOWS_INSTALL_RECORD"
                     affected = platform == "linux-amd64"
                     if affected:
                         if issue == "missing-notice": names.remove(CPU[-1])
+                        if issue == "missing-nvidia-notice": names.remove("graphit-runtime/licenses/broker/nvidia/LICENSE")
                         if issue == "unknown": names += ["unrecognized.so"]
                         if issue == "escape": names += ["../outside"]
                         if issue == "duplicate": names += [CPU[-1]]

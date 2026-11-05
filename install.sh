@@ -109,7 +109,7 @@ if [ "$platform" = linux-amd64 ]; then
     # Cargo engine and NVIDIA licenses were validated above; only OS libraries
     # use distribution copyright files and the GCC runtime notice.
     case "$name" in
-      libllama.so|libggml.so|libggml-base.so|libggml-cpu.so|libggml-cuda.so|libcudart.so.12|libcublas.so.12|libcublasLt.so.12) continue ;;
+      libllama.so|libggml.so|libggml-base.so|libggml-cpu.so|libggml-cuda.so|libcudart.so.12|libcublas.so.12|libcublasLt.so.12|libcudart.so.13|libcublas.so.13|libcublasLt.so.13) continue ;;
     esac
     [ -s "$payload/graphit-runtime/licenses/broker/linux/$name.copyright" ] &&
       [ -s "$payload/graphit-runtime/licenses/broker/linux/GPL-3" ] || fail 'Linux runtime license missing'

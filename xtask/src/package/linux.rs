@@ -134,7 +134,12 @@ fn package_provenance(
     );
     let nvidia = matches!(
         soname,
-        "libcudart.so.12" | "libcublas.so.12" | "libcublasLt.so.12"
+        "libcudart.so.12"
+            | "libcublas.so.12"
+            | "libcublasLt.so.12"
+            | "libcudart.so.13"
+            | "libcublas.so.13"
+            | "libcublasLt.so.13"
     );
     if engine || nvidia {
         let origin = if engine {
@@ -317,4 +322,61 @@ pub(super) fn prepare(
     entries.push(manifest);
     entries.sort();
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::notices::RuntimeInputs;
+
+    #[test]
+    fn cuda_12_and_13_provenance_uses_only_the_selected_toolkit() {
+        let fixture = tempfile::tempdir().unwrap();
+        let toolkit = fixture.path().join("toolkit");
+        let runtime = RuntimeInputs {
+            toolkit: Some(toolkit.clone()),
+            ..RuntimeInputs::default()
+        };
+        for major in [12, 13] {
+            for library in ["libcudart", "libcublas", "libcublasLt"] {
+                let soname = format!("{library}.so.{major}");
+                let source = toolkit.join("lib64").join(&soname);
+                let (origin, notices) =
+                    package_provenance(fixture.path(), &source, &soname, &runtime).unwrap();
+                assert_eq!(origin, json!({"kind":"nvidia", "file":soname}));
+                assert!(notices.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn cuda_provenance_rejects_missing_or_unrelated_toolkit_even_inside_engine() {
+        let fixture = tempfile::tempdir().unwrap();
+        let toolkit = fixture.path().join("toolkit");
+        let engine = fixture.path().join("engine");
+        for major in [12, 13] {
+            for library in ["libcudart", "libcublas", "libcublasLt"] {
+                let soname = format!("{library}.so.{major}");
+                for selected in [None, Some(toolkit.clone())] {
+                    let runtime = RuntimeInputs {
+                        engine: Some(engine.clone()),
+                        toolkit: selected,
+                        ..RuntimeInputs::default()
+                    };
+                    for source in [
+                        engine.join(&soname),
+                        fixture.path().join("toolkit-unrelated").join(&soname),
+                    ] {
+                        let error = package_provenance(fixture.path(), &source, &soname, &runtime)
+                            .unwrap_err();
+                        assert!(
+                            error
+                                .to_string()
+                                .contains("outside the selected Cargo build/toolkit")
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

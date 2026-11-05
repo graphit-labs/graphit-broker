@@ -236,7 +236,7 @@ jobs:
               if not required <= seen:
                   raise SystemExit(f"Required installer files missing: {platform}")
               for library in linux_libraries:
-                  if re.fullmatch(r"lib(?:llama|ggml(?:-base|-cpu|-cuda)?)\.so|lib(?:cudart|cublas|cublasLt)\.so\.12", library):
+                  if re.fullmatch(r"lib(?:llama|ggml(?:-base|-cpu|-cuda)?)\.so|lib(?:cudart|cublas|cublasLt)\.so\.(?:12|13)", library):
                       continue  # Covered by the required Cargo/NVIDIA notices above.
                   if prefix + "graphit-runtime/licenses/broker/linux/" + library + ".copyright" not in seen or prefix + "graphit-runtime/licenses/broker/linux/GPL-3" not in seen:
                       raise SystemExit(f"Linux runtime notice missing: {platform}")

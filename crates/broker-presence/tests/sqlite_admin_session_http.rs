@@ -390,3 +390,255 @@ async fn sqlite_session_http_trust_removal_logout_deadline_and_closed_are_finite
     server.close().await;
     store.shutdown(end()).await.unwrap();
 }
+
+#[tokio::test]
+async fn agent_instruction_drafts_publish_for_authenticated_sync_and_survive_reopen() {
+    use broker_presence::{InstructionHttpConfig, InstructionStore, instruction_overrides_router};
+    use serde_json::json;
+
+    const ADMIN: &str = "/admin/api/v1/agent-instructions";
+    const SYNC: &str = "/v1/agent-instructions";
+    const NAME: &str = "skills/ast/entry.md";
+    let f = Fixture::new().await;
+    s::allow_session(&f);
+    let observer = s::local_cookie(&f).await;
+    let key = s::persisted_opaque(&f);
+    let bearer = auth(&key);
+    let jwt = auth(&s::jwt(&f).await);
+    let path = f._temp.path().join("instructions.json");
+    let router = || {
+        instruction_overrides_router(
+            InstructionStore::Sqlite(f.store.clone()),
+            f.verifier(),
+            None,
+            InstructionHttpConfig {
+                file: path.clone(),
+                timeout: Duration::from_secs(5),
+                audience: "admin-api".into(),
+                identity_json_bytes: n(8192),
+                cookie: cookie_config(),
+            },
+        )
+        .merge(
+            sqlite_admin_session_router_with_cookie(
+                f.store.clone(),
+                f.verifier(),
+                config(),
+                Some(local()),
+                None,
+                Some(cookie_config()),
+            )
+            .unwrap(),
+        )
+    };
+    let server = Server::router(router()).await;
+    let observer_cookie = cookie(observer.secret());
+    assert_eq!(
+        server
+            .send_headers(
+                "PUT",
+                ADMIN,
+                b"{invalid",
+                &[("content-type", "application/json")]
+            )
+            .await
+            .status,
+        401,
+        "authenticate before consuming an unauthenticated JSON body"
+    );
+    assert_eq!(
+        server
+            .send_headers("GET", ADMIN, b"", &[("cookie", &observer_cookie)])
+            .await
+            .status,
+        403
+    );
+    assert_eq!(server.send_headers("GET", SYNC, b"", &[]).await.status, 401);
+    assert_eq!(
+        server
+            .send_headers(
+                "PUT",
+                ADMIN,
+                b"{invalid",
+                &[
+                    ("cookie", &observer_cookie),
+                    ("content-type", "application/json")
+                ]
+            )
+            .await
+            .status,
+        403,
+        "reject an unprivileged session before decoding JSON"
+    );
+    assert!(!path.exists());
+
+    f.db.execute_batch("INSERT INTO role_assignments(subject,role,created_at) VALUES('local|alice-subject','admin',0)")
+        .unwrap();
+    let administrator = s::local_cookie(&f).await;
+    let session = cookie(administrator.secret());
+    let admin = [("cookie", session.as_str())];
+    let read = server.send_headers("GET", ADMIN, b"", &admin).await;
+    assert_eq!(read.json(), json!({"revision":0,"templates":{}}));
+    let mut headers = vec![
+        ("cookie", session.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let draft =
+        json!({"revision":0,"templates":{NAME:{"enabled":false,"markdown":"Olá {{ brand }}."}}});
+    let write = |document: &serde_json::Value| serde_json::to_vec(document).unwrap();
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, &write(&draft), &headers)
+            .await
+            .status,
+        403
+    );
+    let session_doc = server
+        .send_headers("GET", SESSION, b"", &admin)
+        .await
+        .json();
+    headers.push(("x-csrf-token", session_doc["csrf_token"].as_str().unwrap()));
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, b"{invalid", &headers)
+            .await
+            .status,
+        400
+    );
+    let mut repeated_csrf = headers.clone();
+    repeated_csrf.push(("x-csrf-token", session_doc["csrf_token"].as_str().unwrap()));
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, &write(&draft), &repeated_csrf)
+            .await
+            .status,
+        403
+    );
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, &write(&draft), &headers)
+            .await
+            .json()["revision"],
+        1
+    );
+
+    let synced = server
+        .send_headers("GET", SYNC, b"", &[("authorization", &bearer)])
+        .await;
+    assert_eq!(synced.json(), json!({"version":1,"templates":{}}));
+    assert_eq!(synced.headers[header::CACHE_CONTROL], "no-store");
+    let mut active = draft;
+    active["revision"] = 1.into();
+    active["templates"][NAME]["enabled"] = true.into();
+    let mut invalid = active.clone();
+    invalid["templates"][NAME]["markdown"] = "{{".into();
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, &write(&invalid), &headers)
+            .await
+            .json()["error"]["code"],
+        "invalid_instruction_syntax"
+    );
+    let active_bytes = write(&active);
+    let (first, second) = tokio::join!(
+        server.send_headers("PUT", ADMIN, &active_bytes, &headers),
+        server.send_headers("PUT", ADMIN, &active_bytes, &headers),
+    );
+    let mut statuses = [first.status.as_u16(), second.status.as_u16()];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [200, 409],
+        "one revision wins across concurrent writers"
+    );
+    assert_eq!(
+        server
+            .send_headers("PUT", ADMIN, &write(&active), &headers)
+            .await
+            .status,
+        409
+    );
+    server.close().await;
+
+    let reopened = Server::router(router()).await;
+    let published = reopened
+        .send_headers("GET", SYNC, b"", &[("authorization", &bearer)])
+        .await;
+    assert_eq!(
+        published.json(),
+        json!({"version":1,"templates":{NAME:"Olá {{ brand }}."}})
+    );
+    assert_eq!(
+        reopened
+            .send_headers("GET", SYNC, b"", &[("authorization", &jwt)])
+            .await
+            .json(),
+        published.json()
+    );
+    for name in [
+        "../entry.md",
+        "defaults/entry.md",
+        "a\\entry.md",
+        "/entry.md",
+        "a/../entry.md",
+        "entry.txt",
+    ] {
+        let invalid = json!({"revision":2,"templates":{name:{"enabled":false,"markdown":"draft"}}});
+        assert_eq!(
+            reopened
+                .send_headers("PUT", ADMIN, &write(&invalid), &headers)
+                .await
+                .status,
+            400,
+            "reject reserved or non-relative template path {name}"
+        );
+    }
+    active["revision"] = 2.into();
+    active["templates"][NAME]["enabled"] = false.into();
+    assert_eq!(
+        reopened
+            .send_headers("PUT", ADMIN, &write(&active), &headers)
+            .await
+            .status,
+        200
+    );
+    assert_eq!(
+        reopened
+            .send_headers("GET", SYNC, b"", &[("authorization", &bearer)])
+            .await
+            .json()["templates"],
+        json!({})
+    );
+    let saved = std::fs::read(&path).unwrap();
+    std::fs::write(&path, b"{corrupt").unwrap();
+    assert_eq!(
+        reopened
+            .send_headers("GET", SYNC, b"", &[("authorization", &bearer)])
+            .await
+            .status,
+        503,
+        "corrupt persistence must not become an empty active bundle"
+    );
+    std::fs::write(&path, &saved).unwrap();
+    f.db.execute_batch(
+        "DELETE FROM role_assignments WHERE subject='local|alice-subject' AND role='admin'",
+    )
+    .unwrap();
+    assert_eq!(
+        reopened
+            .send_headers("GET", ADMIN, b"", &admin)
+            .await
+            .status,
+        403
+    );
+    assert_eq!(
+        reopened
+            .send_headers("PUT", ADMIN, &saved, &headers)
+            .await
+            .status,
+        403
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    reopened.close().await;
+    f.store.shutdown(end()).await.unwrap();
+}

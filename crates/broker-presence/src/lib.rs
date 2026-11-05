@@ -15,6 +15,10 @@ pub use embeddings::{
     EmbeddingBackend, EmbeddingsError, EmbeddingsHttpConfig, RemoteEmbeddingsConfig,
     disabled_embeddings_router, postgres_embeddings_router, sqlite_embeddings_router,
 };
+mod instruction_overrides;
+pub use instruction_overrides::{
+    InstructionHttpConfig, InstructionStore, instruction_overrides_router,
+};
 mod admin_cookie;
 mod admin_upstream_login;
 pub use admin_cookie::{AdminCookieHttpConfig, admin_cookie_header};

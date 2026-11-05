@@ -1,15 +1,20 @@
 //! Opt-in real-server schema qualification; no application pool or private file is exercised.
+#[path = "../../broker-control/tests/support/command.rs"]
+mod command;
 use broker_store::{
     schema::{Dialect, SchemaVersion, schema_statements},
     seeds::InitialSeeds,
     time::TimestampMicros,
 };
 use std::{
-    io::Write,
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
     thread,
     time::{Duration, Instant},
 };
+
+fn bounded(command: &mut Command, input: &[u8]) -> std::io::Result<Output> {
+    command::output(command, input, Instant::now() + Duration::from_secs(60))
+}
 
 const MYSQL: &str = "mysql@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242";
 const POSTGRES: &str =
@@ -18,17 +23,17 @@ const POSTGRES: &str =
 struct Server {
     id: String,
     dialect: Dialect,
+    _private: tempfile::TempDir,
 }
 impl Drop for Server {
     fn drop(&mut self) {
-        let result = Command::new("docker")
-            .args(["rm", "--force", "--volumes", &self.id])
-            .output();
+        let result = bounded(
+            Command::new("docker").args(["rm", "--force", "--volumes", &self.id]),
+            &[],
+        );
         let removed = result.is_ok_and(|output| output.status.success());
-        let absent = Command::new("docker")
-            .args(["inspect", &self.id])
-            .output()
-            .is_ok_and(|output| {
+        let absent =
+            bounded(Command::new("docker").args(["inspect", &self.id]), &[]).is_ok_and(|output| {
                 output.status.code() == Some(1)
                     && String::from_utf8_lossy(&output.stderr)
                         .contains(&format!("No such object: {}", self.id))
@@ -45,8 +50,27 @@ impl Drop for Server {
 }
 impl Server {
     fn start(dialect: Dialect) -> Self {
+        let private = tempfile::tempdir().unwrap();
+        let id = format!(
+            "broker-schema-{}",
+            private.path().file_name().unwrap().to_str().unwrap()
+        );
+        // Own the cleanup name before Docker can create a container or lose its ACK.
+        let server = Self {
+            id,
+            dialect,
+            _private: private,
+        };
         let mut command = Command::new("docker");
-        command.args(["run", "--detach", "--rm", "--network", "none"]);
+        command.args([
+            "run",
+            "--detach",
+            "--rm",
+            "--network",
+            "none",
+            "--name",
+            &server.id,
+        ]);
         match dialect {
             Dialect::Mysql => {
                 command.args([
@@ -68,7 +92,7 @@ impl Server {
             }
             Dialect::Sqlite => unreachable!("SQLite has a separate in-memory fixture"),
         }
-        let output = command.output().expect("Docker required");
+        let output = bounded(&mut command, &[]).expect("Docker required");
         assert!(
             output.status.success(),
             "start SQL fixture: {}",
@@ -76,7 +100,6 @@ impl Server {
         );
         let id = String::from_utf8(output.stdout).unwrap().trim().to_owned();
         assert!(id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        let server = Self { id, dialect };
         // TCP excludes the image entrypoints' temporary socket-only servers.
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -128,14 +151,7 @@ impl Server {
             }
             Dialect::Sqlite => unreachable!(),
         }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let _ = child.stdin.take().unwrap().write_all(sql.as_bytes());
-        child.wait_with_output().unwrap()
+        bounded(&mut command, sql.as_bytes()).unwrap()
     }
     #[track_caller]
     fn good(&self, sql: &str) -> String {

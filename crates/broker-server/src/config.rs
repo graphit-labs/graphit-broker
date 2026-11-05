@@ -767,6 +767,7 @@ pub(crate) struct Server {
     #[serde(default = "address")]
     pub address: SocketAddr,
     public_url: String,
+    instruction_overrides_file: Option<PathBuf>,
     #[serde(default = "read_timeout")]
     read_timeout: Budget,
     #[serde(default = "write_timeout")]
@@ -1373,6 +1374,7 @@ pub struct PreparedConfig {
     pub(crate) embeddings: Option<embeddings_config::PreparedEmbeddings>,
     pub(crate) rerank: Option<rerank_config::PreparedRerank>,
     pub(crate) configuration_yaml: Option<String>,
+    pub(crate) instruction_overrides_file: PathBuf,
     pub(crate) native_sdk: Option<graphit_ai::native_embedding::NativeSdkRoot>,
 }
 impl PreparedConfig {
@@ -1952,6 +1954,13 @@ async fn prepare(config: Config, base: &Path) -> Result<PreparedConfig, ServerEr
         view.services =
             embeddings_config::ServicesView::combined(embeddings.as_ref(), rerank.as_ref());
     }
+    let instruction_overrides_file = resolve(
+        base,
+        server
+            .instruction_overrides_file
+            .clone()
+            .unwrap_or_else(|| "agent-instructions.json".into()),
+    )?;
     let mut prepared = PreparedConfig {
         server,
         database,
@@ -1977,6 +1986,7 @@ async fn prepare(config: Config, base: &Path) -> Result<PreparedConfig, ServerEr
         embeddings,
         rerank,
         configuration_yaml: None,
+        instruction_overrides_file,
         native_sdk,
     };
     if let Some(view) = configuration_view {
