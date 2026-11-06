@@ -11,6 +11,29 @@ cargo test --locked --offline --workspace --all-targets --no-fail-fast
 node scripts/check-admin-ui.cjs
 ```
 
+Native CI restores locked Cargo sources separately from compiled artifacts.
+Compiled cache keys bind the OS, architecture, Rust host/toolchain, runner image,
+compiler/SDK and installed native library versions, build options, manifests,
+lockfile and workflow. Only the final source revision component is dropped for a
+compatible restore. Cargo still fetches the locked inputs, checks fingerprints,
+and rebuilds changed sources. The cache includes Rust libraries, build-script
+outputs (including native C/C++ outputs) and the actual Broker/xtask executables;
+it excludes incremental state and test executables. No separate vcpkg or native
+SDK cache is used by the ordinary workflow because it does not produce them.
+Cargo may rebuild executable wrappers after restore; a cache hit does not
+guarantee that every target is fresh.
+Windows selects the x64 Visual Studio 2022 environment before probing `cl /Bv`;
+the MSVC toolset, Windows SDK and UCRT versions must be nonempty to form a key.
+
+The workflow prepares Clippy and test builds offline, then explicitly saves
+compiled outputs before running the unchanged `xtask hook pre-push` gate. A
+later test failure therefore does not discard reusable preparation. Cache hits
+never skip formatting, Clippy, doctests or the parallel ordinary suite. SQL,
+S3/STS, CUDA and installed-package qualifications remain separate. Cache misses
+follow the same locked preparation and offline validation path. Measure source
+preparation, compilation, cache transfer and test execution separately; a warm
+local probe does not establish an end-to-end hosted-runner speedup.
+
 Keep the default test runner parallel. SQLite databases, signing material, model
 HTTP peers, filesystem payloads, installation roots and subprocess environments
 belong to each fixture. A deliberately short request budget belongs only to the
