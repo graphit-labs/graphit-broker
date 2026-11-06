@@ -486,15 +486,31 @@ mod tests {
     async fn timed_out_waiter_cannot_release_running_kdf_admission() {
         let owner = engine().await;
         let worker_owner = Arc::clone(&owner);
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (completed, hashed) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
         let caller = tokio::spawn(async move {
+            let password = Zeroizing::new("a genuine sufficiently long native password".to_owned());
             worker_owner
-                .hash(
-                    "a genuine sufficiently long native password",
+                .work(
                     Instant::now() + Duration::from_millis(100),
+                    None,
+                    move |hasher| {
+                        started.send(()).unwrap();
+                        let hash = hasher.hash(&password)?;
+                        completed.send(()).unwrap();
+                        // Keep the real result and worker-owned permit until the
+                        // caller has expired. Sender drop also unblocks a failed test.
+                        let _ = released.recv();
+                        Ok::<_, LocalPasswordVerificationError>(hash)
+                    },
                 )
                 .await
         });
-        occupied(&owner).await;
+        tokio::time::timeout_at(end().into(), entered)
+            .await
+            .unwrap()
+            .unwrap();
         let queued = owner
             .hash(
                 "another genuine sufficiently long password",
@@ -508,14 +524,24 @@ mod tests {
             ))
         ));
         assert_eq!(owner.slots.available_permits(), 0);
-        assert!(matches!(
-            caller.await.unwrap(),
-            Err(LocalPasswordVerificationError::Control(
+        assert_eq!(
+            caller.await.unwrap().err(),
+            Some(LocalPasswordVerificationError::Control(
                 ControlError::Deadline
             ))
-        ));
+        );
         assert_eq!(owner.slots.available_permits(), 0);
-        recovered(&owner).await;
+        tokio::time::timeout_at(end().into(), hashed)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.slots.available_permits(), 0);
+        release.send(()).unwrap();
+        tokio::time::timeout_at(end().into(), owner.close())
+            .await
+            .unwrap();
+        assert!(owner.workers.tasks.is_empty());
+        assert!(owner.slots.is_closed());
         assert_eq!(owner.slots.available_permits(), 1);
     }
     #[tokio::test]
