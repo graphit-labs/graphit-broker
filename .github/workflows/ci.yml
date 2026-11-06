@@ -49,8 +49,45 @@ jobs:
       - name: Set up Linux native build dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake libclang-dev libssl-dev pkg-config
+          set -euo pipefail
+          packages=()
+          if ! command -v cc >/dev/null || ! command -v c++ >/dev/null || ! command -v make >/dev/null; then
+            packages+=(build-essential)
+          fi
+          # Keep at least the CMake version supplied by Ubuntu 24.04's package.
+          if ! cmake --version >/dev/null 2>&1; then
+            packages+=(cmake)
+          else
+            version=$(cmake --version | sed -n '1s/^cmake version //p')
+            if ! dpkg --compare-versions "$version" ge 3.28.3; then packages+=(cmake); fi
+          fi
+          # Bindgen's clang-sys runtime accepts Ubuntu's versioned libclang C ABI;
+          # it does not require the libclang development headers or linker symlink.
+          clang_packages=("libclang1-18:$(dpkg --print-architecture)" libclang-common-18-dev)
+          for package in "${clang_packages[@]}"; do
+            if ! dpkg-query -W -f='${db:Status-Status}\n' "$package" 2>/dev/null | grep -Fx installed >/dev/null; then
+              packages+=(libclang-dev)
+              break
+            fi
+          done
+          for package in libssl-dev pkg-config; do
+            if ! dpkg-query -W -f='${db:Status-Status}\n' "$package" 2>/dev/null | grep -Fx installed >/dev/null; then packages+=("$package"); fi
+          done
+          if ((${#packages[@]})); then
+            printf 'Installing native build packages: %s\n' "${packages[*]}"
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          fi
+          for tool in cc c++ make cmake pkg-config; do
+            command -v "$tool" || { printf 'Missing native build tool: %s\n' "$tool" >&2; exit 1; }
+          done
+          version=$(cmake --version | sed -n '1s/^cmake version //p')
+          dpkg --compare-versions "$version" ge 3.28.3 || { printf 'CMake >= 3.28.3 required, found %s\n' "$version" >&2; exit 1; }
+          pkg-config --print-errors --exists openssl
+          for package in "${clang_packages[@]}"; do
+            dpkg-query -W -f='${db:Status-Status}\n' "$package" | grep -Fx installed >/dev/null || { printf 'Missing installed native package: %s\n' "$package" >&2; exit 1; }
+          done
+          dpkg-query -W -f='${binary:Package} ${Version}\n' "${clang_packages[@]}"
       - name: Set up Darwin native build dependencies
         if: runner.os == 'macOS'
         run: |
@@ -86,7 +123,7 @@ jobs:
               Linux)
                 cc --version
                 c++ --version
-                dpkg-query -W cmake gcc g++ libc6-dev libssl-dev pkg-config 'libclang*'
+                dpkg-query -W gcc g++ libc6-dev libssl-dev pkg-config 'libclang*'
                 ;;
               macOS)
                 clang --version

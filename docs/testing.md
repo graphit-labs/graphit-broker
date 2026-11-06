@@ -43,6 +43,16 @@ Caller configuration, including target/cache paths and encoded Rust flags,
 remains inherited. Direct CI preparation and checks launched by `cargo run`
 therefore use the same package-identity inputs.
 
+The Ubuntu 24.04 ordinary job reuses available C/C++/Make tools and CMake
+3.28.3 or newer, preserving the former Ubuntu package floor. It checks the
+native `libclang1-18` runtime, Clang 18 resource headers, OpenSSL development
+package and `pkg-config` installation before asking APT for missing requirements.
+Bindgen's retained `clang-sys` runtime supports the version-suffixed Clang C ABI
+without Clang C API headers or a linker symlink. APT update/install runs only for a
+nonempty missing-package list; tool/version/package checks still fail the step
+when preparation does not supply a requirement. ABI keys retain the actual
+CMake version even when CMake comes from the runner tool installation.
+
 Keep the default test runner parallel. SQLite databases, signing material, model
 HTTP peers, filesystem payloads, installation roots and subprocess environments
 belong to each fixture. A deliberately short request budget belongs only to the
