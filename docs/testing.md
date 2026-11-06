@@ -34,6 +34,15 @@ follow the same locked preparation and offline validation path. Measure source
 preparation, compilation, cache transfer and test execution separately; a warm
 local probe does not establish an end-to-end hosted-runner speedup.
 
+When the `xtask` check executor launches Cargo, it removes its inherited `CARGO_PKG_*`,
+`CARGO_MANIFEST_DIR` and `CARGO_MANIFEST_PATH` package identity from that child
+command. Cargo supplies the identity of each package it builds. Forwarding the
+launcher's identity can invalidate native dependencies that track those values
+with `rerun-if-env-changed`, even when sources and compiler flags are unchanged.
+Caller configuration, including target/cache paths and encoded Rust flags,
+remains inherited. Direct CI preparation and checks launched by `cargo run`
+therefore use the same package-identity inputs.
+
 Keep the default test runner parallel. SQLite databases, signing material, model
 HTTP peers, filesystem payloads, installation roots and subprocess environments
 belong to each fixture. A deliberately short request budget belongs only to the

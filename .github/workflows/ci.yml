@@ -75,8 +75,9 @@ jobs:
         run: |
           host=$(rustc +1.98.0 -vV | sed -n 's/^host: //p')
           test -n "$host"
-          abi=$({
-            set -e
+          identity=$(mktemp "$RUNNER_TEMP/graphit-abi.XXXXXX")
+          trap 'rm -f "$identity"' EXIT
+          {
             rustc +1.98.0 -vV
             printf '%s\n' "${RUNNER_OS:?}" "${RUNNER_ARCH:?}" "${ImageOS:?}" "${ImageVersion:?}"
             env | LC_ALL=C sort | sed -n -E '/^(CC|CXX|CFLAGS|CPPFLAGS|CXXFLAGS|LDFLAGS|RUSTFLAGS|RUSTDOCFLAGS|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_TARGET|CARGO_INCREMENTAL|CARGO_PROFILE_.*|CMAKE_.*|GGML_.*|LLAMA_.*|LBUG_.*|CUDA.*|CUDNN.*|OPENSSL_.*|PKG_CONFIG.*|LIBCLANG_PATH)=/p'
@@ -99,7 +100,8 @@ jobs:
                 "$LIBCLANG_PATH/clang.exe" --version
                 ;;
             esac
-          } | git hash-object --stdin)
+          } > "$identity"
+          abi=$(git hash-object --stdin < "$identity")
           printf 'host=%s\nabi=%s\n' "$host" "$abi" >> "$GITHUB_OUTPUT"
       - name: Restore Cargo dependencies
         id: cargo-cache

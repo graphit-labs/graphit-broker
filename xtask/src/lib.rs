@@ -1418,6 +1418,18 @@ pub fn execute(check: Check) -> io::Result<ExitStatus> {
     };
     let mut command = Command::new(check.program);
     command.args(check.args);
+    if check.program == "cargo" {
+        // Cargo supplies the child package's identity. Forwarding xtask's identity
+        // changes rerun-if-env-changed fingerprints of native dependency builds.
+        for (name, _) in std::env::vars_os() {
+            if name.to_str().is_some_and(|name| {
+                name.starts_with("CARGO_PKG_")
+                    || matches!(name, "CARGO_MANIFEST_DIR" | "CARGO_MANIFEST_PATH")
+            }) {
+                command.env_remove(name);
+            }
+        }
+    }
     if let Some(package) = &package {
         command.env(
             "GRAPHIT_BROKER_CONTAINER_PACKAGE",

@@ -43,6 +43,101 @@ fn package_fixture(manifest: &str) -> tempfile::TempDir {
 }
 
 #[test]
+fn prepared_checks_do_not_inherit_the_launchers_cargo_package_identity() {
+    let fixture = package_fixture(
+        "[package]\nname = \"cargo-inputs-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    let root = fixture.path();
+    fs::write(
+        root.join("build.rs"),
+        r#"fn main() {
+    for name in ["CARGO_MANIFEST_DIR", "CARGO_PKG_NAME"] {
+        println!("cargo::rerun-if-env-changed={name}");
+    }
+    println!("cargo::rustc-check-cfg=cfg(broker_flag_preserved)");
+    assert_eq!(std::env::var("CARGO_PKG_NAME").unwrap(), "cargo-inputs-fixture");
+    let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("build-count");
+    let previous = std::fs::read_to_string(&path).unwrap_or_else(|_| "0".into());
+    let next = previous.parse::<u32>().unwrap() + 1;
+    std::fs::write(path, next.to_string()).unwrap();
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        r#"//! ```
+//! assert_eq!(cargo_inputs_fixture::value(), 1);
+//! ```
+#[cfg(not(broker_flag_preserved))]
+compile_error!("the caller's Cargo flags must be preserved");
+
+pub fn value() -> u8 {
+    1
+}
+
+#[test]
+fn ordinary_contract() {
+    assert_eq!(value(), 1);
+}
+"#,
+    )
+    .unwrap();
+    checked(
+        Command::new("cargo")
+            .args(["fmt", "--all"])
+            .current_dir(root),
+    );
+    let prepared = Command::new("cargo")
+        .args([
+            "test",
+            "--locked",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--no-run",
+            "--message-format=json",
+        ])
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", root.join("target"))
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            "--cfg\u{1f}broker_flag_preserved",
+        )
+        .env_remove("CARGO_MANIFEST_DIR")
+        .env_remove("CARGO_PKG_NAME")
+        .output()
+        .unwrap();
+    assert!(prepared.status.success(), "{prepared:?}");
+    let count = String::from_utf8(prepared.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|record| record["reason"] == "build-script-executed")
+        .and_then(|record| record["out_dir"].as_str().map(std::path::PathBuf::from))
+        .unwrap()
+        .join("build-count");
+    assert_eq!(fs::read_to_string(&count).unwrap(), "1");
+    for _ in 0..2 {
+        checked(
+            runner(root)
+                .args(["hook", "pre-push"])
+                .env("CARGO_MANIFEST_DIR", root.join("outer-cargo-package"))
+                .env("CARGO_PKG_NAME", "outer-cargo-package")
+                .env(
+                    "CARGO_ENCODED_RUSTFLAGS",
+                    "--cfg\u{1f}broker_flag_preserved",
+                )
+                .env(
+                    "CARGO_ENCODED_RUSTDOCFLAGS",
+                    "--cfg\u{1f}broker_flag_preserved",
+                ),
+        );
+        assert_eq!(fs::read_to_string(&count).unwrap(), "1");
+    }
+}
+
+#[test]
 fn precommit_stops_after_real_formatter_failure() {
     let fixture = package_fixture(
         "[package]\nname = \"hook-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
