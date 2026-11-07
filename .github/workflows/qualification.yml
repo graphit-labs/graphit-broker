@@ -2,7 +2,19 @@ name: Native qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to qualify
+        type: choice
+        required: true
+        default: all
+        options: [all, linux-amd64, darwin-arm64, windows-amd64]
   workflow_call:
+    inputs:
+      platform:
+        description: Native platform to qualify
+        type: string
+        default: all
     outputs:
       code_repository:
         description: Code repository selected by Cargo
@@ -18,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: true
 
 env:
@@ -40,12 +52,17 @@ jobs:
           persist-credentials: false
       - name: Record source revisions
         id: sources
+        env:
+          QUALIFICATION_PLATFORM: ${{ inputs.platform }}
         run: |
           python3 - <<'PY'
           import os
           import re
           import subprocess
           import tomllib
+
+          if os.environ["QUALIFICATION_PLATFORM"] not in {"all", "linux-amd64", "darwin-arm64", "windows-amd64"}:
+              raise SystemExit("Invalid native platform; expected all, linux-amd64, darwin-arm64 or windows-amd64")
 
           with open("Cargo.lock", "rb") as lock:
               source, = [p["source"] for p in tomllib.load(lock)["package"] if p["name"] == "graphit-ai"]
@@ -61,6 +78,7 @@ jobs:
   verify:
     name: Rust, real SQL/HTTP, and native container
     needs: resolve-sources
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux-amd64' }}
     runs-on: ubuntu-24.04
     env:
       CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}
@@ -177,6 +195,7 @@ jobs:
   package-darwin:
     name: Native Darwin ARM64 installer pair
     needs: resolve-sources
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'darwin-arm64' }}
     runs-on: macos-15
     env:
       CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}
@@ -259,6 +278,7 @@ jobs:
   package-windows:
     name: Native Windows AMD64 installer pair
     needs: resolve-sources
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows-amd64' }}
     runs-on: windows-2022
     env:
       CODE_REPOSITORY: ${{ needs.resolve-sources.outputs.code_repository }}

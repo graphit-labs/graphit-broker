@@ -201,6 +201,20 @@ qualification` workflow runs manually or from a stable-tag release. It uses
 Docker for SQL/S3/container contracts and builds installer packages on each
 platform.
 
+For an explicit qualification of one platform, select `linux-amd64`,
+`darwin-arm64` or `windows-amd64`, for example:
+
+```sh
+gh workflow run qualification.yml --ref main -f platform=windows-amd64
+```
+
+Selecting one platform qualifies only that platform's job. The default
+`platform=all` runs all three native jobs. Reusable workflow calls also default
+to `all`, so stable-tag releases retain the complete qualification.
+The resolver rejects invalid selections before resolving sources. Different
+platform selections have separate concurrency groups. The default `Native CI`
+still covers all three platforms.
+
 Broker's `Cargo.toml` and `Cargo.lock` select the exact Graphit Code revision for
 the shared crates. A Broker checkout and `cargo fetch --locked` provide those
 sources through Cargo. Qualification records that locked Code revision and the
