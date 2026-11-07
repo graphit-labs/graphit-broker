@@ -258,7 +258,7 @@ fn snapshot() -> NowSnapshotData {
         .as_millis()
         * 1_000_000;
     let available = |items: Value| json!({"availability":"available","total":1,"items":items,"has_more":false,"error":null});
-    let actor = "a".repeat(64);
+    let actor = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     let data = json!({"project_id":A,"generated_at":now.to_string(),"sections":{
         "tasks":available(json!([{"id":A,"session_id":B,"title":"Task","owner":actor,"lease_expires_at":(now+5_000_000_000).to_string(),"updated_at":now.to_string()}])),
         "sessions":available(json!([{"id":B,"title":"Session","owner":actor,"lease_expires_at":(now+5_000_000_000).to_string(),"updated_at":now.to_string(),"completed_tasks":1,"total_tasks":2}])),
