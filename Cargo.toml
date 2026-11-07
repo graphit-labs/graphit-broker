@@ -9,11 +9,11 @@ license = "MIT"
 version = "0.1.0"
 
 [workspace.dependencies]
-graphit-ai = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "abfb7eec0a45170585f2a1c3c2852d6d03582d7b", version = "=0.1.0" }
-graphit-auth = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "abfb7eec0a45170585f2a1c3c2852d6d03582d7b", version = "=0.1.0" }
-graphit-core = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "abfb7eec0a45170585f2a1c3c2852d6d03582d7b", version = "=0.1.0" }
-graphit-fs = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "abfb7eec0a45170585f2a1c3c2852d6d03582d7b", version = "=0.1.0" }
-graphit-http = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "abfb7eec0a45170585f2a1c3c2852d6d03582d7b", version = "=0.1.0" }
+graphit-ai = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "3e762384aa37d697eb7d2c34c7a099e8accd4c30", version = "=0.1.0" }
+graphit-auth = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "3e762384aa37d697eb7d2c34c7a099e8accd4c30", version = "=0.1.0" }
+graphit-core = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "3e762384aa37d697eb7d2c34c7a099e8accd4c30", version = "=0.1.0" }
+graphit-fs = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "3e762384aa37d697eb7d2c34c7a099e8accd4c30", version = "=0.1.0" }
+graphit-http = { git = "https://github.com/graphit-labs/graphit-code.git", rev = "3e762384aa37d697eb7d2c34c7a099e8accd4c30", version = "=0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -408,7 +408,7 @@ mod tests {
         let snapshot_parent = Arc::new(
             CapturedDocumentDirectory::capture(
                 &snapshot_path,
-                graphit_core::native_document_file::NativeDocumentFileLimits::new(1, 65536, 256, 1)
+                graphit_core::native_document_file::NativeDocumentFileLimits::new(1, 65536, 256)
                     .unwrap(),
                 &original,
             )

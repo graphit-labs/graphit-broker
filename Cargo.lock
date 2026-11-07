@@ -2513,7 +2513,7 @@ dependencies = [
 [[package]]
 name = "graphit-ai"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "agent-client-protocol",
  "cxx",
@@ -2539,7 +2539,7 @@ dependencies = [
 [[package]]
 name = "graphit-auth"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -2564,7 +2564,7 @@ dependencies = [
 [[package]]
 name = "graphit-core"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
@@ -2595,13 +2595,12 @@ dependencies = [
 [[package]]
 name = "graphit-fs"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "errno",
  "libc",
  "renamore",
  "rustix",
- "sha2 0.11.0",
  "winapi-util",
  "windows-permissions",
  "windows-sys 0.61.2",
@@ -2611,7 +2610,7 @@ dependencies = [
 [[package]]
 name = "graphit-http"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "futures-util",
  "graphit-core",
@@ -2628,7 +2627,7 @@ dependencies = [
 [[package]]
 name = "graphit-hub"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "base64 0.22.1",
  "graphit-core",
@@ -2651,12 +2650,13 @@ dependencies = [
 [[package]]
 name = "graphit-process"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=3e762384aa37d697eb7d2c34c7a099e8accd4c30#3e762384aa37d697eb7d2c34c7a099e8accd4c30"
 dependencies = [
  "cc",
  "graphit-core",
  "nix 0.31.3",
  "process-wrap",
+ "rustix",
  "secrecy",
  "tokio",
  "win32job",
