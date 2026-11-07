@@ -147,14 +147,30 @@ fn command(binary: &Path) -> Command {
     c.kill_on_drop(true);
     c
 }
-async fn checked(path: &Path, binary: &Path) -> std::process::Output {
-    command(binary)
-        .args(["--config", path.to_str().unwrap(), "--check-config"])
-        .output()
+async fn output_until(command: &mut Command, original: Instant) -> std::process::Output {
+    command.kill_on_drop(true);
+    tokio::time::timeout_at(original.into(), command.output())
         .await
+        .expect("native SQLite subprocess deadline")
         .unwrap()
 }
+async fn checked(path: &Path, binary: &Path) -> std::process::Output {
+    output_until(
+        command(binary).args(["--config", path.to_str().unwrap(), "--check-config"]),
+        end(),
+    )
+    .await
+}
+async fn readiness_until(
+    request: impl std::future::Future<Output = reqwest::Result<reqwest::Response>>,
+    original: Instant,
+) -> Result<bool, tokio::time::error::Elapsed> {
+    tokio::time::timeout_at(original.into(), request)
+        .await
+        .map(|result| result.is_ok_and(|response| response.status().is_success()))
+}
 async fn start(path: &Path, addr: SocketAddr) -> Child {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let mut child = command(&qualification_binary())
         .args(["--config", path.to_str().unwrap()])
         .stdout(Stdio::null())
@@ -163,14 +179,17 @@ async fn start(path: &Path, addr: SocketAddr) -> Child {
         .unwrap();
     let original = end();
     loop {
-        if reqwest::get(format!("http://{addr}/readyz"))
+        if readiness_until(client.get(format!("http://{addr}/readyz")).send(), original)
             .await
-            .is_ok_and(|r| r.status().is_success())
+            .expect("native SQLite readiness deadline")
         {
             return child;
         }
         if let Some(status) = child.try_wait().unwrap() {
-            let output = child.wait_with_output().await.unwrap();
+            let output = tokio::time::timeout_at(original.into(), child.wait_with_output())
+                .await
+                .expect("native SQLite startup diagnostic deadline")
+                .unwrap();
             assert!(!String::from_utf8_lossy(&output.stderr).contains(PEPPER));
             panic!(
                 "native SQLite Broker exited before ready: {status}: {}",
@@ -185,21 +204,22 @@ async fn start(path: &Path, addr: SocketAddr) -> Child {
     }
 }
 async fn stop(mut child: Child, success: bool) {
-    #[cfg(unix)]
-    assert!(
-        Command::new("kill")
-            .args(["-TERM", &child.id().unwrap().to_string()])
-            .status()
-            .await
-            .unwrap()
-            .success()
-    );
-    #[cfg(not(unix))]
-    child.kill().await.unwrap();
-    let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
-        .await
-        .unwrap()
-        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(15), async {
+        #[cfg(unix)]
+        assert!(
+            command(Path::new("kill"))
+                .args(["-TERM", &child.id().unwrap().to_string()])
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        #[cfg(not(unix))]
+        child.kill().await.unwrap();
+        child.wait().await.unwrap()
+    })
+    .await
+    .expect("native SQLite process close deadline");
     #[cfg(unix)]
     assert_eq!(status.success(), success, "native process close outcome");
     #[cfg(not(unix))]
@@ -229,6 +249,49 @@ async fn reopened(path: &Path) {
         .await
         .unwrap();
     store.shutdown(end()).await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_deadline_cancels_a_request_after_the_peer_receives_it() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut request = Box::pin(
+        client
+            .get(format!("http://{}/readyz", listener.local_addr().unwrap()))
+            .send(),
+    );
+    let (mut peer, _) = tokio::time::timeout_at(end().into(), async {
+        tokio::select! {
+            accepted = listener.accept() => accepted.unwrap(),
+            _ = &mut request => panic!("readiness completed before its peer accepted"),
+        }
+    })
+    .await
+    .unwrap();
+    let mut bytes = [0; 1024];
+    let received = tokio::time::timeout_at(end().into(), async {
+        tokio::select! {
+            received = peer.read(&mut bytes) => received.unwrap(),
+            _ = &mut request => panic!("readiness completed without a response"),
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        received > 0,
+        "the peer must observe the request before expiry"
+    );
+    // The peer holds its socket without responding. Expire the established
+    // request immediately instead of spending the normal 30-second deadline.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            readiness_until(request, Instant::now()),
+        )
+        .await
+        .expect("an expired readiness operation must stop promptly")
+        .is_err()
+    );
 }
 
 const PASSWORD: &str = "synthetic SQLite binary password";
@@ -1486,11 +1549,11 @@ async fn sqlite_binary_birth_reopen_and_partial_startup_cleanup() {
     reopened(&dbpath).await;
     // Bind fails after SQL and volume owners have started; their ownership is released.
     let held = tokio::net::TcpListener::bind(addr).await.unwrap();
-    let output = command(&qualification_binary())
-        .args(["--config", path.to_str().unwrap()])
-        .output()
-        .await
-        .unwrap();
+    let output = output_until(
+        command(&qualification_binary()).args(["--config", path.to_str().unwrap()]),
+        end(),
+    )
+    .await;
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("listener bind failed"));
     drop(held);
@@ -1501,11 +1564,11 @@ async fn sqlite_binary_birth_reopen_and_partial_startup_cleanup() {
     private(&root.path().join("occupied"), b"occupied");
     bad["storage"]["routes"]["z-bad"] = json!({"driver":"filesystem","bucket":"blocked-storage","base_prefix":"graphit","directory":"occupied"});
     let badpath = write(root.path(), &bad);
-    let output = command(&qualification_binary())
-        .args(["--config", badpath.to_str().unwrap()])
-        .output()
-        .await
-        .unwrap();
+    let output = output_until(
+        command(&qualification_binary()).args(["--config", badpath.to_str().unwrap()]),
+        end(),
+    )
+    .await;
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("storage startup failed"));
     assert!(TcpStream::connect(addr).await.is_err());
