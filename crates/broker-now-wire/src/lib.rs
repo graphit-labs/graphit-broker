@@ -523,10 +523,8 @@ fn exact_title(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }
 fn actor(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    value.len() == 26
+        && ulid::Ulid::from_string(value).is_ok_and(|identifier| identifier.to_string() == value)
 }
 fn valid_slug(value: &str) -> bool {
     !value.is_empty()

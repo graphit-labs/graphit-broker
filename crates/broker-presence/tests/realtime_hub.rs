@@ -158,7 +158,7 @@ fn now() -> i64 {
     .unwrap()
 }
 fn data(project: &str) -> NowSnapshotData {
-    let actor = "a".repeat(64);
+    let actor = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
     let available = |items: Value| json!({"availability":"available","total":items.as_array().unwrap().len(),"items":items,"has_more":false,"error":null});
     let wire = json!({"project_id":project,"generated_at":"1000000","sections":{
         "tasks":available(json!([{"id":A,"session_id":B,"title":"Task","owner":actor,"lease_expires_at":"2000000","updated_at":"1000000"}])),

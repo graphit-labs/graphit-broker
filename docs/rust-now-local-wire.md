@@ -57,9 +57,12 @@ IDs and slugs retain their producer's canonical text representation.
 Task session_id is required canonical SessionId text, matching the actual
 TaskActivityHead producer; missing session linkage is an error, not null.
 Task/Session owner and lease are present on included active records. Owner is
-the actual persisted Auth attribution, a validated lowercase 64-hex string,
+the actual persisted Auth attribution, a canonical uppercase 26-character ULID,
 not a display name, publisher identity or selected agent. Memory updated_by
-retains the historical attribution; Knowledge has no invented author.
+retains that public attribution; Knowledge has no invented author. Actor
+attribution preserves all 128 bits, including zero, and does not encode creation
+time. The former 64-hex encoding and noncanonical aliases are rejected by the
+[shared decoder](rust-now-snapshot-data.md).
 
 Exclude USER memories, source/body, physical paths/branches/corpus URIs,
 audit/embeddings, raw causes, SDK generations, claim tokens, revision/epoch,

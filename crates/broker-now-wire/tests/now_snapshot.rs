@@ -7,6 +7,7 @@ const PROJECT: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const TASK: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const MEMORY: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const ACTOR: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 fn available(items: Value) -> Value {
     let total = items.as_array().unwrap().len();
     json!({"availability":"available","items":items,"total":total,"has_more":false,"error":null})
@@ -15,7 +16,7 @@ fn absent() -> Value {
     json!({"availability":"no_corpus","items":[],"total":0,"has_more":false,"error":null})
 }
 fn valid() -> Value {
-    let actor = "a".repeat(64);
+    let actor = ACTOR;
     json!({
         "project_id":PROJECT,"generated_at":"1000000",
         "sections":{
@@ -58,13 +59,13 @@ fn exact_allowlist_roundtrip_getters_and_redacted_models() {
     assert_eq!(row.id(), TASK);
     assert_eq!(row.session_id(), SESSION);
     assert_eq!(row.title(), "Task");
-    assert_eq!(row.owner(), &"a".repeat(64));
+    assert_eq!(row.owner(), ACTOR);
     assert_eq!(row.lease_expires_at(), "2000000");
     assert_eq!(row.updated_at(), "1000000");
     let session = &sections.sessions().items()[0];
     assert_eq!(session.id(), SESSION);
     assert_eq!(session.title(), "Session");
-    assert_eq!(session.owner(), &"a".repeat(64));
+    assert_eq!(session.owner(), ACTOR);
     assert_eq!(session.lease_expires_at(), "2000000");
     assert_eq!(session.updated_at(), "1000000");
     assert_eq!(session.completed_tasks(), &1);
@@ -72,7 +73,7 @@ fn exact_allowlist_roundtrip_getters_and_redacted_models() {
     let memory = &sections.memories().items()[0];
     assert_eq!(memory.id(), MEMORY);
     assert_eq!(memory.title(), " memory ");
-    assert_eq!(memory.updated_by(), &"a".repeat(64));
+    assert_eq!(memory.updated_by(), ACTOR);
     assert_eq!(memory.updated_at(), "1000000");
     let knowledge = sections.knowledge().items();
     assert_eq!(knowledge[0].slug(), "known");
@@ -90,7 +91,7 @@ fn exact_allowlist_roundtrip_getters_and_redacted_models() {
         format!("{:?}", knowledge[0]),
     ] {
         assert!(!rendered.contains(PROJECT));
-        assert!(!rendered.contains(&"a".repeat(64)));
+        assert!(!rendered.contains(ACTOR));
         assert!(!rendered.contains("2000000"));
     }
     assert!(std::error::Error::source(&NowSnapshotDataError::InvalidData).is_none());
@@ -311,7 +312,18 @@ fn canonical_ids_titles_slugs_actors_and_counter_precision() {
         "/sections/memories/items/0/updated_by",
     ] {
         for bad in [
+            String::new(),
+            ACTOR.to_lowercase(),
+            ACTOR[..25].to_owned(),
+            format!("{ACTOR}0"),
+            format!(" {ACTOR}"),
+            format!("{ACTOR} "),
+            "8ZZZZZZZZZZZZZZZZZZZZZZZZZ".into(),
+            "IIIIIIIIIIIIIIIIIIIIIIIIII".into(),
+            ACTOR.replacen('0', "O", 1),
+            "0000000000000000000000000I".into(),
             "a".repeat(63),
+            "a".repeat(64),
             "a".repeat(65),
             "A".repeat(64),
             "g".repeat(64),
@@ -351,6 +363,26 @@ fn canonical_ids_titles_slugs_actors_and_counter_precision() {
     let mut v = valid();
     v["sections"]["sessions"]["items"][0]["completed_tasks"] = json!(3);
     invalid(&v);
+}
+
+#[test]
+fn public_actor_ulids_preserve_all_128_bits_in_each_section() {
+    for identifier in [
+        ulid::Ulid::nil(),
+        ulid::Ulid::from(1u128),
+        ulid::Ulid::from(u128::MAX),
+    ] {
+        for path in [
+            "/sections/tasks/items/0/owner",
+            "/sections/sessions/items/0/owner",
+            "/sections/memories/items/0/updated_by",
+        ] {
+            let mut wire = valid();
+            *wire.pointer_mut(path).unwrap() = json!(identifier.to_string());
+            let data = decode(&wire).unwrap();
+            assert_eq!(serde_json::to_value(data).unwrap(), wire);
+        }
+    }
 }
 
 #[test]
@@ -516,23 +548,15 @@ fn complete_positional_objects_and_tagged_enum_maps_are_not_json_wire() {
         ),
         (
             "/sections/tasks/items/0",
-            json!([TASK, SESSION, "Task", "a".repeat(64), "2000000", "1000000"]),
+            json!([TASK, SESSION, "Task", ACTOR, "2000000", "1000000"]),
         ),
         (
             "/sections/sessions/items/0",
-            json!([
-                SESSION,
-                "Session",
-                "a".repeat(64),
-                "2000000",
-                "1000000",
-                1,
-                2
-            ]),
+            json!([SESSION, "Session", ACTOR, "2000000", "1000000", 1, 2]),
         ),
         (
             "/sections/memories/items/0",
-            json!([MEMORY, " memory ", "a".repeat(64), "1000000"]),
+            json!([MEMORY, " memory ", ACTOR, "1000000"]),
         ),
         ("/sections/knowledge/items/0", json!(["known", "", "-1"])),
         (

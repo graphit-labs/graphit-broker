@@ -86,8 +86,11 @@ Knowledge slugs are nonempty, contain no slash, backslash or control character,
 and do not start with `..`; they retain literal text and case. Task and Session
 titles are nonempty and already trimmed. Memory titles must be nonempty after
 trimming but retain their literal text. Knowledge titles may be empty.
-Task/Session owner and Memory updated_by are historical lowercase 64-hex actors;
-they are never the authenticated channel owner.
+Task/Session owner and Memory updated_by are public Auth attribution encoded as
+canonical uppercase 26-character ULIDs. All 128-bit values, including zero, are
+valid attribution; this is not the nonzero entity-ID rule above or a creation
+timestamp. Lowercase, aliases, overflow and the former 64-hex encoding fail
+validation. These fields are never the authenticated channel owner.
 
 All timestamps are canonical decimal **strings**, with no plus, redundant zeros,
 negative zero, fraction or exponent. Task/Session/Memory timestamps are u64

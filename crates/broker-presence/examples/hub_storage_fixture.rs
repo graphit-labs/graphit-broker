@@ -2062,7 +2062,7 @@ mod tests {
         )
     }
     fn now_data(project: &str, generated_at: &str) -> Value {
-        let actor = "a".repeat(64);
+        let actor = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
         let available = |items: Value| json!({"availability":"available","total":items.as_array().unwrap().len(),"items":items,"has_more":false,"error":null});
         let wire = json!({"project_id":project,"generated_at":generated_at,"sections":{
             "tasks":available(json!([{"id":PROJECT,"session_id":SECOND,"title":"Task","owner":actor,"lease_expires_at":"2000000","updated_at":"1000000"}])),

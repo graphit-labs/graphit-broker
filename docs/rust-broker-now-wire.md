@@ -17,8 +17,9 @@ references:
 
 For Broker and Runtime transport integrators. `broker-now-wire` is the canonical
 pure crate for the [strict Now DATA contract](rust-now-snapshot-data.md), version
-0.1.0, Apache-2.0, Rust 1.98/edition 2024. It contains the previously qualified
-codec extracted without changing validation, types or fields. Import
+0.1.0, Apache-2.0, Rust 1.98/edition 2024. The codec was extracted without changing
+validation, types or fields. Its current public Actor attribution uses canonical
+26-character ULIDs, as specified in the DATA contract. Import
 `broker_now_wire::NowSnapshotData`; the old Control module and exports are
 removed rather than maintained as aliases.
 
@@ -40,6 +41,14 @@ rows and sections remain Serialize-only. All strict object/field/enum,
 required-nullable, precision, canonical time/identifier, availability, complete
 top20 and ordering rules remain in the DATA reference. DATA does not prove
 Auth, current ACL, corpus scans, registered ownership or online presence.
+
+Task/Session `owner` and Memory `updated_by` preserve the public 128-bit Actor
+identifier as a canonical ULID, including zero. The decoder rejects the previous
+64-hex representation and noncanonical spelling. This changes DATA attribution
+only; channel authentication, credential digests and MACs retain their existing
+contracts. Broker and Runtime consumers must select this codec revision together
+with the publisher's Actor format; a previously pinned revision does not gain
+this validation change automatically.
 
 The pure implementation uses std, pinned serde 1.0.229 with derive,
 serde_json 1.0.151 and ulid 3.0.0 without default features. It has no Control,
