@@ -1,0 +1,9 @@
+[advisories]
+# Reviewed exception: rsa 0.9.10 via openidconnect 4.1.0, public verification only.
+# Broker signs its own tokens with Ed25519/EdDSA and has no reviewed production
+# RSA private-key operation. RUSTSEC-2023-0071 concerns private-key timing leakage;
+# no patched RSA release is available. This does not authorize private RSA use.
+# cargo-audit matches IDs, not dependency versions/paths: re-evaluate this exception
+# if the versions, dependency path or cryptographic use changes. Keep the finding
+# and review rationale visible in docs/security.md#dependency-advisory-review.
+ignore = ["RUSTSEC-2023-0071"]

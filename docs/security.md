@@ -152,6 +152,64 @@ Neither input text nor provider credentials are persisted in the embedding cache
 vectors can still reveal information about inputs, so protect database access and backups.
 The broker does not cache temporary S3 credentials.
 
+## Dependency advisory review
+
+Run `cargo audit --file Cargo.lock --json` against the committed lockfile. The
+qualification runner stops on a failing audit; phases scheduled after it in that
+`qualify` invocation have not run when that happens. Earlier workflow builds and
+other platform jobs have their own results. A successful earlier HTTP or
+persistence fixture does not establish a successful qualification.
+
+The lockfile selects `rsa 0.9.10` through `openidconnect 4.1.0`, whose RSA
+dependency is unconditional.
+[`RUSTSEC-2023-0071`](https://rustsec.org/advisories/RUSTSEC-2023-0071.html)
+describes private-key timing leakage and has no patched version, including the
+listed 0.10 prerelease. A version bump to that prerelease does not resolve it.
+The reviewed Broker paths use the following boundaries:
+
+- `broker_access_issuer.rs` signs Broker tokens with Ed25519/EdDSA.
+- `upstream_oidc.rs` verifies upstream bearer signatures through the existing
+  `jsonwebtoken` AWS-LC backend with public decoding keys.
+- `upstream_login.rs` verifies browser ID tokens through
+  `CoreIdTokenVerifier::new_public_client`; the SDK's RSA path verifies with a
+  public key. The Broker does not call the SDK's RSA private signing API in the
+  reviewed production paths.
+- The current SQLx MySQL feature selection does not enable its optional `rsa`
+  feature. `mysql/executor.rs` additionally requires TLS `VerifyIdentity`.
+
+Confirm the active dependency path with `cargo tree --locked -i rsa` and review
+the call sites again when changing authentication or cryptographic dependencies.
+The project audit configuration, `.cargo/audit.toml`, records an approved
+exception only for `RUSTSEC-2023-0071`, based on this public-verification use of
+`rsa 0.9.10` through `openidconnect 4.1.0`. It does not patch the dependency or
+remove its private-key implementation. The mature auditor matches exceptions by
+advisory ID, not by dependency version or path: a change to either version, the
+dependency path or the cryptographic use requires re-evaluation. Production RSA
+private signing or decryption is outside this exception. All other advisories
+and the normal informational warnings remain active. The advisory and rationale
+remain recorded here even when the audit accepts this exception.
+
+The existing `broker-control` targets `broker_access_issuer` and `broker_access`
+cover the EdDSA signing/verifying round trip, public JWKS without private `d`,
+rejection of unsuitable signing keys, tampered or unsigned tokens and explicit
+key rotation. In particular, `sdk_key_owner_public_jwks_and_real_verifier_roundtrip`
+and `crypto_tamper_unknown_key_and_unsigned_algorithm_rejected` exercise those
+boundaries. They do not establish positive coverage of upstream RSA algorithms.
+
+[`RUSTSEC-2026-0386`](https://rustsec.org/advisories/RUSTSEC-2026-0386.html)
+requires a corrected Tokio release (1.53.3 or a listed patched branch). Broker
+pins Tokio exactly to 1.53.3 in its runtime and development dependencies. The
+published Graphit Code revision selected in `Cargo.toml` permits this version;
+the lockfile resolves a single Tokio runtime. Keep these selections compatible
+when updating either project.
+[`RUSTSEC-2026-0441`](https://rustsec.org/advisories/RUSTSEC-2026-0441.html)
+reports that `pin-utils` is unmaintained. Its current active path is the AWS
+Smithy runtime; this informational warning remains visible. The
+[Smithy October 19 release](https://github.com/smithy-lang/smithy-rs/releases/tag/release-2026-10-19)
+removes that dependency but requires a coordinated SDK/runtime family update.
+That larger update is separate from the RSA exception and corrected Tokio pins;
+the informational warning alone does not require replacing the current SDK.
+
 ## Deployment hardening
 
 - terminate TLS at the broker or a trusted reverse proxy;

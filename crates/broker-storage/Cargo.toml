@@ -35,7 +35,7 @@ zeroize = { version = "=1.9.1", default-features = false, features = ["alloc"] }
 serde_json = "=1.0.151"
 sha2 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
 url = "=2.5.8"
-tokio = { version = "=1.53.2", default-features = false, features = ["time", "sync", "rt", "io-util", "macros"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["time", "sync", "rt", "io-util", "macros"] }
 
 [dev-dependencies]
 s3s-sigv4 = { version = "=0.17.0", default-features = false }
@@ -50,5 +50,5 @@ rcgen = "=0.14.10"
 serde = { version = "=1.0.229", features = ["derive"] }
 sqlx-core = { version = "=0.9.0", default-features = false, features = ["json", "_rt-tokio", "_tls-rustls-ring-webpki"] }
 sqlx-postgres = { version = "=0.9.0", default-features = false, features = ["json"] }
-tokio = { version = "=1.53.2", default-features = false, features = ["macros", "rt-multi-thread", "net", "io-util", "process"] }
+tokio = { version = "=1.53.3", default-features = false, features = ["macros", "rt-multi-thread", "net", "io-util", "process"] }
 tempfile = "=3.27.0"

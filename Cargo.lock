@@ -2513,7 +2513,7 @@ dependencies = [
 [[package]]
 name = "graphit-ai"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "agent-client-protocol",
  "cxx",
@@ -2539,7 +2539,7 @@ dependencies = [
 [[package]]
 name = "graphit-auth"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -2557,16 +2557,18 @@ dependencies = [
  "sha2 0.11.0",
  "subtle",
  "tokio",
+ "ulid",
  "url",
 ]
 
 [[package]]
 name = "graphit-core"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
+ "dunce",
  "getrandom 0.4.3",
  "graphit-fs",
  "ignore",
@@ -2593,7 +2595,7 @@ dependencies = [
 [[package]]
 name = "graphit-fs"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "errno",
  "libc",
@@ -2609,7 +2611,7 @@ dependencies = [
 [[package]]
 name = "graphit-http"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "futures-util",
  "graphit-core",
@@ -2626,7 +2628,7 @@ dependencies = [
 [[package]]
 name = "graphit-hub"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "base64 0.22.1",
  "graphit-core",
@@ -2649,7 +2651,7 @@ dependencies = [
 [[package]]
 name = "graphit-process"
 version = "0.1.0"
-source = "git+https://github.com/graphit-labs/graphit-code.git?rev=5e99a8e6c5c8e2c739172d686bf051bbf3390ba1#5e99a8e6c5c8e2c739172d686bf051bbf3390ba1"
+source = "git+https://github.com/graphit-labs/graphit-code.git?rev=abfb7eec0a45170585f2a1c3c2852d6d03582d7b#abfb7eec0a45170585f2a1c3c2852d6d03582d7b"
 dependencies = [
  "cc",
  "graphit-core",
@@ -5770,9 +5772,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
